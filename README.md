@@ -4,6 +4,23 @@
 
 > 不修改服务端本身、不依赖模组：只在服务端 `server.properties` 里开一个 RCON 端口即可（Mojang 官方服务端就支持）。
 
+## 文档
+
+| 页面 | 内容 |
+|---|---|
+| [界面效果](docs/gallery.md) | 六个功能页 + 设置页各分组的实机截图（深浅两套主题） |
+| [配置详解](docs/configure.md) | 全部 10 组、78 项配置逐项说明与默认值 |
+| [使用指南](docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
+| [常见问题](docs/faq.md) | 安装与使用中容易踩到的坑 |
+
+## 界面预览
+
+[![概览页](docs/images/overview-dark.png)](docs/gallery.md)
+
+[![服务器页](docs/images/server-dark.png)](docs/gallery.md)
+
+> 更多界面（知识库 / 工作流 / 提示词 / 设置页十个分组）见 [界面效果](docs/gallery.md)。
+
 ---
 
 ## 功能一览
@@ -114,9 +131,11 @@ python tests\test_fingerprint_notice.py   # 指纹不匹配弹窗轮次记账
 python tests\test_kb_entry_edit.py        # 知识条目编辑 / 改名语义
 python tests\test_settings_save_resync.py # 保存设置即重算指纹
 python tests\ui_theme_check.py            # UI 实跑（Playwright + Edge，会截图）
+python tests\make_docs_images.py          # 重拍 docs/ 文档配图（界面改动后跑）
 ```
 
 UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 Edge / Chromium；截图输出到 `tests/_shots/`（已在 `.gitignore` 里）。
+`make_docs_images.py` 另需 `Pillow`，输出到 `docs/images/`（这一份要入库）。
 路径一律由 `tests/_paths.py` 自动发现，不写死任何机器路径。
 
 ---
