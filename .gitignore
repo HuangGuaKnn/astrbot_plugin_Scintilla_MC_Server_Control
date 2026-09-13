@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 测试产物 ----
+tests/_shots/
+tests/_out*.txt
+tests/_u.txt
+tests/_ui.txt
+tests/_o.txt
+tests/_log*.txt
+
+# ---- 本地配置 / 备份（可能含 RCON 密码与会话 ID，绝不入库）----
+_backup/
+*.bak
+*.bak_*
+plugin_config*.json
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
