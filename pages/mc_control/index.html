@@ -1,0 +1,3189 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft Server 智控台</title>
+<style>
+:root{
+  --bg:#0e1013; --panel:#15181e; --panel2:#1a1e26; --panel3:#20252f;
+  --border:#232833; --border2:#2e3542;
+  --text:#e8eaed; --dim:#9aa3b2; --faint:#6b7280;
+  --amber:#e8b33a; --cyan:#5aa9e8; --ok:#4cc38a; --bad:#e8623a; --warn:#e8a23a; --violet:#a78bfa;
+  /* 主题无关的「结构色」——深/浅两套各自赋值，别在组件里写死（v0.21.13 浅色模式） */
+  --on-accent:#1a1203;                  /* 实心亮色按钮上的文字 */
+  --bar-bg:rgba(14,16,19,.92);          /* 顶栏 / 页签吸顶底色 */
+  --bar-bg2:rgba(14,16,19,.94);         /* 设置页常驻保存条 */
+  --mask:rgba(6,8,10,.72);              /* 弹窗遮罩 */
+  --sub:rgba(255,255,255,.04);          /* 卡内浅色块（文本颜色页） */
+  --sub-bd:rgba(255,255,255,.08);
+  --hover:rgba(255,255,255,.025);       /* 列表行 hover 叠层 */
+  --shadow:0 18px 60px rgba(0,0,0,.55);
+  --sb:rgba(148,163,184,.3); --sb-h:rgba(148,163,184,.55);   /* 滚动条 */
+  --mono:ui-monospace,"JetBrains Mono",Consolas,"Cascadia Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --r:10px;
+}
+/* ===== 浅色模式（v0.21.13）：右上角按钮切换，选择记在 localStorage =====
+   深色下强调色是「亮色发光」，浅色下必须压暗才当得了文字色，故整组重赋值；
+   实心按钮上的文字随之翻成白色（--on-accent）。 */
+:root[data-theme="light"]{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#f7f8fa; --panel3:#eceff4;
+  --border:#e4e7ec; --border2:#cfd5de;
+  --text:#1f2430; --dim:#454d5c; --faint:#6f7a89;
+  --amber:#a8760a; --cyan:#1f6fb2; --ok:#1f7f52; --bad:#c2401f; --warn:#96690f; --violet:#6b52d3;
+  --on-accent:#ffffff;
+  --bar-bg:rgba(255,255,255,.9); --bar-bg2:rgba(255,255,255,.94);
+  --mask:rgba(24,28,35,.42);
+  --sub:rgba(16,24,40,.035); --sub-bd:rgba(16,24,40,.12);
+  --hover:rgba(16,24,40,.03);
+  --shadow:0 14px 40px rgba(16,24,40,.16);
+  --sb:rgba(100,116,139,.35); --sb-h:rgba(100,116,139,.6);
+}
+/* 浅色下 10px 徽章字（强调色当文字）在浅底上会发飘，单独压暗一档；深色保持原样 */
+:root[data-theme="light"] .badge.amb{color:#8a5d06}
+:root[data-theme="light"] .badge.ok{color:#166b44}
+:root[data-theme="light"] .badge.bad{color:#a93417}
+:root[data-theme="light"] .badge.warn{color:#7d560c}
+:root[data-theme="light"] .badge.info{color:#175a94}
+:root[data-theme="light"] .badge.vio{color:#5741b8}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font:13.5px/1.65 var(--sans);min-height:100vh}
+*{scrollbar-width:thin;scrollbar-color:var(--sb) transparent}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--sb);border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:var(--sb-h)}
+button,input,select,textarea{font-family:inherit;color:inherit}
+button{background:none;border:none;cursor:pointer}
+
+/* ===== 顶栏 ===== */
+.topbar{position:sticky;top:0;z-index:50;background:var(--bar-bg);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+/* v0.21.28：品牌位由「MC」金块换成本插件图像（96px JPEG 内嵌 data URI：不依赖外部文件，iframe 与独立窗口都稳） */
+.brand-mark{width:30px;height:30px;border-radius:8px;display:block;flex-shrink:0;object-fit:cover;border:1px solid var(--border2);background:var(--panel3);-webkit-user-drag:none;user-select:none}
+.brand-name{font-size:15px;font-weight:700;letter-spacing:.2px;white-space:nowrap}
+.brand-sub{font-size:11px;color:var(--faint);margin-top:1px}
+.ver{font-size:10px;font-weight:700;color:var(--on-accent);background:var(--amber);border-radius:6px;padding:1px 7px;white-space:nowrap}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mode-tag{font-size:11px;color:var(--dim);border:1px solid var(--border2);border-radius:99px;padding:3px 10px;white-space:nowrap}
+.mode-tag b{color:var(--text)}
+.winbtn{font-size:11px;color:var(--cyan);border:1px solid rgba(90,169,232,.4);border-radius:8px;padding:4px 12px;white-space:nowrap;transition:.15s}
+.winbtn:hover{background:rgba(90,169,232,.12)}
+/* 主题切换（v0.21.13）：跟页签同一套几何字形，克制的描边按钮，不做花的图标 */
+.themebtn{font-size:11px;color:var(--dim);border:1px solid var(--border2);border-radius:8px;padding:4px 11px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;transition:.15s}
+.themebtn:hover{color:var(--text);border-color:var(--cyan)}
+.themebtn .ti{font-size:12px;line-height:1}
+.conn{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint);white-space:nowrap}
+.conn .p{width:8px;height:8px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.conn .p.on{background:var(--ok);box-shadow:0 0 6px rgba(76,195,138,.6)}
+.conn .p.off{background:var(--bad)}
+
+/* ===== Tab 导航 ===== */
+.tabs{position:sticky;top:57px;z-index:49;background:var(--bar-bg);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:0 20px;display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:12px 16px;font-size:13px;font-weight:600;color:var(--faint);border-bottom:2px solid transparent;white-space:nowrap;transition:.15s;display:flex;align-items:center;gap:7px}
+.tab:hover{color:var(--dim)}
+.tab.active{color:var(--amber);border-bottom-color:var(--amber)}
+.tab .ico{font-size:14px;line-height:1}
+.tab .cnt{font-size:10px;background:var(--panel3);border:1px solid var(--border2);color:var(--dim);border-radius:99px;padding:0 7px;font-weight:700}
+
+/* ===== 布局 ===== */
+main{padding:20px;max-width:1280px;margin:0 auto}
+.page{display:none;animation:fade .25s ease}
+.page.active{display:block}
+/* 二次点击确认态（iframe sandbox 无 allow-modals，原生 confirm 被静默拒绝，改用按钮武装态） */
+.btn.arming{animation:armp 0.7s infinite alternate;border-color:var(--bad)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--bad) 25%,transparent)}
+@keyframes armp{from{opacity:.7}to{opacity:1}}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:980px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+/* ===== 卡片 ===== */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px}
+/* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
+   必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
+.card+.card{margin-top:14px}
+:is(.grid,.pr-wrap)>.card+.card{margin-top:0}
+.card h3{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber)}
+.card h3 .right{margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;font-size:11px}
+.card h3 .right button{color:var(--cyan);font-size:11px;font-weight:600}
+.card h3 .right button:hover{text-decoration:underline}
+.muted{color:var(--faint);font-size:11.5px}
+/* 跨页跳转链接 + 目标卡片高亮（设置页 → 服务器页 文本颜色） */
+.jump{color:var(--cyan);cursor:pointer;border-bottom:1px dashed currentColor;white-space:nowrap}
+.jump:hover{color:var(--text)}
+@keyframes cardflash{0%{box-shadow:0 0 0 0 rgba(255,255,255,0)}22%{box-shadow:0 0 0 2px var(--cyan)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.card.flash{animation:cardflash 1.6s ease}
+
+/* ===== 统计卡 ===== */
+.stat{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:12px 14px;position:relative;overflow:hidden}
+.stat .l{font-size:11px;color:var(--faint);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.stat .n{font-size:22px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
+.stat .s{font-size:10.5px;color:var(--faint);margin-top:2px}
+.stat .bar{position:absolute;left:0;bottom:0;height:2px;background:var(--amber);transition:width .4s}
+.stat .bar.g{background:var(--ok)}.stat .bar.b{background:var(--bad)}.stat .bar.c{background:var(--cyan)}
+
+/* ===== 徽章 ===== */
+.badge{font-size:10px;font-weight:700;padding:2px 9px;border-radius:99px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.badge.ok{background:rgba(76,195,138,.14);color:var(--ok)}
+.badge.bad{background:rgba(232,98,58,.16);color:var(--bad)}
+.badge.warn{background:rgba(232,162,58,.15);color:var(--warn)}
+.badge.dim{background:rgba(154,163,178,.13);color:var(--dim)}
+.badge.info{background:rgba(90,169,232,.14);color:var(--cyan)}
+.badge.vio{background:rgba(167,139,250,.15);color:var(--violet)}
+.badge.amb{background:rgba(232,179,58,.16);color:var(--amber)}
+
+/* ===== 开关 ===== */
+.sw-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 2px;border-bottom:1px dashed var(--border)}
+.sw-row:last-child{border-bottom:none}
+/* v0.21.14：标题/说明都用「直接子选择器」。原先写 .sw-t b，会把说明里的行内 <b>
+   （如「直接短路」）也带成 display:block 的 13px 块 → 说明被硬切成三行、中间空一段、
+   逗号单独占一行。后代选择器只影响标题，行内 <b> 就老实待在句子里了。 */
+.sw-t>b{font-size:13px;display:block}
+.sw-t>span{font-size:11px;color:var(--faint)}
+.sw-t>span b{color:var(--dim);font-weight:600}
+.sw{position:relative;width:40px;height:21px;flex-shrink:0}
+.sw input{opacity:0;width:0;height:0}
+.sl{position:absolute;inset:0;background:var(--panel3);border:1px solid var(--border2);border-radius:21px;cursor:pointer;transition:.18s}
+.sl:before{content:"";position:absolute;width:15px;height:15px;left:2px;top:2px;background:#aab3c2;border-radius:50%;transition:.18s}
+input:checked+.sl{background:var(--ok);border-color:var(--ok)}
+input:checked+.sl:before{transform:translateX(19px);background:#fff}
+input:disabled+.sl{opacity:.4;cursor:not-allowed}
+
+/* ===== 按钮 ===== */
+.btn{border:1px solid var(--border2);background:var(--panel2);color:var(--text);border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;transition:.15s;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn.primary{background:var(--amber);border-color:var(--amber);color:var(--on-accent)}
+.btn.primary:hover{filter:brightness(1.08);color:var(--on-accent)}
+.btn.ok{background:var(--ok);border-color:var(--ok);color:var(--on-accent)}
+.btn.ok:hover{color:var(--on-accent);filter:brightness(1.08)}
+.btn.danger{border-color:rgba(232,98,58,.5);color:var(--bad)}
+.btn.danger:hover{background:rgba(232,98,58,.12)}
+.btn.ghost{background:transparent}
+.btn.sm{padding:3px 10px;font-size:11px}
+.btn:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* ===== 表单 ===== */
+label.f{display:block;font-size:11px;color:var(--faint);font-weight:600;margin:12px 0 5px}
+label.f:first-child{margin-top:0}
+/* 设置页：易误解语义的高亮标签（蓝=说明；.on 绿色=当前生效） */
+label.f .hl{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.01em;padding:1.5px 8px;border-radius:99px;margin-left:3px;background:rgba(90,169,232,.13);color:var(--cyan);border:1px solid rgba(90,169,232,.32);white-space:nowrap}
+label.f .hl::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.45;margin-right:5px;vertical-align:1px}
+label.f .hl.on{background:rgba(76,195,138,.15);border-color:rgba(76,195,138,.45);color:var(--ok)}
+label.f .hl.on::before{opacity:1}
+label.f .sep{font-weight:500;opacity:.85}
+/* 设置页：符号标签输入（添加一个显示一个，可单独删除） */
+.sym-list{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:34px;padding:6px 8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px}
+.sym-list:empty::after{content:"（未添加符号 · 转发全部聊天）";font-size:11px;color:var(--faint)}
+.sym{display:inline-flex;align-items:center;gap:5px;background:var(--panel3);border:1px solid var(--border2);border-radius:7px;padding:2px 3px 2px 9px}
+.sym code{font-family:var(--mono);font-size:11.5px;color:var(--text);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sym .x{color:var(--faint);font-size:12px;line-height:1;padding:3px 6px;border-radius:5px;flex-shrink:0}
+.sym .x:hover{color:var(--bad);background:rgba(232,98,58,.12)}
+.sym-add{display:flex;gap:7px;margin-top:6px;max-width:420px}
+.sym-add input{flex:1}
+.sym-msg{font-size:10.5px;color:var(--faint);margin-top:5px;min-height:14px}
+.sym-msg.err{color:var(--bad)}
+.sym-msg.ok{color:var(--ok)}
+/* 设置页：管理员列表（复用符号标签样式，仅空态文案不同）（v0.21.1） */
+.adm-list:empty::after{content:"（未添加管理员 · 所有 mcs 管理指令与危险命令都将不可用）"}
+.sym.adm code{font-size:12px;max-width:230px}
+input[type=text],input[type=password],input[type=number],select,textarea{width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 11px;font-size:12.5px;outline:none;transition:.15s}
+input:focus,select:focus,textarea:focus{border-color:var(--cyan)}
+textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5px;line-height:1.5}
+.frow{display:flex;gap:8px}
+.frow>*{flex:1}
+.hint{font-size:10.5px;color:var(--faint);margin-top:4px}
+
+/* ===== 命令工具 白名单 / 黑名单（v0.20.0） ===== */
+.pmode{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:2px}
+.pm{display:flex;gap:10px;align-items:flex-start;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;transition:.15s}
+.pm:hover{border-color:var(--border2)}
+.pm.on{border-color:var(--cyan);background:rgba(90,169,232,.07)}
+.pm input{appearance:none;-webkit-appearance:none;width:15px;height:15px;margin-top:2px;flex:none;border:1.5px solid var(--border2);border-radius:50%;cursor:pointer;transition:.15s}
+.pm input:checked{border-color:var(--cyan);background:var(--cyan);box-shadow:inset 0 0 0 3px var(--panel2)}
+.pm .pt{font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+.pm .pt .tag{font-size:9.5px;font-weight:700;letter-spacing:.4px;color:var(--on-accent);background:var(--amber);border-radius:5px;padding:1px 6px}
+.pm p{font-size:10.5px;color:var(--faint);line-height:1.6;margin-top:5px}
+.pm p b{color:var(--dim);font-weight:600}
+@media(max-width:640px){.pmode{grid-template-columns:1fr}}
+
+/* ===== 列表条目 ===== */
+.entry{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:8px}
+.entry:hover{border-color:var(--border2)}
+.entry .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.entry .topic{font-weight:700;font-size:12.5px;font-family:var(--mono);word-break:break-all}
+.entry .meta{font-size:10.5px;color:var(--faint);font-family:var(--mono)}
+.entry .content{font-size:11.5px;color:var(--dim);margin-top:7px;white-space:pre-wrap;word-break:break-all;max-height:72px;overflow:hidden;position:relative}
+.entry .content:after{content:"";position:absolute;left:0;right:0;bottom:0;height:18px;background:linear-gradient(transparent,var(--panel2))}
+.entry .acts{margin-left:auto;display:flex;gap:6px}
+.pending-box{border-color:rgba(232,98,58,.45);background:rgba(232,98,58,.05)}
+.kb-group{margin-bottom:18px}
+.kb-group:last-child{margin-bottom:0}
+.kb-title{font-size:11.5px;font-weight:800;color:var(--dim);margin-bottom:9px;display:flex;align-items:center;gap:8px;letter-spacing:.4px}
+.kb-title .cnt{font-size:10.5px;font-weight:700}
+
+/* ===== 知识库预设（v0.18.0）===== */
+.pre-bar{display:flex;flex-wrap:wrap;gap:8px}
+.pre{background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--border2);border-radius:8px;padding:8px 11px;min-width:186px;max-width:290px;cursor:pointer;transition:.15s;position:relative}
+.pre:hover{border-color:var(--border2)}
+.pre .r1{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pre .nm{font-size:12.5px;font-weight:700;word-break:break-all}
+.pre .r2{font-size:10.5px;color:var(--faint);font-family:var(--mono);margin-top:3px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pre.on{border-left-color:var(--amber);background:var(--panel3)}
+.pre.bad{border-left-color:var(--bad);border-color:rgba(232,98,58,.45)}
+.pre.pick{cursor:pointer;border-style:dashed;border-left-style:solid}
+.pre.pick:hover{border-color:var(--cyan);background:rgba(90,169,232,.06)}
+.pre.arm{border-color:var(--bad)!important;background:rgba(232,98,58,.1)}
+.pre input[type=text]{padding:3px 7px;font-size:12px}
+.pre .mini{display:flex;gap:5px;margin-top:6px}
+.pre .tagline{font-size:10px;color:var(--bad);font-weight:700;margin-top:5px}
+.pre-bar-hint{font-size:10.5px;color:var(--cyan);margin-top:9px;min-height:14px}
+.kb-alert{border:1px solid rgba(232,98,58,.42);background:rgba(232,98,58,.07);border-radius:9px;padding:11px 13px;margin-bottom:14px}
+.kb-alert .t{font-size:12.5px;font-weight:700;color:var(--bad);display:flex;gap:7px;align-items:flex-start}
+.kb-alert .m{font-size:11.5px;color:var(--dim);margin:5px 0 9px}
+.kb-alert code,.fp-mono{font-family:var(--mono);font-size:11px}
+.kb-alert .cons{font-size:11.5px;line-height:1.65;color:var(--dim);margin:0 0 9px;padding-left:11px;border-left:2px solid rgba(232,98,58,.35)}
+.kb-alert .cons b{color:var(--bad)}
+.kb-alert.soft{border-color:rgba(232,162,58,.4);background:rgba(232,162,58,.06)}
+.kb-alert.soft .t{color:var(--warn)}
+.inline-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:10px 12px;background:var(--panel2);border:1px dashed var(--border2);border-radius:8px}
+.inline-form input[type=text]{max-width:230px}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim);cursor:pointer}
+.chk input{width:14px;height:14px;accent-color:var(--amber);cursor:pointer}
+
+/* ===== 全屏提示弹窗（指纹变化）===== */
+.modal-mask{position:fixed;inset:0;z-index:200;background:var(--mask);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fade .2s ease}
+.modal-box{width:min(560px,100%);background:var(--panel);border:1px solid var(--border2);border-top:3px solid var(--amber);border-radius:12px;padding:22px 24px 18px;box-shadow:var(--shadow)}
+.modal-box h2{font-size:16px;font-weight:800;letter-spacing:.2px;margin-bottom:4px}
+.modal-box .sub{font-size:11.5px;color:var(--faint);margin-bottom:14px}
+.modal-kv{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font-size:12px;margin:14px 0}
+.modal-kv .k{color:var(--faint);font-size:11px;white-space:nowrap}
+.modal-kv .v{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.modal-box .why{font-size:11.5px;color:var(--dim);background:var(--panel2);border-radius:8px;padding:10px 12px;margin:12px 0 6px;border-left:2px solid var(--cyan)}
+.modal-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
+.modal-foot .btnrow{margin-left:auto}
+.fp-note{flex:1 1 260px;font-size:11.5px;color:var(--faint);line-height:1.6}
+
+/* ===== 知识条目详情 / 编辑（v0.21.11）=====
+   卡片里的 .content 是 72px 硬截断（看不全），这里给一个同款全屏子窗口看全文 + 就地改。 */
+.modal-box.wide{width:min(880px,100%);max-height:88vh;overflow:auto}
+.modal-box.wide h2{font-family:var(--mono);font-size:14.5px;word-break:break-all;padding-right:8px}
+.kbdet-sub{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.kbdet-ta{min-height:40vh;max-height:46vh;line-height:1.7;font-size:12px}
+.kbdet-note{font-size:11px;color:var(--faint);line-height:1.65;margin-top:12px;padding-left:10px;border-left:2px solid var(--border2)}
+.kbdet-state{font-size:11px;color:var(--dim);margin-top:8px;min-height:15px}
+.kbdet-state.ok{color:var(--ok)}
+.kbdet-state.err{color:var(--bad)}
+.entry .content{cursor:zoom-in}
+.entry .more{font-size:10.5px;color:var(--cyan);margin-top:5px;cursor:zoom-in;user-select:none}
+
+/* ===== 搜索 ===== */
+.search{width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:12.5px;margin-bottom:12px;outline:none;transition:.15s}
+.search:focus{border-color:var(--cyan)}
+
+/* ===== 事件流 ===== */
+.ev{display:flex;gap:10px;padding:8px 2px;border-bottom:1px dashed var(--border);align-items:baseline}
+.ev:last-child{border-bottom:none}
+.ev .ts{font-size:10.5px;color:var(--faint);font-family:var(--mono);flex-shrink:0;width:86px}
+.ev .bd{flex-shrink:0}
+.ev .pl{font-weight:700;font-size:12px;flex-shrink:0}
+.ev .dt{font-size:12px;color:var(--dim);word-break:break-all}
+.ev .dt b{color:var(--text);font-weight:600}
+
+/* ===== 工作流日志 ===== */
+.wf{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 2px;border-bottom:1px dashed var(--border)}
+.wf:last-child{border-bottom:none}
+.wf .ts{font-size:10.5px;color:var(--faint);font-family:var(--mono)}
+.wf .req{font-size:12.5px;font-weight:700;flex:1;min-width:140px;word-break:break-all}
+.wf .cost{font-size:10.5px;color:var(--faint);font-family:var(--mono)}
+.wf .detail{width:100%;font-size:11px;color:var(--faint);word-break:break-all;padding-left:2px}
+.wf .detail .k{color:var(--dim);font-family:var(--mono)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border2);color:var(--dim);margin:0 6px 6px 0}
+.chip b{color:var(--text);font-weight:700}
+
+/* ===== 提示词编辑器 ===== */
+.pr-wrap{display:grid;grid-template-columns:290px 1fr;gap:14px;align-items:start}
+@media(max-width:860px){.pr-wrap{grid-template-columns:1fr}}
+.pr-item{display:flex;align-items:center;gap:9px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);cursor:pointer;transition:.15s;margin-bottom:8px}
+.pr-item:last-child{margin-bottom:0}
+.pr-item:hover{border-color:var(--border2)}
+.pr-item.active{border-color:var(--amber);background:var(--panel3)}
+.pr-item .idx{font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:700;width:12px;flex-shrink:0}
+.pr-item .nm{flex:1;min-width:0;font-size:12.5px;font-weight:600}
+.pr-item .meta{font-size:10px;color:var(--faint);font-weight:400;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#pr_text{min-height:430px;font-size:12px;line-height:1.62}
+.pr-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
+.pr-foot .count{font-size:11px;color:var(--faint);font-family:var(--mono);margin-left:auto}
+.pr-warn{font-size:10.5px;color:var(--warn);background:rgba(232,162,58,.07);border:1px solid rgba(232,162,58,.28);border-radius:8px;padding:8px 11px;margin-top:12px;line-height:1.6}
+
+/* ===== 占位/空态 ===== */
+.empty{color:var(--faint);font-size:12px;text-align:center;padding:22px 10px}
+/* 设置页：顶部常驻保存条（v0.21.2）。z-index 低于 .tabs(49)，偏移有偏差时自动藏到页签下面，不会盖住内容 */
+.savebar{position:sticky;top:96px;z-index:40;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--bar-bg2);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:14px}
+.notice{display:none;background:rgba(76,195,138,.08);border:1px solid rgba(76,195,138,.35);color:var(--ok);border-radius:8px;padding:9px 12px;font-size:12px;margin-top:12px;white-space:pre-line}
+.notice.err{background:rgba(232,98,58,.08);border-color:rgba(232,98,58,.4);color:var(--bad)}
+.notice.show{display:block}
+/* 持续性状态横幅（不自动消失）：用于工作流被停用等需要长期可见的提示 */
+.banner{display:none;gap:9px;align-items:flex-start;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.55;margin-top:12px}
+.banner.show{display:flex}
+.banner.warn{background:rgba(232,160,58,.09);border:1px solid rgba(232,160,58,.42);color:#e8a03a}
+.banner.bad{background:rgba(232,98,58,.08);border:1px solid rgba(232,98,58,.4);color:var(--bad)}
+.banner .bi{font-weight:700;flex:0 0 auto}
+.banner .bx{opacity:.86}
+
+/* ===== 服务器面板 ===== */
+.kv{display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px dashed var(--border);font-size:12.5px}
+.kv:last-child{border-bottom:none}
+.kv .k{color:var(--faint)}
+.kv .v{font-family:var(--mono);font-weight:600;font-size:12px;text-align:right;word-break:break-all}
+.ply{display:inline-flex;align-items:center;gap:5px;font-size:11px;background:var(--panel3);border:1px solid var(--border2);border-radius:99px;padding:2px 10px;margin:0 5px 5px 0;color:var(--dim)}
+.ply::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.bc-modes{display:flex;gap:6px;margin-bottom:10px}
+.bc-mode{font-size:11.5px;font-weight:600;padding:5px 13px;border-radius:8px;border:1px solid var(--border2);color:var(--faint);transition:.15s}
+.bc-mode.active{background:var(--cyan);border-color:var(--cyan);color:#fff}
+.bc-out{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--dim);font-family:var(--mono);margin-top:10px;min-height:38px;word-break:break-all}
+.progress{height:6px;background:var(--panel3);border-radius:99px;overflow:hidden;margin-top:8px}
+.progress i{display:block;height:100%;width:0;background:var(--amber);border-radius:99px;transition:width .5s}
+.progress i.g{background:var(--ok)}.progress i.b{background:var(--bad)}
+details{font-size:12.5px}
+summary{color:var(--cyan);cursor:pointer;font-weight:600;padding:4px 0;user-select:none}
+summary:hover{text-decoration:underline}
+@media(max-width:720px){.topbar{padding:10px 14px}.tabs{padding:0 10px;top:51px}.brand-sub{display:none}main{padding:14px}.savebar{top:90px}.savebar .notice{margin-left:0!important;flex:1 1 100%}}
+
+/* ===== 设置页：分区标题 & 开关网格 ===== */
+.set-sec{display:flex;align-items:center;gap:10px;font-size:11px;font-weight:600;letter-spacing:.08em;color:var(--faint);margin:26px 0 10px}
+.set-sec::after{content:"";flex:1;height:1px;background:var(--border)}
+#page_settings > .set-sec:first-child{margin-top:2px}
+.sw-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;align-items:start}
+.sw-grid .sw-row{padding:10px 2px}
+/* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
+/* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
+#sd_box.dimmed input{pointer-events:none;color:var(--dim);opacity:1;
+  -webkit-text-fill-color:var(--dim);background:var(--panel3)}
+/* ===== v0.21.16：异地 RCON 模式 → 不可用区块的「亚克力磨砂 + 文字告知」 =====
+   开启异地模式后，所有依赖服务端本地文件的能力（事件播报 / 聊天桥接 / 物品词典 /
+   知识库 / 版本探测 / 进程指标）在后端按设计禁用。前端必须让主人一眼看出「这儿现在
+   用不了、为什么用不了」，不能让开关维持「好像还能开」的假象。
+   做法：容器加 .rmt-off —— 内容整体模糊 + 停用交互，上面盖一层 backdrop-filter 磨砂，
+   再放一枚居中的亚克力提示牌；牌子本身不参与模糊，字始终清晰。
+   行级用 .rmt-off-row（只有那一行不可用，如 LLM 工具里的 物品ID搜索 / 配方查询 / Mod 列表）。 */
+:root{
+  --rmt-veil:rgba(10,12,16,.44);        /* 磨砂层的底色（深色：压暗） */
+  --rmt-acr:rgba(26,30,38,.84);         /* 亚克力提示牌底 */
+  --rmt-acr-bd:rgba(255,255,255,.14);   /* 亚克力提示牌描边（上缘的「玻璃高光」感） */
+}
+:root[data-theme="light"]{
+  --rmt-veil:rgba(244,245,247,.52);     /* 浅色：提亮，不能糊成一团黑 */
+  --rmt-acr:rgba(255,255,255,.9);
+  --rmt-acr-bd:rgba(16,24,40,.14);
+}
+.rmt-off{position:relative}
+.rmt-off>*:not(.rmt-badge){filter:blur(2.4px);opacity:.4;pointer-events:none;user-select:none}
+.rmt-off::after{content:"";position:absolute;inset:-3px;z-index:2;border-radius:12px;pointer-events:none;
+  background:var(--rmt-veil);border:1px solid var(--border2);
+  backdrop-filter:blur(3px) saturate(.85);-webkit-backdrop-filter:blur(3px) saturate(.85)}
+/* 提示牌纵向位置：矮块（目录区）居中；高卡片（播报 / 桥接这类长得要滚屏的）
+   靠上锚定在标题下方 —— 否则滚到卡片上半截时看不见「为什么不可用」。 */
+.rmt-badge{position:absolute;z-index:3;top:min(50%,104px);left:50%;transform:translate(-50%,-50%);
+  display:flex;align-items:center;gap:10px;max-width:min(94%,560px);padding:10px 15px;border-radius:12px;
+  background:var(--rmt-acr);border:1px solid var(--rmt-acr-bd);box-shadow:var(--shadow);
+  backdrop-filter:blur(14px) saturate(1.5);-webkit-backdrop-filter:blur(14px) saturate(1.5)}
+.rmt-badge .ri{width:18px;height:18px;flex:0 0 auto;border-radius:6px;background:var(--amber);color:var(--on-accent);
+  font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+.rmt-badge b{display:block;font-size:12.5px;font-weight:700;letter-spacing:.2px}
+.rmt-badge i{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px}
+.rmt-off-row{position:relative;border-radius:8px}
+.rmt-off-row .sw-t,.rmt-off-row .sw{filter:blur(1.6px);opacity:.42;pointer-events:none}
+.rmt-off-row::after{content:"";position:absolute;inset:0;z-index:2;border-radius:8px;pointer-events:none;
+  background:var(--rmt-veil);
+  backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
+.rmt-tag{position:relative;z-index:3;flex:0 0 auto;font-size:10px;font-weight:700;color:var(--amber);white-space:nowrap;
+  background:var(--rmt-acr);border:1px solid var(--rmt-acr-bd);border-radius:99px;padding:3px 9px;
+  backdrop-filter:blur(10px) saturate(1.4);-webkit-backdrop-filter:blur(10px) saturate(1.4)}
+/* v0.21.17：**文字型区块**（服务器目录：一个输入框 + 一段长提示）不能套硬磨砂。
+   可读性本身就是这一块的全部信息，再模糊 / 再降透明度就是「让主人看不清」。
+   实测旧写法叠了三层淡化：.dimmed(.55) × .rmt-off(.4) = 有效不透明度仅 0.22，
+   外加 blur(2.4px) 与 .52 的磨砂层 —— 字当然糊成一团。
+   这里改用「软标记」：文字保持满对比度、不做模糊，靠 ① 虚线框圈出区域
+   ② 标题行右侧一枚亚克力小标签 ③ 提示行换成琥珀色的「为什么不可用」来传达状态。 */
+.rmt-off-soft{position:relative}
+.rmt-off-soft>*:not(.rmt-tag){pointer-events:none;user-select:none}
+.rmt-off-soft::after{content:"";position:absolute;inset:-4px;z-index:2;border-radius:12px;
+  pointer-events:none;border:1px dashed var(--border2)}
+/* 标签落在标题行右上角：那一行右侧本来就是空的，不会盖住输入框与提示 */
+.rmt-off-soft>.rmt-tag{position:absolute;top:0;right:0;left:auto;transform:translateY(-50%)}
+.rmt-off-soft #sd_hint{color:var(--warn)}
+/* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
+   不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
+   公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
+   公告容器 pointer-events:none、只有面板 pointer-events:auto —— 顶部页签照样能点，
+   主人不会被「关」在封禁页里出不来。 */
+.rmt-seal>*:not(.rmt-seal-card){filter:blur(3px);opacity:.3;pointer-events:none;user-select:none}
+.rmt-seal-card{position:fixed;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;
+  padding:24px;pointer-events:none}
+.rmt-seal-panel{display:flex;gap:14px;align-items:flex-start;max-width:min(92%,560px);padding:20px 22px;
+  border-radius:16px;background:var(--rmt-acr);border:1px solid var(--rmt-acr-bd);box-shadow:var(--shadow);
+  backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);pointer-events:auto}
+.rmt-seal-panel .ri{width:26px;height:26px;flex:0 0 auto;border-radius:8px;background:var(--amber);color:var(--on-accent);
+  font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+.rmt-seal-panel b{display:block;font-size:15px;font-weight:700;letter-spacing:.2px}
+.rmt-seal-panel i{display:block;font-style:normal;font-size:12.5px;line-height:1.85;color:var(--dim);margin-top:8px}
+.rmt-seal-panel .btn{margin-top:14px}
+@media(max-width:640px){.sw-grid{grid-template-columns:1fr}}
+/* 设置页：多 Agent 开关的动态说明（随勾选状态变化） */
+.cv-tip{position:relative;border-left:2px solid var(--border2);padding:2px 0 2px 10px;margin-top:12px;font-size:11px;line-height:1.7;color:var(--faint)}
+.cv-tip code{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.cv-tip.ok{color:var(--ok)}
+.cv-tip.warn{border-left-color:#e8a03a;color:#c98a2e}
+.cv-tip.bad{border-left-color:var(--bad);color:var(--bad)}
+.cv-tip b{color:inherit}
+.cv-tip .pend{display:inline-block;margin-top:3px;font-size:10px;color:var(--amber,#e8a03a);border:1px solid rgba(232,160,58,.42);border-radius:99px;padding:0 7px}
+
+/* ===== 设置页：会话目标选择器 ===== */
+.tgt-list{margin-bottom:7px}
+.tgt-list:empty::after{content:"（未设置）";font-size:11px;color:var(--faint)}
+.tgt{background:var(--panel2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;overflow:hidden}
+.tgt:hover{border-color:var(--border2)}
+.tgt.open{border-color:var(--border2)}
+.tgt-hd{display:flex;align-items:center;gap:8px;padding:6px 9px}
+.tgt.clickable .tgt-hd{cursor:pointer}
+.tgt.clickable .tgt-hd:hover{background:var(--hover)}
+.tgt .t{display:flex;align-items:center;gap:7px;min-width:0;flex:1;font-size:12px}
+.tgt .t b{font-size:10.5px;font-weight:700;color:var(--dim);border:1px solid var(--border2);border-radius:5px;padding:1px 6px;flex-shrink:0}
+.tgt .t code{font-family:var(--mono);font-size:11.5px;color:var(--text);word-break:break-all}
+.tgt .t .p{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-shrink:0}
+.tgt .sum{font-size:10.5px;color:var(--dim);border:1px solid var(--border2);border-radius:5px;padding:1px 6px;flex-shrink:0;white-space:nowrap}
+.tgt .sum.mute{color:var(--bad);border-color:rgba(232,98,58,.4)}
+.tgt .caret{color:var(--faint);font-size:10px;flex-shrink:0;transition:transform .16s}
+.tgt.open .caret{transform:rotate(90deg)}
+.tgt .x{color:var(--faint);font-size:13px;line-height:1;padding:2px 6px;border-radius:6px;flex-shrink:0}
+.tgt .x:hover{color:var(--bad);background:rgba(232,98,58,.1)}
+.tgt-sub{display:none;border-top:1px solid var(--border);padding:8px 10px 9px}
+.tgt.open .tgt-sub{display:block}
+.tgt-sub .ev{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;cursor:pointer;color:var(--text)}
+.tgt-sub .ev:hover .lb{color:var(--amber)}
+.tgt-sub .ev input{accent-color:var(--amber);width:13px;height:13px;flex-shrink:0}
+.tgt-sub .ev .lb{transition:color .12s}
+.tgt-sub .ev .g{font-size:10px;color:var(--warn);border:1px solid rgba(232,162,58,.4);border-radius:5px;padding:0 5px;flex-shrink:0}
+.tgt-sub .ev.gated{color:var(--faint)}
+.tgt-sub .ev.gated input{accent-color:var(--faint)}
+.tgt-sub .warn{font-size:11px;line-height:1.55;color:var(--warn);background:rgba(232,162,58,.08);border:1px solid rgba(232,162,58,.25);border-radius:7px;padding:5px 8px;margin-bottom:7px}
+.tgt-sub .bar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:7px;padding-top:7px;border-top:1px dashed var(--border2);font-size:11px;color:var(--faint)}
+.tgt-sub .bar button{font-size:11px;color:var(--dim);padding:1px 5px;border-radius:5px}
+.tgt-sub .bar button:hover{color:var(--amber);background:rgba(232,179,58,.1)}
+.tgt-add{display:grid;grid-template-columns:1fr 84px 1.15fr auto;gap:6px;align-items:center}
+.tgt-add select,.tgt-add input{padding:6px 9px;font-size:12px}
+@media(max-width:560px){.tgt-add{grid-template-columns:1fr 84px}.tgt-add button{grid-column:1/-1}}
+</style>
+<script>
+/* 主题引导（v0.21.13）：必须在首次绘制前跑，否则刷新时会闪一下深色。
+   优先级：localStorage 里主人手动选的 → 系统 prefers-color-scheme → 深色。 */
+try{
+  var _th = localStorage.getItem("mcctrl_theme");
+  if(_th !== "light" && _th !== "dark"){
+    _th = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  }
+  document.documentElement.dataset.theme = _th;
+}catch(e){}
+</script>
+</head>
+<body>
+<!-- ===== 顶栏 ===== -->
+<div class="topbar">
+  <div class="brand">
+    <img class="brand-mark" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFBgoGBgUFBgwICQcKDgwPDg4MDQ0PERYTDxAVEQ0NExoTFRcYGRkZDxIbHRsYHRYYGRj/2wBDAQQEBAYFBgsGBgsYEA0QGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBj/wAARCABgAGADASIAAhEBAxEB/8QAHAAAAgMBAQEBAAAAAAAAAAAABQYDBAcIAQAC/8QAOhAAAgEDAgQDBgQEBgMBAAAAAQIDBAURAAYSITFBBxNRFCIyQmFxYoGRoRUjUrEIJDOCosFyssLh/8QAGgEAAQUBAAAAAAAAAAAAAAAABAECAwUGAP/EAC0RAAIBAwMBBQgDAAAAAAAAAAECAAMEERIhMUETImGh8AUUI1FxgZHBMrHx/9oADAMBAAIRAxEAPwDrmippIqdnqSnnyuZJSpyoPQAE9gAB+WqKoZbAZH+O4zrn/wAJGAA/KMAat3SuporDWSLUxlhCwXgYE5IwMDP10Kv1V5d4sVNbRS1BhmaQiWQLHGBGUVmYAkfEegJ+3XQAGZqSG6CMcjRwwPNIQkSKWY9lUDJ/bS8Yy9tjaoAWWtqomkB9WkXC/koC/lr83GCuuSU1rfcBklrZ1geK3RLEipzZ/ebiY+6pGcjr01er4UsUkUTtVVCRVkeXkcyOQz9cntz/ACGnacDMVM5wRvLsKCO/VKYA9ojSYcupX3G/+P117HEYtwSrj3Z4FcH8SEqf2ZNU6+6xuaepo6aZpqeTjCkgeYpGHT8x0+oXRG55qLBFe7U5lNN/mY+AZ8xMEOuPXhzy9VA66TEiqBqZGsYzLYhPpoXXSRU+67UkkiKZYqhMN35I3Xt8OoDcbjOgZanhVhkGIAZH30HraWee/wBulfjkIE3EzHPyADShYStsRu7QjPWwPDfqVShbzcRBFyJcwxkgnpzOVOr236yK62hlYmQx+4eMc3jIyjH6leR+obS/aUWcVsqhgfa5Fww9MKCPoQAR99WLAwtd8xnhhWc0sgzyCSEPG3+1mA+xbXETq1BFpkpyIGrZK2n3JErzMrwiS38Se6SF96M/muf11BUQCVHSYcYcEMG55B650d3fS+RuWd+EghqWp6Huxjbt6LqrLBntz05TiWNqyvSUj5QfdESKxVLuzoqoCSgyeo7anqIM3FpipxFJTjIOAOJ5B/2OupbpCJLFVIyFlKYIHoSMn8uuspv3iNUbnutXtjww2RJvG+AwrPcXJ9goWTmQxyFdg2RkkADOCeepKdNqhwsZd3Apjfwm7bUpfaN6JMVylJSvJnHIM7BR+yvoxvmgMlhmr41yYVWRwB/QwYH9tco7Z8aL/wCFm8I5fFnbNqqv4hKzJPY3WKqplikaMsUTCSx8XmLgtklGHPGuuNrbu2p4g7TF42xdqe622cGJ2jPvISOaOh5o2D0IB1M9AoMGZ24u2Nx2w4iKVaHecKliYKmkKAduNXLA/mCf0GmCkNxtUzVFrCSK54paSQ4SQ/1Kfkf69D39dBprdUsKagLstZSSyUZk7h1UPG/1yI0P1DEaZ7XMlbRJOF4G5q8f9Dj4l/I/qMHvofEsa9VXXB3EC0VRSC6tbghpfMJenp5vddR1aPB68PMgjIK9/dOvLsfZLpTmMK1R7PKIUJ5s7MgHL0GCTy5AHTW1FBP5Zmhjk8tg6cag8LDoRnofqNDaeiSu35M7RoVpYo4ixGSBzdhn6lk/TSkQZa/Q8CKpscVJcaeWkra2kaYLTSSxSFlLgYjZo2ypyQVPL5hzHXUoFTHf2td5hSM11P5cVVAD5UzIT2OTG+HzwkkHHJj0DPfbP5YcBHFNMMBgPgP3+nUajoq1aqnojURx+1SGSCQgj3ZFXLAd8MBxfbGm7jYx7VQQKinYxWrpKu7GoqLg/mOKCKKUA4xIkrg8h9VPPVyphw7cu+pa+3T038ZkICJUzQrAygE4Yrxdfxu+pakxmpliUjjQBiPQHOP7HSQ21qgbCKG4Nh015p6qnvl4ulzp5YiY6eOpNNTOCuVPBFjiB5fEzaY/BKy09F4U0NhWKOkktbGLEUSotRGSWinIHVmTHEevEr+mvqaVY4Ut0mFUN/lHPQZOTCT2581+/D6ZO7C8mkt9VEYx59NUSQBuYPksxljH1ALuB6Yb66no1mXbMB9oo3Zgj+QO/rxnGXi7TX65brqKKosNVLb9uipoYZRSkqwWeSSSTOD8RPr0Ua0L/Cdt2a3b8u/n0FbbyaWOriYs8IlXPA6FTykT3kbBzwnBBHEc7ZX7Vqk8RrlcE26t1tFbxOYmqIkIeRMP7rsMjOT/ALz6adLXaIKe6RXFKf2V46MUYhXhI4Mqw5jny4eH9/TRr3xZey0bfOJdV7cW600GSVH2PWUt1UktHMt/pVz5ZQzgdijZR/7ofowPy6tVFAscovdmUyxTorzU8fPzVx7roP6wO3zDl1A0fZVdCjqGVhggjII9DqrbbdTWm2pQUYdaeMt5aO3FwAknhBPyjOAOwwNB4BlUKzAAfL+oFrb9bLZt+W81lbTxUcacfmyPwq3YDOOpPIDBOeWM8tc83/xt8TNt2273wbVpbBbDUlIZa+ilqaquqZEeSKJELII0CIvE7gYBBAOQNdNNZqdr1DXwsIiJfMljKBkkbGOLHyv+Ide+e3IvidtvdW/dzyVVPe5agT3V4KK1mD3IeObgJ908zwoMsQThcZwANT2y09XxDgQ6ztzdswGwAyYhW/8AxJ+KFx3jDT1W3dv3GqrqhY/ZIaWSilmdiFAWWOUMGPIAnOt88JfFa1bv32u35IrnbbzGZDU2a8hfaKZ44mBZHCr5oweE8QDDCk5HPWNWbwV3fb/F/alHfLMRCbtTSedG4PCqyB2PPnjCntro7xy8MNp3LaVTviurZrPfbNH7TQ3ugTFWkqn+VEAP9bicqqoeZLAAjOibilQbARvoRHXVMWr9nnkR3vI4pKKAZ/mVKsceiAv/AHUfroLGolq66qwMNL5SnHURjh/9uPS5tndO7prVb4fEOzR2O/ilSn9oDrJSSVEgBLMy8omCgFo2wMkhScjTTduC3QpRUAUsXEEAbv6sfsAzH/8AdVLKQcSa0fvYgG4SCOh96NZEZ0jdWwQVZwp6/fRWxUl/RIbpSViT05kkjlpZ2JaRA5UEOPmHDy4hk8wToRc4zJZ6kKDxCMuuPVfeH7jU3hfu6krrle9qVDgT0VxkaCT5XWYtKI+fzDJwO46cwdKi53lh7SJWnkD/ACPyyzcXl8jIeZ/pQf8AeiMLHXgg59NSpHjUkz1SorDaTL8OvdfAHGACftrxgeHoRpYJI2k4TnPPSVFs57TuKrvVguSRtUl3ko66LzIuJ34zwMpV194k/N104TA6HTeeSccQAPILzLff0GmncYMNtyyghWxnYz9w0NPNdqO5VoPm0ZlMMaHiUFxw8eSAQ3DxDHT3j10sXRmu26kue4oCY7WyyW+1xMZStQwY8ZC8pJuErw4yI+I4JJ4hJVnctGtRUTX6haBPfYCm8kxLjmC/v5PU9AT6apWe53OVqipp7ZQ0kzsBJVzVDzSOxGCuSoIIwoIBAzy7aQHSNKx62pJ18wzSRLZbLPcL4YUuFSjGeNiHSmVzkpnox+EH1woGQBlbi4zc4ilOKdFhwtORj2eHoq47OxGT6BMdtEqpRAn8QuVS9XLHzRVXhUMTgcCZPvEkAEknn20Avl3h2xtesvNykjExw788gyNhVQd8DkPsCdcBLG1o6Tk8y0rAjpkemsZsbEeM27tmVkrU63CAindGKuroAyOD2OG4hjpw60ra9/o9w7eSvoKyKrRT5ck0XIFh3x1Gcg4PTOsr8ZIK7b2+bBvm1JiTjEMrduNOa5+jIWU/QaJtk1M1PjIPlv8AqWV0QFFQbgHy4/cd/D3/ABDS0Mx234mxSCoppGga7wxFsFTg+egHbHxr+Y766Ettztt4tsdwtNfTV1JIMpPTSCRG/Ma4s35UUNfQw76ssQe3XdDDUqOtPU8OCr+hP9x9RpV2tuy/7XlE9guNZRSkkk00hXiP4l6N9iNG+59v3k2PUeI5meuLNVbCn10nf1bbaK4oi1kPHwElGV2RlJ64ZSCP119R2+lofMNMkgMrcTl5XkJPPuxOOp5DQugXdUVDA8s9FXccaM3nKYnBKgnmox/x/PVl03NMSFktlIp6FVeZh+pA/Y6rc9IBo8R+YSZOLkBn7aU9zb32vtaJ/wCJV/mVI6UdIhnmJ9OFfh+7Y1kPjjufcO3dz0llG5bi0U9EJ3jQiFGJkZfkAyML9dZFs+l3DuCpFtsiM5EjPLJj3YgWJyzdv7nRKWjFBUY4EsrW0DAMzbeE1yt8Qbj4j1gtduSqs9tOXmm8s8SRg44jJnAOcABQST7oPXWi26gVKemLwtBTUyBaWmc80AGA7+r47dsnuTgZsvYcG2bPBCf5kiniM0vJeM5y3PqeZwe3QAZOTV3q6JUNuhWoq5sjzkgXkRj4WY4AB788kcuhI0NgZ2lixXIRB68ZV88Vs4r3OKWLJgDcuI45yn6YyF+mT3GMU3jvykvm6RTxw1k9lpo2ETwwMwmlJA4x6rjIB+pPfTv4g39rTtstXunm1TeTBRxNkfidifi4R2xjJXkdYLG9VbqkLbOKopJXA9ldvejJPLB9Pr+vroqhblh2h4k2Qm023wa8HN17L2Gb7da6Sa6XBVmnsRVQixY5KW6+fg/QfL15g/u3a1o3tsmrtVLUlZJAGiDcnSRTkYDcw2QRz9SDrajpcvuz6O7TNW0kvsVe3NpFXKTHtxr3P4gQfv00NVqNUc1ODKi0v9Hcqnu+vLznJ58MN72GimO2ZI9yWWuASpt1RBJTySAnupHCHU9HVsgj8tVtveH132ruq1XjxBsdxorB53GVhCTSSlTxCM4bAzgZ55IzgenTtmjv+2LnJBd7DNW2+d+N56NPafKc9XAA4uE9SCuR1GcnTjfxYH2vVLuM0YtLR/z/AGshY+Ht16HPTHPOMc9F+/1WOW5OxONz+vKR3VZU7ibjoc+vxFOn8a/D6op/ONzq4s/K9FKT/wAQdUrr49eHttpDMtXW1LYOI0pXQk+nvY1z5dLlatv70uFTtusprhZWHDG90oVkYjHowySD0bAJ7jRjZu37Ld3g3PcFSoQszvTvEIYy4OArchxAfEQuF5gc/ewx6aINRz6+0HtrY1mCJuYbvlur/HDdlBuOaxV9qtNPAYYvNkCNVIW4wc9EXmeY4ie3rrTLJtRbJZFt9smp7dEqngiooQAG9Wdssx9SME+uh43GwXiaupokUdmRQo1PFuMzAJDXCZmGQIP5jEH0CgnsdDNVdwFJ2HAmhFmyLpBAEnqrfLQsJqmlp7g+c8YlLS/cCUn9m1Qut+p6ajWRqg06BTNLJKhHkxKfeYgjr8o9SeWcat1i3KC3PcKyCShpshRLVL/Mlc8lWOL4mYn+rhHfSvuPwtvF+2JXJX1NVR3CqK1EJEx/1V+FZcfL8oQYC82+InHAjIDcTlq00GAwJmF7u3m+5N41lxq+KKljjWOkhbl5aZJ5/iPU/p20re1S1rcKl4oD0wDl/wA9RyWqsSaWOu8tZY3McqyVQ4kZeRU57g5GNfmKhrWI9nrIzGPljrR/0daNKGF0AjT9YC1xk5M//9k=" alt="辛缇拉" draggable="false">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="brand-name">Minecraft Server 智控台</span>
+        <span class="ver" id="ver">v?.?.?</span>
+      </div>
+      <div class="brand-sub">RCON 控制 · 知识库 · 多Agent 工作流 · 提示词 · 事件播报</div>
+    </div>
+  </div>
+  <div class="top-right">
+    <span class="conn"><span class="p" id="conn_dot"></span><span id="conn_txt">连接中…</span></span>
+    <span class="mode-tag" id="mode_tag">模式 <b>…</b></span>
+    <button class="themebtn" id="themebtn" onclick="toggleTheme()" title="切换浅色 / 深色"><span class="ti" id="theme_ico">☀</span><span id="theme_txt">浅色</span></button>
+    <button class="winbtn" id="winbtn" style="display:none" onclick="openStandalone()">⧉ 新窗口打开</button>
+  </div>
+</div>
+
+<!-- ===== Tab 导航 ===== -->
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-page="overview"><span class="ico">◈</span>概览</button>
+  <button class="tab" data-page="server"><span class="ico">⬢</span>服务器</button>
+  <button class="tab" data-page="knowledge"><span class="ico">▤</span>知识库<span class="cnt" id="tab_kb_cnt">-</span></button>
+  <button class="tab" data-page="workflow"><span class="ico">⚙</span>工作流</button>
+  <button class="tab" data-page="prompts"><span class="ico">✎</span>提示词</button>
+  <button class="tab" data-page="settings"><span class="ico">⚑</span>设置</button>
+</nav>
+
+<main>
+
+<!-- ================= 概览 ================= -->
+<div class="page active" id="page_overview">
+  <div class="grid g4" id="ov_modules"></div>
+  <div style="height:14px"></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot"></span>服务器连接 <span class="right"><button id="ov_rcon_btn">测试连接</button></span></h3>
+      <div id="ov_rcon"><span class="muted">未测试</span></div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span>最近事件 <span class="right"><button onclick="goTab('server')">查看全部 →</button></span></h3>
+      <div id="ov_events"><span class="muted">暂无事件</span></div>
+    </div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--faint)"></span>插件信息</h3>
+    <div id="ov_plugin" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+  </div>
+</div>
+
+<!-- ================= 服务器 ================= -->
+<div class="page" id="page_server">
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
+      <div id="sv_status"><span class="muted">加载中…</span></div>
+      <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--amber)"></span>在线玩家 <span class="right" id="sv_online_tag"></span></h3>
+      <div id="sv_players"><span class="muted">加载中…</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--cyan)"></span>广播控制台</h3>
+    <div class="bc-modes" id="bc_modes">
+      <button class="bc-mode active" data-mode="chat">聊天栏</button>
+      <button class="bc-mode" data-mode="title">全屏标题</button>
+      <button class="bc-mode" data-mode="task">模拟任务输出</button>
+    </div>
+    <div class="frow"><input type="text" id="bc_msg" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
+    <div class="bc-out" id="bc_out">广播结果会显示在这里</div>
+    <div class="hint" style="margin-top:8px">颜色跟随上方「文本颜色」设置：聊天栏=普通喊话色 · 全屏标题=全屏喊话色 · 模拟任务输出=任务输出色</div>
+  </div>
+  <div class="card" id="srv_color_card">
+    <h3><span class="dot" style="background:var(--ok)"></span>文本颜色 <span class="right muted" style="font-weight:normal">保存后即时生效</span></h3>
+    <div class="sw-row" style="border-top:none">
+      <div class="sw-t"><b>启用渐变色</b><span>MC 1.16+ 逐字符渐变 · 支持多锚点（可添加多个颜色）· 空格不参与渐变</span></div>
+      <label class="sw"><input type="checkbox" id="clr_grad_en"><span class="sl"></span></label>
+    </div>
+    <div class="frow grad-wrap" id="grad_fmt_row" style="display:none;margin-bottom:10px">
+      <span class="muted" style="flex:0 0 auto;font-size:12px">输出格式</span>
+      <select id="clr_grad_fmt" style="flex:1"></select>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">全屏喊话 <span class="muted">title</span></div>
+        <div class="frow">
+          <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
+        </div>
+        <div class="grad-wrap" id="grad_block_title" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_title"></div>
+          <button class="btn sm" data-add="title" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">普通喊话 <span class="muted">chat</span></div>
+        <div class="frow">
+          <input type="color" id="clr_say" value="#ffffff" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <input type="text" id="clr_say_txt" placeholder="#FFFFFF 或 255,255,255" value="#ffffff">
+        </div>
+        <div class="grad-wrap" id="grad_block_say" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_say"></div>
+          <button class="btn sm" data-add="say" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">任务输出 <span class="muted">反馈</span></div>
+        <div class="frow">
+          <input type="color" id="clr_fb" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <input type="text" id="clr_fb_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
+        </div>
+        <div class="grad-wrap" id="grad_block_fb" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_fb"></div>
+          <button class="btn sm" data-add="fb" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+    </div>
+    <div class="btnrow" style="margin-top:10px">
+      <button class="btn primary" id="clr_save">保存颜色</button>
+      <button class="btn sm" id="clr_reset">恢复默认</button>
+      <span class="muted">取色器点选 / 文本框填 hex 或 RGB，保存后立即生效；渐变开启时按锚点逐字符渐变</span>
+    </div>
+    <div class="notice" id="clr_notice"></div>
+  </div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--faint)"></span>服务器事件流 <span class="right"><button id="sv_ev_refresh">刷新</button></span></h3>
+    <div id="sv_events"><span class="muted">加载中…</span></div>
+  </div>
+</div>
+
+<!-- ================= 知识库 ================= -->
+<div class="page" id="page_knowledge">
+  <div id="kb_alert"></div>
+  <div class="card" id="kb_preset_card">
+    <h3><span class="dot" style="background:var(--cyan)"></span>知识库预设 · 一个预设服务一个服务端<span class="right" id="kb_srv_fp"></span></h3>
+    <div class="pre-bar" id="kb_presets"><span class="muted">加载中…</span></div>
+    <div class="pre-bar-hint" id="kb_preset_hint"></div>
+    <div class="btnrow" id="kb_preset_acts" style="margin-top:12px">
+      <button class="btn sm" id="pre_new">＋ 新建预设</button>
+      <button class="btn sm" id="pre_copy">复制到…</button>
+      <button class="btn sm" id="pre_move">移动到…</button>
+      <button class="btn sm" id="pre_rename">重命名</button>
+      <button class="btn sm" id="pre_bind">绑定/解绑指纹</button>
+      <button class="btn sm danger" id="pre_del">删除预设</button>
+      <span class="muted" style="margin-left:auto" id="kb_notice_sw"></span>
+    </div>
+    <div class="inline-form" id="kb_new_form" style="display:none">
+      <input type="text" id="np_name" placeholder="预设名称，如：MyPack 1.20.1">
+      <label class="chk"><input type="checkbox" id="np_copy"> 从当前预设复制条目</label>
+      <button class="btn primary sm" id="np_ok">创建</button>
+      <button class="btn sm" id="np_cancel">取消</button>
+      <span class="muted">新预设不预设指纹，首次写入知识时自动绑定</span>
+    </div>
+    <div class="notice" id="kb_preset_notice"></div>
+  </div>
+  <div class="grid g4" id="kb_stats"></div>
+  <div style="height:14px"></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot"></span>条目管理 <span class="right" id="kb_fingerprint"></span></h3>
+      <input type="text" class="search" id="kb_search" placeholder="搜索主题或内容…（支持中文/英文/ID 片段）">
+      <div id="kb_list"><span class="muted">加载中…</span></div>
+    </div>
+    <div>
+      <div class="card" id="pending_card" style="display:none">
+        <h3><span class="dot" style="background:var(--bad)"></span>待审批（自动应用已关闭） <span class="right" id="pend_cnt"></span></h3>
+        <div id="pending_list"></div>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--amber)"></span>新增知识条目</h3>
+        <label class="f">主题 topic</label>
+        <input type="text" id="new_topic" placeholder="如：tac 满改 hk416 nbt 方案">
+        <label class="f">内容 content（含物品ID / NBT格式 / 命令示例 / 注意事项）</label>
+        <textarea id="new_content"></textarea>
+        <div class="btnrow" style="margin-top:8px">
+          <button class="btn primary" id="btn_add">写入知识库</button>
+          <button class="btn danger sm" id="btn_clear">清空全部</button>
+          <button class="btn sm" id="btn_rescan">重建词典与指纹</button>
+        </div>
+        <div class="notice" id="kb_notice"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 工作流 ================= -->
+<div class="page" id="page_workflow">
+  <div class="grid g3" id="wf_stats"></div>
+  <div style="height:14px"></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot"></span>流水线开关</h3>
+      <div class="banner" id="wf_banner"></div>
+      <div class="sw-row">
+        <div class="sw-t"><b>总开关 agent_workflow_enabled</b><span>复杂任务自动走 分类→模板判断→前瞻建库→实现→纠错</span></div>
+        <label class="sw"><input type="checkbox" id="sw_wf_enabled"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>工具开关 enable_mc_workflow</b><span>mc_workflow 工具是否对 LLM 可用</span></div>
+        <label class="sw"><input type="checkbox" id="sw_wf_tool"><span class="sl"></span></label>
+      </div>
+      <div class="notice" id="wf_notice"></div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span>Agent 配置</h3>
+      <div class="muted" id="wf_main" style="margin-bottom:8px">-</div>
+      <div id="wf_agents"></div>
+      <div class="muted" id="wf_rounds" style="margin-top:6px">-</div>
+    </div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--amber)"></span>最近任务日志 <span class="right"><button onclick="loadWorkflow(true)">刷新</button></span></h3>
+    <div id="wf_logs"><span class="muted">加载中…</span></div>
+  </div>
+</div>
+
+<!-- ================= 提示词 ================= -->
+<div class="page" id="page_prompts">
+  <div class="pr-wrap">
+    <div class="card">
+      <h3><span class="dot"></span>Agent 角色 <span class="right" id="pr_sum">-</span></h3>
+      <div id="pr_list"><span class="muted">加载中…</span></div>
+      <div class="hint" style="margin-top:10px">流水线顺序：分类 → 判断 → 建库 → 实现 → 纠错。点选角色后在右侧查看 / 编辑它的系统提示词。</div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span><span id="pr_title">系统提示词</span><span class="right" id="pr_state"></span></h3>
+      <div class="hint" id="pr_desc" style="margin-bottom:10px">-</div>
+      <textarea id="pr_text" spellcheck="false" placeholder="选择左侧角色后，这里显示它的系统提示词全文"></textarea>
+      <div class="pr-foot">
+        <button class="btn primary" id="pr_save">保存并生效</button>
+        <button class="btn" id="pr_reload">放弃修改</button>
+        <button class="btn ghost" id="pr_use_default">载入内置默认</button>
+        <button class="btn danger sm" id="pr_reset">恢复内置默认</button>
+        <button class="btn ghost sm" id="pr_copy">复制全文</button>
+        <span class="count" id="pr_count">-</span>
+      </div>
+      <div class="notice" id="pr_notice"></div>
+      <div class="pr-warn">
+        ⚠ 每个提示词末尾的「输出要求（严格 JSON）」不要删除、也不要改字段名（如 commands / sufficient / templates），否则该 Agent 的返回无法解析，流水线会中断。<br>
+        原生「插件配置 → ⑩ 多 Agent 提示词」与本页共用同一份配置：两边任改其一，另一处刷新后即可看到，保存后无需重启 AstrBot，下一次任务即刻生效。
+      </div>
+    </div>
+  </div>
+  <div style="height:14px"></div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--violet)"></span>批量与维护</h3>
+    <div class="btnrow">
+      <button class="btn sm" onclick="loadPrompts()">刷新</button>
+      <button class="btn danger sm" id="pr_reset_all">全部恢复内置默认</button>
+    </div>
+    <div class="hint">插件升级若改进了内置提示词，已自定义的角色仍会沿用你的自定义内容（不会被悄悄覆盖）；想用新版内置时点「全部恢复」即可，差异会在右侧编辑框下方以字符数提示。</div>
+  </div>
+</div>
+
+<!-- ================= 设置 ================= -->
+<div class="page" id="page_settings">
+
+  <!-- 顶部常驻保存条（v0.21.2）：设置页很长，滚到哪儿都能随手保存 -->
+  <div class="savebar" id="savebar">
+    <button class="btn primary" id="btn_save_cfg_top">保存全部设置</button>
+    <span class="muted">校验通过后写盘并热应用：大部分设置即时生效，服务器事件转发自动重启，改 server_dir 会就地重算指纹与词典</span>
+    <div class="notice" id="cfg_notice_top" style="margin:0;margin-left:auto"></div>
+  </div>
+
+  <div class="hint" style="margin:2px 0 16px">
+    本页与 AstrBot 原生「插件配置」页共用同一份配置：v0.14.0 起已按
+    <b>连接 / 权限 / 播报 / 桥接 / 指令 / AI工具 / 知识库 / 外观 / 工作流 / 提示词</b>
+    十大分组整理；两处任改其一，另一边刷新后即可看到。多 Agent 的系统提示词请在顶部「提示词」页或原生配置的「⑩ 多 Agent 提示词」分组里编辑。
+  </div>
+
+  <div class="set-sec">基础 · 连接与安全</div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span>RCON 连接</h3>
+      <div class="sw-row">
+        <div class="sw-t"><b>异地 RCON 模式</b><span>AstrBot 与服务端不在同一台机器 · 只映射了 RCON 端口</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_remote_rcon_mode"><span class="sl"></span></label>
+      </div>
+      <div class="hint" id="remote_mode_hint" style="display:none;margin-top:2px">
+        <span id="rmt_hint_tag">已开启：</span><b>服务器目录可以留空</b>，插件只走 RCON 下发指令。作为交换，
+        <b>物品词典 / 知识库 / 聊天桥接 / 服务器事件播报 / 版本探测 / 进程指标</b>
+        这些依赖服务端本地文件的能力会按设计禁用 —— 下方对应区块会被<b>标记为不可用并写明原因</b>，
+        终端、mcs 状态与决策 AI 也会明确告知，不会假装可用。
+      </div>
+      <div class="hint" id="remote_mode_pending" style="display:none;margin-top:2px;color:var(--warn)"></div>
+      <div id="sd_box" style="margin-top:12px">
+        <label class="f" style="margin-top:0">服务器目录 server_dir</label>
+        <input type="text" id="cfg_server_dir" placeholder="C:\...\Server">
+        <div class="hint" id="sd_hint">读取服务器日志、mods/ 或 plugins/ 目录的根路径；服务器事件转发、词典与知识库均依赖它。保存时会做结构校验（<code>logs/</code>、<code>libraries/</code>、<code>server.properties</code>、<code>eula.txt</code>、启动脚本、服务端 jar 任一即可），不像服务端根目录会拒绝保存。</div>
+      </div>
+      <div class="frow" style="margin-top:12px">
+        <div style="flex:1"><label class="f" style="margin-top:0">RCON 地址</label><input type="text" id="cfg_rcon_host" placeholder="127.0.0.1"></div>
+        <div style="max-width:110px"><label class="f" style="margin-top:0">端口</label><input type="number" id="cfg_rcon_port" placeholder="25575"></div>
+      </div>
+      <label class="f">RCON 密码</label>
+      <input type="password" id="cfg_rcon_password" placeholder="••••••••">
+      <label class="f">RCON 超时（秒）</label>
+      <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--amber)"></span>权限与安全</h3>
+      <label class="f">管理员 admin_ids<span class="sep" style="margin-left:6px">逐个添加：QQ 号 / 平台昵称；管理员可用全部 mcs 指令并放行危险命令</span></label>
+      <div class="sym-list adm-list" id="adm_list"></div>
+      <div class="sym-add">
+        <input type="text" id="adm_input" placeholder="输入 QQ 号或昵称，如 123456789" maxlength="64">
+        <button class="btn sm" id="adm_add">添加</button>
+      </div>
+      <div class="sym-msg" id="adm_msg"></div>
+      <input type="hidden" id="cfg_admin_ids">
+      <label class="f">命令工具白名单 / 黑名单 danger_command_policy</label>
+      <div class="hint" style="margin-top:2px">
+        两个模式的开关与说明统一放在下方
+        <span class="jump" onclick="document.getElementById('card_policy').scrollIntoView({behavior:'smooth',block:'center'})">「命令工具 · 白名单 / 黑名单」</span>
+        窗口里。管理员 <b>admin_ids</b> 不受策略限制，永远可用全部能力。
+      </div>
+      <label class="f">封禁默认理由 ban_default_reason</label>
+      <input type="text" id="cfg_ban_reason" placeholder="违反服务器规则，由管理员封禁">
+      <div class="hint">mcs 封禁 未填写理由时使用</div>
+    </div>
+  </div>
+
+  <div class="card" id="card_policy" style="margin-top:14px">
+    <h3><span class="dot" style="background:var(--cyan)"></span>命令工具 · 白名单 / 黑名单
+      <span class="right" id="policy_now"></span></h3>
+    <div class="pmode">
+      <label class="pm" id="pm_whitelist">
+        <input type="radio" name="danger_policy_mode" value="whitelist">
+        <div>
+          <div class="pt">白名单<span class="tag">默认</span></div>
+          <p><b>非管理员不能使用命令工具</b>：执行指令、发物品、广播。</p>
+          <p>插件自带功能照旧：喊话、全屏喊话、状态、查询、绑定、帮助。</p>
+        </div>
+      </label>
+      <label class="pm" id="pm_blacklist">
+        <input type="radio" name="danger_policy_mode" value="blacklist">
+        <div>
+          <div class="pt">黑名单</div>
+          <p><b>所有玩家</b>都能使用命令工具：执行指令、发物品、广播。</p>
+          <p>但危险命令依旧仅管理员可用：stop / op / ban / kick / whitelist …，以及权限等级 3、4 的服务器管理类命令。</p>
+        </div>
+      </label>
+    </div>
+    <div class="hint">
+      本策略只管「命令工具」；想限制「喊话」请到「指令」分组关闭「喊话对全员开放」。
+      改动后记得点「保存全部设置」。<br>
+      被拒绝时不只是「拦住」，还会让决策 AI 明白这是权限判定、不是用法问题（详见下方
+      <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
+    </div>
+    <select id="cfg_danger_policy" hidden>
+      <option value="whitelist">whitelist</option>
+      <option value="blacklist">blacklist</option>
+    </select>
+  </div>
+
+  <div class="card" id="card_terminal" style="margin-top:14px">
+    <h3><span class="dot" style="background:var(--amber)"></span>拦截即终局 · 闸门强化
+      <span class="right" id="terminal_now"></span></h3>
+    <div class="hint" style="margin-top:2px">
+      光「拦住」还不够：还要让决策 AI 明白这拦得没有商量余地。否则它会以为是自己用法不对，
+      改个参数、换个工具接着硬试。
+    </div>
+    <div class="sw-row">
+      <div class="sw-t"><b>权限前置提醒（注入提示词）</b>
+        <span>非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」写进系统提示词，从源头劝退</span></div>
+      <label class="sw"><input type="checkbox" id="cfg_perm_hint"><span class="sl"></span></label>
+    </div>
+    <div class="sw-row">
+      <div class="sw-t"><b>拦截后会话闩锁</b>
+        <span>同一会话一旦被权限闸门拦下，有效期内再调命令类工具会被<b>直接短路</b>，不再触碰闸门与服务器，并提醒 AI 立刻停手</span></div>
+      <label class="sw"><input type="checkbox" id="cfg_perm_latch"><span class="sl"></span></label>
+    </div>
+    <label class="f">闩锁有效期（秒）permission_latch_ttl</label>
+    <input type="number" id="cfg_perm_latch_ttl" placeholder="300" min="10" max="3600" step="10">
+    <div class="hint">
+      默认 300（5 分钟），到期自动解除。<br>
+      被拦时返回的文案已明确标注「这是权限判定，不是参数/用法问题，重试与换工具都无效」；
+      参数误封装（AI 把参数多套一层 <code>{"arguments": {...}}</code>）也会被自动拆开后再判定，
+      不会再出现「工具没跑起来却被当成用法错误」的情况。
+    </div>
+  </div>
+
+  <div class="set-sec">消息互通 · 播报与桥接</div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--warn)"></span>服务器事件播报（游戏 → 会话）</h3>
+      <div class="sw-row" style="border-top:none;margin-top:2px">
+        <div class="sw-t"><b>服务器事件转发</b><span>监听服务器日志并记录最近的指定事件，并转发到指定会话</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_ev_enabled"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>播报：加入 / 离开</b></div>
+        <label class="sw"><input type="checkbox" id="cfg_notify_jl"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>播报：玩家死亡</b><span>死亡信息（含死亡原因）</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_notify_death"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>播报：成就 / 进度</b><span>解锁成就、完成挑战、达成目标</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_notify_adv"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>播报：玩家指令调用</b><span>玩家在游戏内执行指令；整合包服务端只有反馈文案，插件经 RCON 下发的指令不计入</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_notify_cmd"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>播报：聊天内容</b></div>
+        <label class="sw"><input type="checkbox" id="cfg_notify_chat"><span class="sl"></span></label>
+      </div>
+      <label class="f">播报目标 notify_targets</label>
+      <div class="tgt-list" id="tgt_notify_list"></div>
+      <div class="tgt-add">
+        <select id="tgt_notify_platform" title="平台"></select>
+        <select id="tgt_notify_type" title="会话类型">
+          <option value="FriendMessage">私聊</option>
+          <option value="GroupMessage">群聊</option>
+        </select>
+        <input type="text" id="tgt_notify_id" placeholder="QQ号 / 群号" inputmode="numeric">
+        <button class="btn sm" data-tgt-add="notify">添加</button>
+      </div>
+      <div class="hint" id="tgt_notify_hint">
+        选类型后填 QQ 号或群号即可，自动拼成 <code>平台ID:消息类型:会话ID</code>；也可直接粘贴完整标识。<br>
+        <b>点击下方任一会话</b>可展开子菜单，单独勾选该会话要接收的播报内容（默认全开，可全选 / 全不选）。<br>
+        推送需四道闸门齐备：总开关「服务器事件转发」→ 上方对应的类型开关 → 该会话勾选的事件 → 目标会话存在。
+        总开关关闭时，会话侧怎么勾都不会推送。
+      </div>
+      <div class="hint" id="tgt_notify_msg"></div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span>聊天桥接（游戏 → 会话）</h3>
+      <div class="sw-row" style="border-top:none;margin-top:2px">
+        <div class="sw-t"><b>桥接总开关</b><span id="bridge_sw_sub">玩家在游戏内发送带符号消息即转发到会话</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_bridge_en"><span class="sl"></span></label>
+      </div>
+      <label class="f">触发符号 <span class="hl" id="bridge_prefix_hl">不添加符号 = 转发全部聊天</span><span class="sep">逐个添加，玩家以任一符号开头即转发</span></label>
+      <div class="sym-list" id="sym_list"></div>
+      <div class="sym-add">
+        <input type="text" id="sym_input" placeholder="输入符号，如 ! 或 群" maxlength="12">
+        <button class="btn sm" id="sym_add">添加</button>
+      </div>
+      <div class="sym-msg" id="sym_msg"></div>
+      <input type="hidden" id="cfg_bridge_prefix">
+      <div class="hint">游戏内直接打 <code>!123</code> 或全角 <code>！123</code>，中间无需空格；全角/半角始终兼容；一个符号都不添加则转发全部聊天</div>
+      <div class="sw-row">
+        <div class="sw-t"><b>区分大小写</b><span id="bridge_case_sub">关闭：符号大小写不敏感，Q 与 q 等价；开启后必须大小写完全一致</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_bridge_case"><span class="sl"></span></label>
+      </div>
+      <label class="f">桥接目标会话（留空则沿用播报目标）</label>
+      <div class="tgt-list" id="tgt_bridge_list"></div>
+      <div class="tgt-add">
+        <select id="tgt_bridge_platform" title="平台"></select>
+        <select id="tgt_bridge_type" title="会话类型">
+          <option value="FriendMessage">私聊</option>
+          <option value="GroupMessage">群聊</option>
+        </select>
+        <input type="text" id="tgt_bridge_id" placeholder="QQ号 / 群号" inputmode="numeric">
+        <button class="btn sm" data-tgt-add="bridge">添加</button>
+      </div>
+      <div class="hint" id="tgt_bridge_hint">
+        同样只填号码即可。推荐：在目标会话里发送 <code>mcs 桥接</code> 自动绑定，免手填。
+      </div>
+      <div class="hint" id="tgt_bridge_msg"></div>
+      <label class="f">群内显示模板</label>
+      <input type="text" id="cfg_bridge_format" placeholder="[MC] {player}：{message}">
+      <div class="hint">占位符：<code>{player}</code>=玩家名，<code>{message}</code>=正文</div>
+      <div class="sw-row" style="border-bottom:none">
+        <div class="sw-t"><b>游戏内转发回执</b><span>玩家聊天转发至群聊成功后，将以仅该玩家可见的形式在游戏内发送一条确认信息</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_bridge_receipt"><span class="sl"></span></label>
+      </div>
+    </div>
+  </div>
+
+  <div class="set-sec">外部平台指令 · mcs 指令组</div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--ok)"></span>指令开关</h3>
+    <div class="sw-grid" style="margin-top:2px">
+      <div class="sw-row"><div class="sw-t"><b>绑定</b><span>mcs 绑定 / 解绑 / 查询</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_bind"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>喊话</b><span>mcs 喊话</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_say"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>喊话对全员开放</b><span>关闭后仅管理员可用</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_say_public"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>状态</b><span>mcs 状态</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_status"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>踢人</b><span>mcs 踢人（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_kick"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>封禁</b><span>mcs 封禁（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_ban"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>解封</b><span>mcs 解封（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_unban"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>封禁列表</b><span>mcs 封禁列表（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_banlist"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>帮助</b><span>mcs 帮助</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_help"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>全屏喊话</b><span>mcs 全屏喊话（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_title"><span class="sl"></span></label></div>
+    </div>
+    <div class="hint" style="margin-top:10px" id="cmd_prefix_tip">
+      AstrBot 聊天平台指令（不是在游戏里输入）；前缀跟随 AstrBot 唤醒词设置，加载中…
+    </div>
+    <div class="hint" style="margin-top:6px">
+      重载本插件请到 AstrBot「插件管理」页点「重载」（插件自带深度清理补丁，重载即生效、无需重启 AstrBot）；聊天平台不提供重载指令。
+    </div>
+    <div class="hint" style="margin-top:6px">关闭后该指令对所有人不可用；管理员专属指令仍受 admin_ids 保护</div>
+  </div>
+
+  <div class="set-sec">AI 能力 · LLM 工具与知识库</div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--violet)"></span>LLM 工具开关</h3>
+      <div class="sw-grid" style="margin-top:2px">
+        <div class="sw-row"><div class="sw-t"><b>万能命令执行</b><span>mc_execute_command</span></div><label class="sw"><input type="checkbox" id="cfg_tool_exec"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>在线玩家查询</b><span>mc_list_players</span></div><label class="sw"><input type="checkbox" id="cfg_tool_players"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>服务器状态</b><span>mc_server_status</span></div><label class="sw"><input type="checkbox" id="cfg_tool_status"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>连接自检</b><span>mc_connection_status</span></div><label class="sw"><input type="checkbox" id="cfg_tool_conn"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>服务器广播</b><span>mc_broadcast</span></div><label class="sw"><input type="checkbox" id="cfg_tool_broadcast"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>发物品</b><span>mc_give_item</span></div><label class="sw"><input type="checkbox" id="cfg_tool_give"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>踢人</b><span>mc_kick</span></div><label class="sw"><input type="checkbox" id="cfg_tool_kick"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>封禁</b><span>mc_ban</span></div><label class="sw"><input type="checkbox" id="cfg_tool_ban"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>物品ID搜索</b><span>mc_search_item</span></div><label class="sw"><input type="checkbox" id="cfg_tool_search"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>配方查询</b><span>mc_get_recipes</span></div><label class="sw"><input type="checkbox" id="cfg_tool_recipes"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>Mod 列表</b><span>mc_list_mods</span></div><label class="sw"><input type="checkbox" id="cfg_tool_mods"><span class="sl"></span></label></div>
+      </div>
+      <div class="hint" style="margin-top:10px">这些开关控制 AI（LLM）能调用的工具；关闭后对应能力立即不可用</div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--violet)"></span>词典与知识库</h3>
+      <div class="sw-row" style="border-top:none;margin-top:2px">
+        <div class="sw-t"><b>物品词典</b><span>dictionary_enabled · 扫描 mods/ 构建（插件服只能取到原版物品）</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_dict_en"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>学习型知识库</b><span>knowledge_enabled · 按服务端内容指纹隔离（mods/ 或 plugins/）</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_kb_en"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>知识检索</b><span>mc_search_knowledge</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_tool_kb_search"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>知识沉淀</b><span>mc_save_knowledge</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_tool_kb_save"><span class="sl"></span></label>
+      </div>
+      <div class="sw-row">
+        <div class="sw-t"><b>知识纠错</b><span>mc_correct_knowledge</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_tool_kb_correct"><span class="sl"></span></label>
+      </div>
+      <div class="hint" style="margin-top:10px">词典与知识库在插件启动时构建；改 server_dir 或这两项开关会在保存时就地重建（无需重载插件），其余开关即时生效</div>
+    </div>
+  </div>
+
+  <div class="set-sec">外观 · 反馈与颜色</div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--amber)"></span>反馈署名</h3>
+      <label class="f">署名 feedback_name</label>
+      <input type="text" id="cfg_feedback_name" placeholder="RCON">
+      <div class="sw-row" style="border-bottom:none;margin-top:6px">
+        <div class="sw-t"><b>游戏内任务完成后将在公屏反馈</b><span>命令执行成功后发送署名提示；反馈文字颜色可在「服务器」页的『文本颜色』卡片更改</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_feedback_tellraw"><span class="sl"></span></label>
+      </div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--amber)"></span>文本颜色</h3>
+      <div class="sw-row" style="border-top:none">
+        <div class="sw-t"><b>启用渐变色（MC 1.16+）</b><span>按锚点逐字符渐变 · 空格不参与<br>更推荐去「服务器」页的『文本颜色』卡片调色，那里有取色器、可视化预览 <a class="jump" id="jump_text_color">前往该卡片 →</a></span></div>
+        <label class="sw"><input type="checkbox" id="cfg_grad_en"><span class="sl"></span></label>
+      </div>
+      <label class="f">渐变输出格式</label>
+      <select id="cfg_grad_fmt"></select>
+      <label class="f">全屏喊话 · 单色 / 渐变锚点</label>
+      <div class="frow">
+        <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
+        <input type="text" id="cfg_grad_title_t" placeholder="#FFAA00,#FF00FF">
+      </div>
+      <label class="f">普通喊话 · 单色 / 渐变锚点</label>
+      <div class="frow">
+        <input type="text" id="cfg_color_say_t" placeholder="white 或 #FFFFFF">
+        <input type="text" id="cfg_grad_say_t" placeholder="#FFFFFF,#55FFFF">
+      </div>
+      <label class="f">任务输出 · 单色 / 渐变锚点</label>
+      <div class="frow">
+        <input type="text" id="cfg_color_fb_t" placeholder="gold 或 #FFAA00">
+        <input type="text" id="cfg_grad_fb_t" placeholder="#FFAA00,#55FF55">
+      </div>
+      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0)；渐变锚点 ≥2 个、逗号分隔。需要取色器可视化调色请到「服务器」页的『文本颜色』卡片（<a class="jump" id="jump_text_color2">点这里过去 →</a>）</div>
+    </div>
+  </div>
+
+  <div class="set-sec">自动化 · 多Agent 工作流</div>
+  <div class="card">
+    <h3><span class="dot" style="background:var(--cyan)"></span>流水线与 Agent 配置</h3>
+    <div class="sw-grid" style="margin-top:2px">
+      <div class="sw-row"><div class="sw-t"><b>工作流总开关</b><span>复杂任务自动走 分类→模板判断→前瞻建库→实现→纠错（含「玩家守门」）</span></div><label class="sw"><input type="checkbox" id="cfg_wf_enabled"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>mc_workflow 工具</b><span>是否把复杂任务总入口暴露给 LLM；关闭后调用只会收到导航提示</span></div><label class="sw"><input type="checkbox" id="cfg_wf_tool"><span class="sl"></span></label></div>
+    </div>
+    <div class="cv-tip" id="cfg_wf_tip"></div>
+    <label class="f">主 Provider（llm_provider_id）</label>
+    <input type="text" id="cfg_wf_provider" placeholder="留空 = 自动回退会话默认">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 14px;margin-top:4px">
+      <div><label class="f">分类器 Provider</label><input type="text" id="cfg_wf_p_classifier" placeholder="留空=默认"></div>
+      <div><label class="f">模板判断器 Provider</label><input type="text" id="cfg_wf_p_judge" placeholder="留空=默认"></div>
+      <div><label class="f">模板工程师 Provider</label><input type="text" id="cfg_wf_p_engineer" placeholder="留空=默认"></div>
+      <div><label class="f">实现器 Provider</label><input type="text" id="cfg_wf_p_implementer" placeholder="留空=默认"></div>
+      <div><label class="f">纠错器 Provider</label><input type="text" id="cfg_wf_p_corrector" placeholder="留空=默认"></div>
+    </div>
+    <div class="frow" style="margin-top:6px;max-width:460px">
+      <div style="flex:1"><label class="f">实现器最大尝试轮数</label><input type="number" id="cfg_wf_rounds_impl" min="1" max="10" placeholder="3"></div>
+      <div style="flex:1"><label class="f">纠错循环最大轮数</label><input type="number" id="cfg_wf_rounds_correct" min="0" max="10" placeholder="2"></div>
+    </div>
+    <div class="hint" style="margin-top:8px">开关与「工作流」页状态同步；各 Agent Provider 留空则沿用主 Provider / 会话默认</div>
+  </div>
+</div>
+
+</main>
+
+<!-- 显式引入 bridge SDK（AstrBot 响应时自动重写为带 asset_token 的完整 URL）。
+     必须放在业务脚本之前：AstrBot 虽会自动在 </body> 前注入 bridge，
+     但本页业务脚本也在 </body> 前，若不显式引入会先于 bridge 执行，
+     导致 window.AstrBotPluginPage 尚为 undefined、永远误走直连。
+     独立窗口打开时此路径无 token 会 404，无功能影响（页面直接走直连）。 -->
+<script src="/api/plugin/page/bridge-sdk.js"></script>
+<script>
+(function(){
+"use strict";
+const bridge = window.AstrBotPluginPage;
+const P = "page/";
+const DIRECT_PREFIX = "/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/";
+let mode = "unknown";
+let OV = null;       // overview 快照
+let KB = null;       // 知识库快照
+let WF = null;       // 工作流快照
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ============ API 层（bridge 优先，直连降级） ============
+async function directApi(path, method, body){
+  const opt = { method, credentials: "include", headers: {} };
+  if(method === "POST" && body){ opt.headers["Content-Type"]="application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(DIRECT_PREFIX + path.replace(/^\/+/, ""), opt);
+  if(!r.ok){
+    let msg = "HTTP " + r.status;
+    try{ const j = await r.json(); if(j && j.detail) msg += ": " + j.detail; }catch(_){}
+    return {ok:false, error:msg};
+  }
+  return await r.json().catch(()=>({ok:false,error:"响应解析失败"}));
+}
+function selectApi(){
+  // 独立窗口：cookie 可用，直接直连秒开（不依赖 bridge，避免 404/等待）
+  if(!inIframe()) return Promise.resolve({mode:"direct"});
+  // iframe 内（sandbox 无 allow-same-origin，直连必失败）：必须走 bridge
+  if(!bridge) return Promise.resolve({mode:"direct"});
+  return Promise.race([
+    bridge.ready().then(()=>({mode:"bridge"})),
+    new Promise(res=>setTimeout(()=>res({mode:"direct"}), 3000)),
+  ]).catch(()=>({mode:"direct"}));
+}
+async function callGet(p){
+  if(mode==="bridge"){
+    try{ return await Promise.race([bridge.apiGet(P+p), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiGet 超时")),6000))]); }
+    catch(e){ console.warn("[mc_control] bridge 失败，降级直连:",e); }
+  }
+  return directApi(p,"GET");
+}
+async function callPost(p,b){
+  if(mode==="bridge"){
+    try{ return await Promise.race([bridge.apiPost(P+p,b||{}), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiPost 超时")),6000))]); }
+    catch(e){ console.warn("[mc_control] bridge 失败，降级直连:",e); }
+  }
+  return directApi(p,"POST",b||{});
+}
+function inIframe(){ try{ return window.self !== window.top; }catch(e){ return true; } }
+function openStandalone(){ window.open(location.pathname, "_blank"); }
+window.openStandalone = openStandalone;
+window.goTab = p => switchTab(p);
+
+// ============ 二次点击确认 ============
+// iframe sandbox 无 allow-modals → 原生 confirm/alert 被浏览器静默拒绝（返回 false）
+// 因此危险操作统一用「按钮武装态」：第一次点击进入待确认，3 秒内再点才执行
+function armConfirm(btn, label, fn){
+  if(btn.dataset.arm !== "1"){
+    btn.dataset.arm = "1";
+    btn.classList.add("arming");
+    btn.textContent = "再点一次确认";
+    setTimeout(()=>{ if(btn.dataset.arm==="1"){ btn.dataset.arm=""; btn.classList.remove("arming"); btn.textContent = label; } }, 3000);
+    return;
+  }
+  btn.dataset.arm = "";
+  btn.classList.remove("arming");
+  btn.textContent = label;
+  fn();
+}
+
+// ============ 通用小件 ============
+const BADGE = {
+  verified:["ok","✓ 已验证"], untested:["dim","○ 未验证"], corrected:["warn","✎ 已修正"],
+  pending:["bad","⏳ 待审批"], disabled:["dim","已禁用"],
+};
+const EVENT_META = {
+  chat:["info","💬","聊天"], join:["ok","▸","加入"], leave:["dim","◂","离开"],
+  death:["bad","☠","死亡"], advancement:["amb","✦","进度"],
+  command:["dim","⌨","指令"],
+};
+function statHTML(l,n,s,bar,cls){
+  return `<div class="stat"><div class="l">${l}</div><div class="n">${n??"-"}</div>${s?`<div class="s">${s}</div>`:""}${bar!==undefined?`<div class="bar ${cls||""}" style="width:${Math.max(0,Math.min(100,bar*100))}%"></div>`:""}</div>`;
+}
+function setNotice(el, txt, isErr){
+  if(!el) return;
+  if(!txt){ el.className="notice"; return; }
+  el.className = "notice show" + (isErr?" err":"");
+  el.textContent = txt;
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{ el.className="notice"; }, 3500);
+}
+function connDot(ok, txt){ $("conn_dot").className = "p " + (ok?"on":"off"); $("conn_txt").textContent = txt; }
+function modeTag(){ $("mode_tag").innerHTML = "模式 <b>"+(mode==="bridge"?"桥接":"直连")+"</b>"; }
+
+// ============ Tab 切换 ============
+function switchTab(name){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.page===name));
+  document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.id==="page_"+name));
+  if(name==="overview") loadOverview();
+  if(name==="server") loadServer();
+  if(name==="knowledge") loadKnowledge();
+  if(name==="workflow") loadWorkflow();
+  if(name==="prompts") loadPrompts();
+  if(name==="settings") loadSettings();
+  // v0.21.8：指纹不匹配检测随页签切换跑一次 —— 同一轮只弹一次，不会反复骚扰
+  if(name==="overview" || name==="knowledge" || name==="settings") checkFingerprintNotice();
+}
+document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click", ()=>switchTab(t.dataset.page)));
+
+// 跨页跳转：设置页「启用渐变色」→ 服务器页『文本颜色』卡片（切页 + 平滑滚动 + 高亮闪烁）
+function jumpToTextColor(){
+  switchTab("server");
+  const card = document.getElementById("srv_color_card");
+  if(!card) return;
+  clearTimeout(jumpToTextColor._t);
+  jumpToTextColor._t = setTimeout(()=>{
+    try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
+    card.classList.remove("flash"); void card.offsetWidth;   // 重排以便重复触发动画
+    card.classList.add("flash");
+    setTimeout(()=>card.classList.remove("flash"), 1700);
+  }, 80);
+}
+window.jumpToTextColor = jumpToTextColor;
+["jump_text_color","jump_text_color2"].forEach(id=>{
+  const el = document.getElementById(id);
+  if(el) el.onclick = jumpToTextColor;
+});
+
+// ============ 概览 ============
+async function loadOverview(){
+  const r = await callGet("overview").catch(()=>({ok:false}));
+  if(!r || !r.ok){ connDot(false,"连接失败"); $("ov_plugin").innerHTML=`<span class="badge bad">无法获取概览${r&&r.error?"："+esc(r.error):""}</span>`; return; }
+  OV = r;
+  // v0.21.14：metadata / PLUGIN_INFO 里带不带 "v" 前缀都不怕，页面前缀不会叠成 "vv0.21.14"
+  const pvRaw = String((r.plugin&&r.plugin.version)||"");
+  const pv = pvRaw.replace(/^v/i,"");
+  $("ver").textContent = pvRaw||"v?.?.?";
+  connDot(true,"已连接 · "+(pv||""));
+  // 模块状态
+  const d = r.dictionary||{}, k = r.knowledge||{}, w = r.workflow||{}, l = r.listener||{};
+  // v0.21.15：异地 RCON 模式 → 本地文件类模块据实显示「异地模式禁用」，不再含糊成「未初始化」
+  const rmt = !!(r.config && r.config.remote_rcon_mode);
+  // v0.21.16：供服务器页等处复用（异地模式下的不可用提示）
+  // v0.21.19：这里只更新「已保存」基准，重绘交给 syncRemoteModeUI —— 它要在设置页字段填完之后再跑，
+  // 免得与 loadSettings 赛跑，把还没填好的开关当成「未保存的草稿」。
+  RMT.saved = rmt; RMT.on = rmt;
+  // v0.21.8：概览「指纹不匹配」用常驻标记（只要不匹配就亮），不再跟着弹窗消失
+  const kMis = (k.fingerprint_mismatch !== undefined && k.fingerprint_mismatch !== null)
+    ? k.fingerprint_mismatch : k.notice_show;
+  // v0.21.20：插件服务端（Paper/Spigot）没有 mods/ → 词典退化为原版物品表，
+  // 不能显示成「0 mods」让主人以为认不出服务端（items 才是真数据）。
+  const dSub = d.mods!=null
+    ? (d.mods===0 && d.items>0 ? `原版物品表 / ${d.items} 物品` : `${d.mods} mods / ${d.items} 物品`)
+    : (rmt?"需服务端本地目录":"未初始化");
+  const mods = [
+    ["物品词典", d.enabled===false?"已停用":(rmt?"异地模式禁用":"运行中"), dSub, d.mods!=null && !rmt, (d.enabled===false||rmt)?"b":"g"],
+    ["知识库", k.enabled===false?"已停用":(k.state&&k.state.enabled?"已开启":"已停用"),
+      kMis ? `⚠ 指纹不匹配（预设 ${k.preset_name||"?"}）`
+        : (k.preset_name?`${k.preset_name} · ${k.fingerprint? "指纹 "+k.fingerprint : "未绑定"}${k.server_content?`（${k.server_content}）`:""}`:(k.server_id?`指纹 ${k.server_id}${k.server_content?`（${k.server_content}）`:""}`:(rmt?"异地模式禁用":"未初始化"))),
+      !!(k.stats&&k.stats.total), (kMis?"b":(k.state&&k.state.enabled?"g":"b"))],
+    ["多Agent工作流", w.enabled===false?"已停用":"运行中", `近${w.recent_total??0}次·${w.recent_done??0}成功`, w.recent_done>0, "c"],
+    ["服务器事件转发", l.running?"监听中":"未运行", rmt?"异地模式禁用（读不到服务端日志）":(l.enabled?"播报开启":"仅记录不播报"), l.running, l.running?"g":"b"],
+  ];
+  $("ov_modules").innerHTML = mods.map(([t,st,s,bar,cls])=>statHTML(t,st,s,bar,cls)).join("");
+  // RCON 测试区
+  $("ov_rcon_btn").onclick = testRconInto("ov_rcon");
+  // 最近事件
+  const evs = (r.events||[]).slice(0,12);
+  $("ov_events").innerHTML = evs.length ? evs.map(evHTML).join("") : `<span class="muted">暂无事件（开启服务器事件转发后这里会实时记录）</span>`;
+  // 插件信息
+  const pl = r.plugin||{};
+  $("ov_plugin").innerHTML = [
+    `<span class="badge amb">${esc(pl.display_name||pl.name)}</span>`,
+    `<span class="badge dim">v${esc(pv)}</span>`,
+    `<span class="badge vio">${esc((r.config&&r.config.rcon_configured)?"RCON 已配置":"RCON 未配置")}</span>`,
+    (rmt?`<span class="badge amb">异地 RCON 模式</span>`:""),
+  ].join("") + `<div style="width:100%;color:var(--faint);font-size:12px;margin-top:6px">${esc(pl.desc||"")}</div>`;
+}
+
+function evHTML(e){
+  const m = EVENT_META[e.type]||["dim","·",esc(e.type)];
+  return `<div class="ev"><span class="ts">${esc(e.ts)}</span><span class="badge ${m[0]}">${m[1]} ${m[2]}</span>${e.player?`<span class="pl">${esc(e.player)}</span>`:""}<span class="dt">${esc(e.detail||"")}</span></div>`;
+}
+
+// ============ RCON 测试（可注入目标容器） ============
+function testRconInto(elId){
+  return async function(){
+    const el = $(elId);
+    el.innerHTML = `<span class="muted">正在连接 RCON 测试…</span>`;
+    const r = await callPost("rcon/test").catch(()=>({ok:false,error:"请求失败"}));
+    if(!r.ok){ el.innerHTML = `<span class="badge bad">✗ 连接失败</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`; connDot(false,"RCON 失败"); return; }
+    connDot(true,"RCON 正常");
+    el.innerHTML = `<div class="kv"><span class="k">连接</span><span class="v" style="color:var(--ok)">✓ 正常</span></div>
+      <div class="kv"><span class="k">在线玩家</span><span class="v">${r.online} / ${r.max}</span></div>
+      <div class="kv" style="border-bottom:none"><span class="k">玩家列表</span><span class="v">${r.players&&r.players.length?esc(r.players.join(", ")):"（空）"}</span></div>`;
+  };
+}
+
+// ============ 服务器页 ============
+async function loadServer(){
+  $("sv_status").innerHTML = `<span class="muted">正在查询…</span>`;
+  $("sv_players").innerHTML = "";
+  const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
+  if(!r.ok){
+    $("sv_status").innerHTML = `<span class="badge bad">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+    $("sv_players").innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
+    $("sv_online_tag").innerHTML = "";
+    return;
+  }
+  const list = r.list||{};
+  $("sv_status").innerHTML = `
+    <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
+    <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
+    <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+  // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是主人没配好）
+  if(RMT.on) $("sv_status").insertAdjacentHTML("beforeend",
+    `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
+    + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
+  $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
+  const pls = list.players||[];
+  $("sv_players").innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
+  // 事件流
+  loadServerEvents();
+}
+async function loadServerEvents(){
+  const r = await callGet("events").catch(()=>({ok:false}));
+  const evs = (r.ok&&r.events)||[];
+  $("sv_events").innerHTML = evs.length ? evs.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
+}
+
+// ============ 知识库 ============
+function entryHTML(e, isPending){
+  const [bcls,btxt] = BADGE[e.status]||["dim","○"];
+  const dis = !e.enabled ? `<span class="badge dim">已禁用</span>` : "";
+  const kind = e.kind==="template" ? `<span class="badge vio" title="通用规则，可套用到同模组同类物品">模板</span>` : `<span class="badge info">实例</span>`;
+  // v0.21.11：卡片只能显示 72px 预览 → 加「查看详情」入口（按钮 + 直接点内容都能开）
+  const tp = esc(e.topic);
+  return `<div class="entry ${isPending?"pending-box":""}">
+    <div class="top">
+      <span class="topic">${esc(e.topic)}</span>
+      ${kind}<span class="badge ${bcls}">${btxt}</span>${dis}
+      <span class="meta">${esc(e.updated_at||"")}</span>
+      <span class="acts">
+        ${isPending?`<button class="btn ok sm" data-act="approve" data-topic="${tp}">批准</button><button class="btn danger sm" data-act="deny" data-topic="${tp}">拒绝</button>`:""}
+        <button class="btn sm" data-act="view" data-topic="${tp}" title="全屏查看完整内容并编辑">查看详情</button>
+        <button class="btn sm" data-act="toggle" data-topic="${tp}" data-en="${e.enabled?0:1}">${e.enabled?"禁用":"启用"}</button>
+        <button class="btn danger sm" data-act="del" data-topic="${tp}">删除</button>
+      </span>
+    </div>
+    <div class="content" data-act="view" data-topic="${tp}" title="点击查看完整内容并编辑">${esc(e.content)}</div>
+    <div class="more" data-act="view" data-topic="${tp}">点击查看完整内容 / 编辑 →</div>
+  </div>`;
+}
+// v0.21.21：知识库不可用时，把**原因**说出来。
+// 后端（v0.21.15）早就会在 error 里写清「为什么不可用」（未配置服务器目录 / 目录校验未过 / 异地模式），
+// 可前端把这句吞了、只丢一个红徽章，预设栏还永远停在「加载中…」——主人只看到「加载失败」四个字，
+// 根本不知道去哪儿修。这里照工作流页的写法办：原因原样显示 + 一个直达设置页的按钮。
+function showKbUnavailable(r){
+  const why = (r && r.error) || "知识库接口没有响应（插件可能刚重载，点「重试」或刷新页面即可）";
+  KB_DOWN = { on: true, why };
+  $("kb_presets").innerHTML = `<span class="badge bad">知识库不可用</span>`;
+  $("kb_preset_hint").textContent = "";
+  if($("kb_stats")) $("kb_stats").innerHTML = "";
+  $("kb_fingerprint").innerHTML = "";
+  $("tab_kb_cnt").textContent = "-";
+  $("kb_list").innerHTML = `<div class="empty">知识库当前不可用 —— 原因见上方提示</div>`;
+  const box = $("kb_alert");
+  if(!box) return;
+  box.innerHTML = `<div class="kb-alert">
+    <div class="t">⚠ 知识库当前不可用</div>
+    <div class="m">${esc(why)}</div>
+    <div class="m">本页的条目检索 / 沉淀 / 预设管理都建立在「服务端目录 → 整合包指纹」上，目录读不到时整页停摆。
+      在「设置」页补好服务器目录并保存即可恢复（保存即重算指纹，不用重载插件）。</div>
+    <div class="btnrow">
+      <button class="btn sm" data-kbgo="settings">去设置页填写服务器目录</button>
+      <button class="btn sm" data-kbgo="retry">重试</button>
+    </div>
+  </div>`;
+}
+
+async function loadKnowledge(){
+  // 异地 RCON 模式：整页已被 .rmt-seal 封禁，没必要再打请求（后端只会回 kb_unavailable），
+  // 也免得模糊底下透出一片红色「加载失败」。
+  if(RMT.on){ return; }
+  const r = await callGet("state").catch(()=>({ok:false}));
+  if(!r || !r.ok){ showKbUnavailable(r); return; }
+  KB = r;
+  KB_DOWN = { on: false, why: "" };      // 恢复正常 → 撤掉不可用工牌（v0.21.21）
+  const st = r.stats||{};
+  const total = st.total||0, verified = st.verified||0;
+  $("tab_kb_cnt").textContent = total;
+  if(r.presets){
+    KBP = { presets:r.presets, active:r.active_preset, server_fp:r.server_id||"",
+            server_content:KBP.server_content||"", notice:r.notice||null };
+  }
+  $("kb_fingerprint").innerHTML = kbFpBadge(st, r.server_id);
+  renderPresets();
+  renderKbAlert();
+  $("kb_stats").innerHTML =
+    statHTML("知识条目", total, `${st.template??0} 模板 · ${st.instance??0} 实例`) +
+    statHTML("已验证", verified, total?`${Math.round(verified/total*100)}%`:"", total?verified/total:"", "g") +
+    statHTML("待审批", st.pending||0, "auto_apply 关闭时进入", (st.pending||0)>0?0.5:"", (st.pending||0)>0?"b":"") +
+    statHTML("已修正", st.corrected||0, `${st.untested??0} 未验证`, undefined, "warn");
+  // 待审批
+  const pend = r.pending||[];
+  $("pending_card").style.display = pend.length?"block":"none";
+  $("pend_cnt").textContent = pend.length+" 条";
+  $("pending_list").innerHTML = pend.length ? pend.map(e=>entryHTML(e,true)).join("") : `<div class="empty">暂无待审批</div>`;
+  renderKbList();
+}
+function renderKbList(){
+  if(!KB){ return; }
+  const kw = ($("kb_search").value||"").toLowerCase();
+  const list = (KB.entries||[]).filter(e=>!kw || e.topic.toLowerCase().includes(kw) || e.content.toLowerCase().includes(kw));
+  if(!list.length){ $("kb_list").innerHTML = `<div class="empty">${kw?"无匹配搜索结果":"暂无条目"}</div>`; return; }
+  const groups = {};
+  list.forEach(e=>{ const g=e.mod||"general"; (groups[g]=groups[g]||[]).push(e); });
+  const gkeys = Object.keys(groups).sort((a,b)=>{
+    if(a==="general") return 1; if(b==="general") return -1;
+    return groups[b].length - groups[a].length;
+  });
+  $("kb_list").innerHTML = gkeys.map(g=>{
+    const arr = groups[g], tpl = arr.filter(x=>x.kind==="template").length;
+    return `<div class="kb-group"><div class="kb-title"><span class="badge dim">${esc(g)}</span><span class="cnt">${arr.length} 条 · ${tpl} 模板</span></div>${arr.map(e=>entryHTML(e,false)).join("")}</div>`;
+  }).join("");
+}
+async function kbReload(){ await loadKnowledge(); }
+
+// ============ 知识条目详情 / 编辑（v0.21.11）============
+// 卡片预览只有 72px，看不全长内容 → 给一个和指纹弹窗同款的全屏子窗口看全文，并就地改。
+let KBDET = { topic: "", entry: null };
+
+function kbFindEntry(topic){
+  const pool = [...(KB.entries||[]), ...(KB.pending||[])];
+  return pool.find(x => x.topic === topic) || null;
+}
+
+function openEntryDetail(topic){
+  const e = kbFindEntry(topic);
+  if(!e){ setNotice($("kb_notice"), "条目已不存在（可能刚被改名或删除）", true); return; }
+  KBDET = { topic, entry: e };
+  const [bcls, btxt] = BADGE[e.status] || ["dim", e.status || "?"];
+  $("kbdet_title").textContent = e.topic;
+  $("kbdet_sub").innerHTML = `<span class="badge ${e.kind==="template"?"vio":"info"}">${e.kind==="template"?"模板":"实例"}</span>`
+    + `<span class="badge ${bcls}">${btxt}</span>`
+    + (e.enabled ? "" : `<span class="badge dim">已禁用</span>`)
+    + `<span class="muted">${esc(e.updated_at || "")}</span>`;
+  $("kbdet_kv").innerHTML = [
+    ["所属模组", e.mod || "general", 1],
+    ["来源", e.source || "-", 0],
+    ["创建时间", e.created_at || "-", 0],
+    ["最近更新", e.updated_at || "-", 0],
+    ["内容长度", `${(e.content||"").length} 字`, 0],
+  ].map(([k, v, mono]) => `<div class="k">${k}</div><div class="v"${mono?"":" style=\"font-family:var(--sans)\""}>${esc(v)}</div>`).join("");
+  $("kbdet_topic").value = e.topic;
+  $("kbdet_content").value = e.content || "";
+  $("kbdet_state").className = "kbdet-state";
+  $("kbdet_state").textContent = "";
+  $("kbdet_modal").style.display = "flex";
+  try{ $("kbdet_content").focus(); }catch(err){}
+}
+
+function closeEntryDetail(){
+  $("kbdet_modal").style.display = "none";
+  KBDET = { topic: "", entry: null };
+}
+
+async function saveEntryDetail(){
+  const note = $("kbdet_state");
+  const topic = ($("kbdet_topic").value || "").trim();
+  const content = ($("kbdet_content").value || "").trim();
+  if(!topic || !content){
+    note.className = "kbdet-state err";
+    note.textContent = "主题与内容都不能为空";
+    return;
+  }
+  const btn = $("kbdet_save");
+  const status = (KBDET.entry || {}).status || "untested";   // 保住原有验证状态，编辑不降级
+  btn.disabled = true;
+  note.className = "kbdet-state";
+  note.textContent = "保存中…";
+  const r = await callPost("kb/entry", {
+    topic, old_topic: KBDET.topic, content, status,
+  }).catch(() => ({ ok:false }));
+  btn.disabled = false;
+  if(!r || !r.ok){
+    note.className = "kbdet-state err";
+    note.textContent = "保存失败：" + ((r && r.error) || "未知错误");
+    return;
+  }
+  closeEntryDetail();
+  setNotice($("kb_notice"), `✓ 已保存条目「${topic}」`);
+  await kbReload();
+}
+// ============ 知识库预设（v0.18.0） ============
+// 一个预设 = 一个独立知识库，可绑定某个服务端整合包指纹；服务端指纹变化时**不自动切换**，
+// 只在进入 WebUI 时弹窗提示，由主人手动决定谁服务谁。
+let KBP = { presets: [], active: null, server_fp: "", server_content: "", notice: null };
+let PICK = { action: null, src: null, dst: null, renameId: null };
+// v0.21.21：知识库整体不可用（服务端目录没配 / 目录校验没过 / 异地模式）时的锚。
+// 这个状态下后端每个接口都只回一句 error，本地快照为空 —— 而预设渲染、指纹不匹配检测
+// 都是「拿到数据就重绘」，会把「为什么不可用」的说明牌刷掉、预设栏又写回「未初始化？」。
+// 所以用工牌把渲染口封住：不可用时只认 showKbUnavailable 那块牌子。
+let KB_DOWN = { on: false, why: "" };
+const PRESET_VERB = { copy: "复制", move: "移动" };
+
+function kbFpBadge(st, serverFp){
+  if(!serverFp){ return ""; }
+  const m = st ? st.match : null;
+  const mine = (st && st.fingerprint) ? st.fingerprint : "";
+  if(m === false){
+    return `<span class="badge bad" title="预设指纹 ${esc(mine)}，当前服务端 ${esc(serverFp)}">⚠ 指纹不匹配</span>`;
+  }
+  if(m === true){
+    return `<span class="badge ok" style="font-family:var(--mono)" title="预设与当前服务端一致">✓ ${esc(serverFp)}</span>`;
+  }
+  return `<span class="badge dim" style="font-family:var(--mono)" title="预设未绑定指纹，首次写入知识时自动绑定">服务端 ${esc(serverFp)} · 预设未绑定</span>`;
+}
+
+function presetChipHTML(p){
+  const cls = ["pre"];
+  if(p.active) cls.push("on");
+  if(p.match === false) cls.push("bad");
+  if(PICK.action) cls.push("pick");
+  if(PICK.action === "delete" && PICK.dst === p.id) cls.push("arm");
+  const tags = p.match === false
+    ? `<span class="badge bad">指纹不匹配</span>`
+    : (p.match === true ? `<span class="badge ok">指纹匹配</span>` : `<span class="badge dim">未绑定指纹</span>`);
+  const renamed = (PICK.action === "rename" && PICK.renameId === p.id)
+    ? `<div class="mini"><input type="text" id="rn_in" value="${esc(p.name)}" maxlength="40">
+        <button class="btn primary sm" data-rn-ok="${p.id}">保存</button>
+        <button class="btn sm" data-rn-no="1">取消</button></div>`
+    : "";
+  const tip = (PICK.action === "delete" && PICK.dst === p.id)
+    ? `<div class="tagline">再点一次确认删除</div>`
+    : (PICK.action === "bind"
+      ? `<div class="tagline" style="color:var(--cyan)">${p.match === true ? "点击解绑指纹" : "点击绑定到当前服务端"}</div>`
+      : "");
+  return `<div class="${cls.join(" ")}" data-pid="${p.id}">
+      <div class="r1"><span class="nm">${esc(p.name)}</span>${p.active ? `<span class="badge amb">使用中</span>` : ""}</div>
+      <div class="r2">${tags}</div>
+      <div class="r2"><span class="fp-mono">${p.fingerprint ? esc(p.fingerprint) : "—"}</span><span>·</span><span>${p.entries} 条</span></div>
+      ${renamed}${tip}
+    </div>`;
+}
+
+function renderPresets(){
+  const box = $("kb_presets");
+  if(!box) return;
+  if(KB_DOWN.on) return;      // 不可用时这块牌子归 showKbUnavailable 管，别刷回去（v0.21.21）
+  const ps = KBP.presets || [];
+  if(!ps.length){
+    box.innerHTML = `<span class="muted">没有可用预设（知识库未初始化？）</span>`;
+    $("kb_preset_hint").textContent = "";
+    return;
+  }
+  const content = KBP.server_content
+    ? ` <span class="muted">· ${esc(KBP.server_content)}</span>` : "";
+  $("kb_srv_fp").innerHTML = KBP.server_fp
+    ? `服务端指纹 <span class="fp-mono">${esc(KBP.server_fp)}</span>${content}`
+    : (KBP.server_content ? `<span class="muted">${esc(KBP.server_content)}</span>` : "");
+  box.innerHTML = ps.map(presetChipHTML).join("");
+  const hint = $("kb_preset_hint");
+  if(PICK.action === "copy" || PICK.action === "move"){
+    const v = PRESET_VERB[PICK.action];
+    hint.textContent = !PICK.src
+      ? `第 1 步：点击要${v}「哪个预设」里的知识`
+      : `第 2 步：点击要${v}到「哪个预设」（不能是源本身；同名条目保留目标版本）`;
+  } else if(PICK.action === "rename"){
+    hint.textContent = "点击要重命名的预设";
+  } else if(PICK.action === "delete"){
+    hint.textContent = "点击要删除的预设（连点两次确认，且至少要保留一个）";
+  } else if(PICK.action === "bind"){
+    hint.textContent = "点击预设：未绑定 / 绑定的是别的指纹 → 绑定到当前服务端；已绑定当前服务端 → 解绑";
+  } else {
+    hint.textContent = "";
+  }
+  const n = KBP.notice || {};
+  $("kb_notice_sw").innerHTML = n.suppressed
+    ? `指纹不匹配提醒：本轮已关闭 · <button class="jump" id="pre_notice_on">重新开启</button>`
+    : `指纹不匹配提醒：开启中 <span class="muted">（同一轮指纹只弹一次）</span>`;
+  const on = $("pre_notice_on");
+  if(on) on.onclick = () => presetNotice("enable");
+  const rn = $("rn_in");
+  if(rn){
+    rn.focus(); rn.select();
+    rn.onkeydown = e => { if(e.key === "Enter"){ e.preventDefault(); renamePreset(PICK.renameId, rn.value); } };
+  }
+}
+
+function renderKbAlert(){
+  const box = $("kb_alert");
+  if(!box) return;
+  if(KB_DOWN.on) return;      // 不可用说明牌不被指纹提示覆盖（v0.21.21）
+  const ps = KBP.presets || [];
+  const act = ps.find(p => p.active);
+  if(!act || act.match !== false){ box.innerHTML = ""; return; }
+  const matched = ps.filter(p => p.match === true);
+  box.innerHTML = `<div class="kb-alert">
+    <div class="t">⚠ 当前预设「${esc(act.name)}」的指纹与当前服务端不一致</div>
+    <div class="m">预设绑定 <code>${esc(act.fingerprint)}</code> · 服务端 <code>${esc(KBP.server_fp)}</code>
+      —— 这个知识库里的经验可能不适用于当前服务端。插件端不会自动切换，请确认指定谁服务谁。</div>
+    <div class="cons"><b>不切换的后果</b>：① 本预设的条目仍会被正常检索、原样喂给 AI —— 可能把别的整合包的物品 ID／配件方案／NBT 写法当成当前可用的，导致 give、summon 这类命令报错，或发出对不上号的东西；② 以后新学到的经验会继续写进本预设，两套整合包的经验混在同一份文件里（同 topic 还会互相覆盖），越往后越难分辨哪条属于哪个包。</div>
+    <div class="btnrow">
+      <button class="btn sm" data-alert="bind">把「${esc(act.name)}」绑定到本服务端</button>
+      ${matched.map(p => `<button class="btn sm" data-alert="switch" data-pid="${p.id}">切换到匹配的预设「${esc(p.name)}」</button>`).join("")}
+    </div>
+  </div>`;
+}
+
+async function presetOp(path, body){
+  const r = await callPost(path, body).catch(() => ({ ok: false, error: "请求失败" }));
+  const box = $("kb_preset_notice");
+  if(!r || !r.ok){ setNotice(box, (r && r.error) || "操作失败", true); return r; }
+  if(r.presets){
+    KBP = { presets:r.presets, active:r.active, server_fp:r.server_fingerprint,
+            server_content:r.server_content||"", notice:r.notice };
+  }
+  renderPresets(); renderKbAlert();
+  setNotice(box, r.notice_text || "✓ 完成");
+  await loadKnowledge();
+  checkFingerprintNotice();   // v0.21.8：换预设 / 绑定 / 新建后立刻重新检测「指纹不匹配」
+  return r;
+}
+
+async function renamePreset(pid, name){
+  const v = (name || "").trim();
+  PICK = { action: null, src: null, dst: null, renameId: null };
+  if(!v){ renderPresets(); return; }
+  await presetOp("kb/presets/rename", { id: pid, name: v });
+}
+
+async function presetNotice(action){
+  const r = await callPost("kb/presets/notice", { action }).catch(() => ({ ok:false }));
+  if(r && r.ok){
+    KBP = { presets:r.presets, active:r.active, server_fp:r.server_fingerprint,
+            server_content:r.server_content||"", notice:r.notice };
+    if(action === "enable") FP_SHOWN_KEY = "";   // 重新开启提醒 → 本轮重新给一次弹窗
+    renderPresets(); renderKbAlert();
+    const box = $("kb_preset_notice");
+    if(box) setNotice(box, r.notice_text || "✓");
+    if(action === "enable" && r.notice && r.notice.show) showFpModal(r.notice);
+  }
+  return r;
+}
+
+async function handlePresetClick(pid){
+  const p = (KBP.presets || []).find(x => x.id === pid);
+  if(!p) return;
+  const msg = $("kb_preset_notice");
+  if(PICK.action === "copy" || PICK.action === "move"){
+    const mode = PICK.action;
+    if(!PICK.src){ PICK.src = pid; renderPresets(); return; }
+    if(pid === PICK.src){ setNotice(msg, "源与目标不能是同一个预设", true); return; }
+    const from = PICK.src;
+    PICK = { action: null, src: null, dst: null, renameId: null };
+    renderPresets();
+    await presetOp("kb/presets/transfer", { from, to: pid, mode });
+    return;
+  }
+  if(PICK.action === "rename"){
+    PICK.renameId = pid;
+    renderPresets();
+    return;
+  }
+  if(PICK.action === "delete"){
+    if(PICK.dst !== pid){ PICK.dst = pid; renderPresets(); return; }
+    PICK = { action: null, src: null, dst: null, renameId: null };
+    renderPresets();
+    await presetOp("kb/presets/delete", { id: pid });
+    return;
+  }
+  if(PICK.action === "bind"){
+    PICK = { action: null, src: null, dst: null, renameId: null };
+    renderPresets();
+    await presetOp("kb/presets/bind", { id: pid, target: (p.match === true ? "none" : "server") });
+    return;
+  }
+  if(p.active){ setNotice(msg, `「${p.name}」已经是在用的预设了`, false); return; }
+  await presetOp("kb/presets/switch", { id: pid });
+}
+
+function startPick(action){
+  PICK = { action, src: null, dst: null, renameId: null };
+  $("kb_new_form").style.display = "none";
+  setNotice($("kb_preset_notice"), "");
+  renderPresets();
+}
+
+// ---- 指纹不匹配 · 全屏大弹窗（v0.21.8：检测到就弹，同一轮只弹一次） ----
+// 「一轮」= (激活预设 × 服务端指纹)。弹窗只要显示过就记账（下方 markNoticeSeen），
+// 服务端指纹下次再变动（或换到别的预设）才重新给一次弹窗机会。
+let FP_SHOWN_KEY = "";   // 前端去重：同一轮只弹一次（并发请求同时返回 show=true 时兜底）
+function showFpModal(n){
+  const key = n.key || `${n.preset_id}|${n.server_fp}`;
+  if(FP_SHOWN_KEY === key) return;
+  FP_SHOWN_KEY = key;
+  const act = (KBP.presets || []).find(p => p.id === n.preset_id) || {};
+  $("fp_m_server").textContent = n.server_fp || "-";
+  // v0.21.20：指纹是按 mods/ 还是 plugins/ 算出来的，这里说清楚
+  $("fp_m_content").textContent = n.server_content || KBP.server_content || "（未识别到内容目录）";
+  $("fp_m_preset").textContent = `${n.preset_name || act.name || "?"}（${act.entries ?? "?"} 条知识）`;
+  $("fp_m_preset_fp").textContent = n.preset_fp || "—（未绑定）";
+  // v0.21.9：指纹算不出区别（两个服务端会撞成同一个值）时必须点出来
+  // v0.21.20：插件服务端内容在 plugins/ —— 文案要同时提 mods/ 与 plugins/，别只怪 mods 空
+  const weak = $("fp_weak");
+  if(weak){
+    weak.style.display = n.server_fp_weak ? "block" : "none";
+    if(n.server_fp_weak){
+      const content = n.server_content || KBP.server_content || "";
+      weak.innerHTML = `⚠ <b>当前服务端既没有 mods/*.jar，也没有 plugins/*.jar</b>，指纹只能按
+        <code>${esc(n.server_fp)}</code>${content ? `（${esc(content)}）` : ""} 反映服务端形态
+        —— 两台同形态的服务端会算出同一个指纹，插件认不出「换过服务端」，
+        指纹比对与本次提醒都会失效。<br>
+        请先确认「服务器目录 server_dir」指对了（要指到服务端根目录，不是它的上一级；
+        现在指向 <code>${esc(n.server_dir || "（未配置）")}</code>，它的 mods/ 与 plugins/ 里都没有 jar）。
+        模组服的内容在 mods/，Paper / Spigot 系插件服的内容在 plugins/ —— 指对了就能认出服务端。`;
+    }
+  }
+  $("fp_modal").style.display = "flex";
+  markNoticeSeen();        // 显示即记账 → 本轮不再弹（不要求主人点按钮）
+}
+async function markNoticeSeen(){
+  const r = await callPost("kb/presets/notice", { action: "seen" }).catch(() => null);
+  if(r && r.ok && r.notice) KBP.notice = r.notice;
+}
+// v0.21.10：勾选框已撤 → 两个按钮都走「记账（ack）」，不再有 suppress 这条路。
+async function fpModalDone(goKnowledge){
+  $("fp_modal").style.display = "none";
+  await presetNotice("ack");
+  if(goKnowledge){
+    switchTab("knowledge");
+    const card = $("kb_preset_card");
+    if(card){
+      try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
+      card.classList.remove("flash"); void card.offsetWidth;
+      card.classList.add("flash");
+      setTimeout(() => card.classList.remove("flash"), 1700);
+    }
+  }
+}
+async function checkFingerprintNotice(){
+  const r = await callGet("kb/presets").catch(() => ({ ok:false }));
+  if(!r || !r.ok) return;
+  KBP = { presets:r.presets || [], active:r.active, server_fp:r.server_fingerprint,
+            server_content:r.server_content||"", notice:r.notice };
+  renderPresets(); renderKbAlert();
+  if(r.notice && r.notice.show) showFpModal(r.notice);
+  return r.notice;
+}
+
+// ---- 绑定指纹 · 二次确认弹窗 ----
+// 绑定只是改写「指纹声明」，不会校验条目内容是否真的适配当前整合包，所以给主人一次反悔机会
+let BIND_PID = null;
+function openBindConfirm(){
+  const p = (KBP.presets || []).find(x => x.active);
+  if(!p) return;
+  BIND_PID = p.id;
+  $("bind_m_name").textContent = `${p.name}（${p.entries ?? "?"} 条知识）`;
+  $("bind_m_preset").textContent = p.fingerprint || "—（未绑定）";
+  $("bind_m_server").textContent = KBP.server_fp || "-";
+  $("bind_modal").style.display = "flex";
+}
+function closeBindConfirm(){
+  $("bind_modal").style.display = "none";
+  BIND_PID = null;
+}
+async function bindConfirmDone(){
+  const pid = BIND_PID;
+  closeBindConfirm();
+  if(pid) await presetOp("kb/presets/bind", { id: pid, target: "server" });
+}
+
+// 点击预设卡片
+document.addEventListener("click", e => {
+  if(e.target.closest("input,button")) return;
+  const chip = e.target.closest(".pre");
+  if(!chip) return;
+  handlePresetClick(chip.dataset.pid);
+});
+document.addEventListener("click", e => {
+  const ok = e.target.closest("[data-rn-ok]");
+  if(ok){ renamePreset(ok.dataset.rnOk, ($("rn_in") || {}).value || ""); return; }
+  if(e.target.closest("[data-rn-no]")){ PICK = { action:null }; renderPresets(); return; }
+  const go = e.target.closest("[data-kbgo]");
+  if(go){
+    if(go.dataset.kbgo === "settings") switchTab("settings");
+    else loadKnowledge();
+    return;
+  }
+  const al = e.target.closest("[data-alert]");
+  if(al){
+    const act = al.dataset.alert;
+    if(act === "bind"){
+      openBindConfirm();
+    } else if(act === "switch"){
+      presetOp("kb/presets/switch", { id: al.dataset.pid });
+    }
+  }
+});
+
+
+// ============ 工作流 ============
+const WF_BADGE = {done:["ok","✓ 完成"],failed:["bad","✗ 失败"],running:["warn","… 执行中"],error:["bad","! 异常"]};
+const WF_AGENT = [["分类器","classifier"],["模板判断","judge"],["模板工程师","engineer"],["实现器","implementer"],["纠错器","corrector"]];
+async function loadWorkflow(silent){
+  const r = await callGet("workflow/status").catch(()=>({ok:false}));
+  if(!r || !r.ok){
+    if(!silent) $("wf_logs").innerHTML = `<span class="badge bad">工作流状态获取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    return;
+  }
+  WF = r;
+  const logs = r.logs||[];
+  const done = logs.filter(l=>l.status==="done").length;
+  const bad = logs.filter(l=>l.status==="failed"||l.status==="error").length;
+  const run = logs.filter(l=>l.status==="running").length;
+  $("wf_stats").innerHTML =
+    statHTML("流水线", r.enabled===false?"停用":"启用", r.tool_enabled===false?"工具不可用":"工具已开放", r.enabled!==false, r.enabled!==false?"g":"b") +
+    statHTML("主 Provider", esc(r.main_provider||"自动"), "各 Agent 可独立指定", undefined, "c") +
+    statHTML("近 15 次任务", done, `${run} 执行中 · ${bad} 失败`, done>0?done/Math.max(logs.length,1):"", done>0?"g":"");
+  $("sw_wf_enabled").checked = r.enabled!==false;
+  $("sw_wf_tool").checked = r.tool_enabled!==false;
+  // 持续性状态横幅：停用时长期可见，说明「复杂任务会退化成什么」
+  const banner = $("wf_banner");
+  if(r.enabled===false || r.tool_enabled===false){
+    const off = r.enabled===false ? "总开关 agent_workflow_enabled" : "工具开关 enable_mc_workflow";
+    const lvl = r.enabled===false ? "bad" : "warn";
+    const list = r.enabled===false
+      ? "五 Agent 流水线（分类→模板判断→前瞻建库→实现→纠错）不可用，复杂任务将回退为单工具分步模式。"
+      : "mc_workflow 对 LLM 不可用（工具表仍会暴露它，模型调用时会收到导航提示后改用具体工具）。";
+    banner.className = "banner show " + lvl;
+    banner.innerHTML = `<span class="bi">⚠</span><span class="bx">已关闭 <b>${off}</b>：${list}<br>`
+      + `此时对满配枪械 / 复杂 NBT 这类任务，可按 <code>mc_search_knowledge</code>（查经验）`
+      + `→ <code>mc_search_item</code>（查 ID）→ <code>mc_get_recipes</code>（查配方）`
+      + `→ <code>mc_execute_command</code>（执行）分步完成；`
+      + `如需恢复流水线，打开上方开关即可（保存即生效）。</span>`;
+  }else{
+    banner.className = "banner";
+    banner.innerHTML = "";
+  }
+  $("wf_main").innerHTML = `主 Provider：<b style="color:var(--text)">${esc(r.main_provider||"（自动回退会话默认）")}</b>`;
+  $("wf_agents").innerHTML = WF_AGENT.map(([n,k])=>`<span class="chip">${n}<b>${esc(r.agents&&r.agents[k]||"默认")}</b></span>`).join("");
+  const _rd = r.rounds || {};
+  $("wf_rounds").textContent = `实现器最多 ${_rd.implement ?? "-"} 轮 / 纠错循环最多 ${_rd.correct ?? "-"} 轮`;
+  $("wf_logs").innerHTML = logs.length ? logs.map(l=>{
+    const [bcls,btxt] = WF_BADGE[l.status]||["dim","-"];
+    return `<div class="wf">
+      <span class="ts">${esc(l.ts)}</span><span class="badge ${bcls}">${btxt}</span>
+      ${l.kind?`<span class="badge info">${esc(l.kind)}</span>`:""}
+      <span class="req">${esc(l.request)}</span>
+      ${l.cost?`<span class="cost">${esc(l.cost)}</span>`:""}
+      ${l.detail?`<div class="detail">${esc(l.detail)}</div>`:""}
+    </div>`;
+  }).join("") : `<div class="empty">暂无任务记录</div>`;
+}
+
+
+// ============ 提示词 ============
+let PR = null;              // 提示词快照
+let PR_ROLE = "classifier"; // 当前选中的角色
+
+async function loadPrompts(){
+  const r = await callGet("prompts").catch(()=>({ok:false}));
+  if(!r || !r.ok){
+    $("pr_list").innerHTML = `<span class="badge bad">提示词读取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    $("pr_sum").textContent = "-";
+    return;
+  }
+  PR = r;
+  const agents = r.agents||[];
+  if(!agents.some(a=>a.role===PR_ROLE) && agents.length) PR_ROLE = agents[0].role;
+  $("pr_sum").innerHTML = r.custom_count
+    ? `<span class="badge amb">${r.custom_count}/${r.total} 已自定义</span>`
+    : `<span class="badge dim">全部内置默认</span>`;
+  $("pr_list").innerHTML = agents.map((a,i)=>`
+    <div class="pr-item ${a.role===PR_ROLE?"active":""}" data-role="${esc(a.role)}">
+      <span class="idx">${i+1}</span>
+      <span class="nm">${esc(a.short)}<div class="meta">${esc(a.name)}</div></span>
+      <span class="badge ${a.custom?"amb":"dim"}">${a.custom?"自定义":"默认"}</span>
+    </div>`).join("") || `<div class="empty">无可编辑的 Agent</div>`;
+  $("pr_list").querySelectorAll(".pr-item").forEach(el=>{
+    el.addEventListener("click", ()=>{ PR_ROLE = el.dataset.role; renderPrompt(); });
+  });
+  renderPrompt();
+}
+
+function curAgent(){ return ((PR&&PR.agents)||[]).find(a=>a.role===PR_ROLE) || null; }
+
+function renderPrompt(){
+  const a = curAgent();
+  document.querySelectorAll(".pr-item").forEach(el=>el.classList.toggle("active", el.dataset.role===PR_ROLE));
+  if(!a){
+    $("pr_title").textContent = "系统提示词";
+    $("pr_desc").textContent = "-";
+    $("pr_state").innerHTML = "";
+    $("pr_text").value = "";
+    $("pr_count").textContent = "-";
+    return;
+  }
+  $("pr_title").textContent = a.name + " · 系统提示词";
+  $("pr_desc").innerHTML = esc(a.desc||"") + ` <span class="badge dim">${esc(a.io||"")}</span>`;
+  $("pr_state").innerHTML = a.custom ? `<span class="badge amb">自定义中</span>` : `<span class="badge dim">内置默认</span>`;
+  $("pr_text").value = a.content||"";
+  setNotice($("pr_notice"), "");
+  prCount();
+}
+
+function prCount(){
+  const v = $("pr_text").value, a = curAgent();
+  let extra = "";
+  if(a){
+    const d = (a.default||"").trim(), c = v.trim();
+    if(!c) extra = " · 留空＝回退内置默认";
+    else if(c === d) extra = " · 与内置默认一致";
+    else { const diff = c.length - d.length; extra = ` · 与内置默认相差 ${diff>=0?"+":""}${diff} 字符`; }
+  }
+  $("pr_count").textContent = `${v.length} 字符${extra}`;
+}
+
+async function savePrompt(){
+  const a = curAgent();
+  if(!a) return;
+  if(!$("pr_text").value.trim()){ setNotice($("pr_notice"), "内容为空：保存后将回退为内置默认", false); }
+  const r = await callPost("prompts/save", { role: a.role, content: $("pr_text").value });
+  if(r && r.ok){ setNotice($("pr_notice"), "✓ " + (r.notice||"已保存")); await loadPrompts(); }
+  else setNotice($("pr_notice"), "保存失败" + (r&&r.error?"："+r.error:""), true);
+}
+
+async function resetPrompt(role, all){
+  const body = all ? { all:true } : { role };
+  const r = await callPost("prompts/reset", body);
+  if(r && r.ok){ setNotice($("pr_notice"), "✓ " + (r.notice||"已恢复内置默认")); await loadPrompts(); }
+  else setNotice($("pr_notice"), "恢复失败" + (r&&r.error?"："+r.error:""), true);
+}
+
+function bindPrompts(){
+  $("pr_text").addEventListener("input", prCount);
+  $("pr_save").onclick = savePrompt;
+  $("pr_reload").onclick = ()=>{ const a=curAgent(); if(a){ $("pr_text").value = a.content||""; prCount(); setNotice($("pr_notice"), "已放弃未保存的修改"); } };
+  $("pr_use_default").onclick = ()=>{
+    const a = curAgent(); if(!a) return;
+    $("pr_text").value = a.default||"";
+    prCount();
+    setNotice($("pr_notice"), "已把内置默认载入编辑框（尚未保存，改完点「保存并生效」）");
+  };
+  $("pr_reset").onclick = e => armConfirm(e.currentTarget, "恢复内置默认", ()=>resetPrompt(PR_ROLE, false));
+  $("pr_reset_all").onclick = e => armConfirm(e.currentTarget, "全部恢复内置默认", ()=>resetPrompt(null, true));
+  $("pr_copy").onclick = async ()=>{
+    const txt = $("pr_text").value||"";
+    try{
+      if(navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(txt);
+      else { $("pr_text").select(); document.execCommand("copy"); }
+      setNotice($("pr_notice"), "✓ 已复制提示词全文");
+    }catch(e){ $("pr_text").select(); setNotice($("pr_notice"), "复制失败，已为你选中文本（请手动 Ctrl+C）", true); }
+  };
+}
+
+// ============ 设置页 ============
+// 字段表：[控件id, 配置键, 类型(b=布尔/s=文本/n=数字/l=列表), 布尔默认值]
+// —— 与后端 _conf_schema.json 的配置键一一对应（少量键由「会话目标选择器 / 符号标签控件」维护）
+const CFG_FIELDS = [
+  // 基础 · 连接与安全
+  ["cfg_remote_rcon_mode","remote_rcon_mode","b",false],
+  ["cfg_server_dir","server_dir","s"],
+  ["cfg_rcon_host","rcon_host","s"],
+  ["cfg_rcon_port","rcon_port","n"],
+  ["cfg_rcon_password","rcon_password","s"],
+  ["cfg_rcon_timeout","rcon_timeout","n"],
+  ["cfg_admin_ids","admin_ids","l"],
+  ["cfg_danger_policy","danger_command_policy","s"],
+  ["cfg_perm_hint","permission_hint_injection","b",true],
+  ["cfg_perm_latch","permission_latch","b",true],
+  ["cfg_perm_latch_ttl","permission_latch_ttl","n"],
+  ["cfg_ban_reason","ban_default_reason","s"],
+  // 消息互通 · 播报
+  ["cfg_ev_enabled","enable_event_listener","b",false],
+  ["cfg_notify_jl","notify_join_leave","b",true],
+  ["cfg_notify_death","notify_death","b",true],
+  ["cfg_notify_adv","notify_advancement","b",true],
+  ["cfg_notify_cmd","notify_command","b",true],
+  ["cfg_notify_chat","notify_chat","b",false],
+  // notify_targets / chat_bridge_targets 改用「会话目标选择器」编辑（见 TGT_* 区块）
+  // 消息互通 · 桥接
+  ["cfg_bridge_en","chat_bridge_enabled","b",false],
+  ["cfg_bridge_prefix","chat_bridge_prefix","s"],
+  ["cfg_bridge_format","chat_bridge_format","s"],
+  ["cfg_bridge_receipt","chat_bridge_receipt","b",false],
+  ["cfg_bridge_case","chat_bridge_case_sensitive","b",false],
+  // 平台指令 mcs
+  ["cfg_cmd_bind","enable_bind_command","b",true],
+  ["cfg_cmd_say","enable_say_command","b",true],
+  ["cfg_cmd_say_public","say_command_public","b",true],
+  ["cfg_cmd_status","enable_status_command","b",true],
+  ["cfg_cmd_kick","enable_kick_command","b",true],
+  ["cfg_cmd_ban","enable_ban_command","b",true],
+  ["cfg_cmd_unban","enable_unban_command","b",true],
+  ["cfg_cmd_banlist","enable_banlist_command","b",true],
+  ["cfg_cmd_help","enable_help_command","b",true],
+  ["cfg_cmd_title","enable_title_command","b",true],
+  // AI 能力 · LLM 工具
+  ["cfg_tool_exec","enable_mc_execute_command","b",true],
+  ["cfg_tool_players","enable_mc_list_players","b",true],
+  ["cfg_tool_status","enable_mc_server_status","b",true],
+  ["cfg_tool_conn","enable_mc_connection_status","b",true],
+  ["cfg_tool_broadcast","enable_mc_broadcast","b",true],
+  ["cfg_tool_give","enable_mc_give_item","b",true],
+  ["cfg_tool_kick","enable_mc_kick","b",true],
+  ["cfg_tool_ban","enable_mc_ban","b",true],
+  ["cfg_tool_search","enable_mc_search_item","b",true],
+  ["cfg_tool_recipes","enable_mc_get_recipes","b",true],
+  ["cfg_tool_mods","enable_mc_list_mods","b",true],
+  // AI 能力 · 词典与知识库
+  ["cfg_dict_en","dictionary_enabled","b",true],
+  ["cfg_kb_en","knowledge_enabled","b",true],
+  ["cfg_tool_kb_search","enable_mc_search_knowledge","b",true],
+  ["cfg_tool_kb_save","enable_mc_save_knowledge","b",true],
+  ["cfg_tool_kb_correct","enable_mc_correct_knowledge","b",true],
+  // 外观 · 反馈与颜色
+  ["cfg_feedback_name","feedback_name","s"],
+  ["cfg_feedback_tellraw","feedback_tellraw","b",true],
+  ["cfg_grad_en","gradient_enabled","b",false],
+  ["cfg_grad_fmt","gradient_format","s"],
+  ["cfg_color_title_t","color_title","s"],
+  ["cfg_grad_title_t","gradient_colors_title","s"],
+  ["cfg_color_say_t","color_say","s"],
+  ["cfg_grad_say_t","gradient_colors_say","s"],
+  ["cfg_color_fb_t","color_feedback","s"],
+  ["cfg_grad_fb_t","gradient_colors_feedback","s"],
+  // 自动化 · 多Agent 工作流
+  ["cfg_wf_enabled","agent_workflow_enabled","b",true],
+  ["cfg_wf_tool","enable_mc_workflow","b",true],
+  ["cfg_wf_provider","llm_provider_id","s"],
+  ["cfg_wf_p_classifier","agent_classifier_provider_id","s"],
+  ["cfg_wf_p_judge","agent_judge_provider_id","s"],
+  ["cfg_wf_p_engineer","agent_engineer_provider_id","s"],
+  ["cfg_wf_p_implementer","agent_implementer_provider_id","s"],
+  ["cfg_wf_p_corrector","agent_corrector_provider_id","s"],
+  ["cfg_wf_rounds_impl","agent_max_implement_rounds","n"],
+  ["cfg_wf_rounds_correct","agent_max_correct_rounds","n"],
+];
+
+// 空值兜底：这些字段留空会「无意义」或无法通过后端校验，展示与提交时都补默认值
+// （注意不含 chat_bridge_prefix —— 它留空是合法语义：转发全部聊天）
+const S_DEFAULTS = {
+  "cfg_bridge_format": "[MC] {player}：{message}",
+  "cfg_danger_policy": "whitelist",
+  "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
+  "cfg_grad_title_t": "#FFAA00,#FF00FF", "cfg_grad_say_t": "#FFFFFF,#55FFFF", "cfg_grad_fb_t": "#FFAA00,#55FF55",
+  "cfg_grad_fmt": "json",
+};
+
+// ============ 命令工具 白名单 / 黑名单（v0.20.0） ============
+// 视觉上是两张模式卡（单选 + 圆点），真实取值仍走隐藏的 select#cfg_danger_policy，
+// 与 CFG_FIELDS / collectSettings 的既有链路完全一致，不新增配置键。
+function syncPolicyUI(){
+  const sel = $("cfg_danger_policy");
+  if(!sel) return;
+  const v = (sel.value === "blacklist") ? "blacklist" : "whitelist";
+  sel.value = v;
+  document.querySelectorAll('#page_settings input[name="danger_policy_mode"]').forEach(r=>{
+    r.checked = (r.value === v);
+    const card = r.closest(".pm");
+    if(card) card.classList.toggle("on", r.checked);
+  });
+  const now = $("policy_now");
+  if(now){
+    now.textContent = "当前生效：" + (v === "whitelist" ? "白名单" : "黑名单");
+    now.style.color = (v === "whitelist") ? "var(--cyan)" : "var(--amber)";
+  }
+}
+function bindPolicyUI(){
+  document.querySelectorAll('#page_settings input[name="danger_policy_mode"]').forEach(r=>{
+    r.onchange = ()=>{
+      if(!r.checked) return;
+      const sel = $("cfg_danger_policy");
+      if(sel) sel.value = r.value;
+      syncPolicyUI();
+    };
+  });
+  syncPolicyUI();
+}
+// ============ 拦截即终局 · 闸门强化（v0.21.0） ============
+function syncTerminalUI(){
+  const now = $("terminal_now");
+  const hint = $("cfg_perm_hint"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
+  if(!now) return;
+  const on = [];
+  if(hint && hint.checked) on.push("前置提醒");
+  if(latch && latch.checked) on.push("会话闩锁 " + (parseInt((ttl&&ttl.value)||"300",10)||300) + "s");
+  now.textContent = on.length ? ("当前生效：" + on.join(" + ")) : "当前生效：仅事后拦截";
+  now.style.color = on.length ? "var(--amber)" : "var(--muted, #888)";
+}
+function bindTerminalUI(){
+  ["cfg_perm_hint","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
+    const el = $(id); if(el) el.oninput = el.onchange = syncTerminalUI;
+  });
+  syncTerminalUI();
+}
+// ============ 会话目标选择器（v0.16.1） ============
+// 输入侧只需「平台 + 私聊/群聊 + 号码」，自动拼成 平台ID:消息类型:会话ID
+const TGT_KEYS = { notify:"notify_targets", bridge:"chat_bridge_targets" };
+const TGT_LABEL = { FriendMessage:"私聊", GroupMessage:"群聊", GuildMessage:"频道", OtherMessage:"其他" };
+const TGT_ALIAS = {
+  friendmessage:"FriendMessage", friend:"FriendMessage", private:"FriendMessage",
+  "私聊":"FriendMessage", "好友":"FriendMessage", "单聊":"FriendMessage",
+  groupmessage:"GroupMessage", group:"GroupMessage", "群聊":"GroupMessage", "群":"GroupMessage",
+  guildmessage:"GuildMessage", guild:"GuildMessage", "频道":"GuildMessage",
+  othermessage:"OtherMessage", other:"OtherMessage", "其他":"OtherMessage"
+};
+let PLATFORMS = [];
+const TGT_STATE = { notify:[], bridge:[] };
+
+// 把一条会话标识拆成 平台/类型/号码（用于列表展示）
+function describeTarget(umo){
+  const parts = String(umo==null?"":umo).split(":").map(x=>x.trim());
+  let platform="", type="", id="";
+  if(parts.length>=3){ platform=parts[0]; type=parts[1]; id=parts.slice(2).join(":"); }
+  else if(parts.length===2){ type=parts[0]; id=parts[1]; }
+  else { id=parts[0]||""; }
+  type = TGT_ALIAS[String(type).toLowerCase()] || type;
+  return { platform, type, id, label: TGT_LABEL[type] || type || "会话" };
+}
+function fillPlatformSelects(){
+  for(const kind of Object.keys(TGT_KEYS)){
+    const sel = $("tgt_"+kind+"_platform");
+    if(!sel) continue;
+    const keep = sel.value;
+    sel.innerHTML = PLATFORMS.length
+      ? PLATFORMS.map(p=>`<option value="${esc(p.id)}">${esc(p.name||p.id)}</option>`).join("")
+      : `<option value="">未检测到平台</option>`;
+    sel.title = PLATFORMS.length ? "消息平台" : "未检测到已加载的平台，将省略平台前缀由后端自动补全";
+    if(keep && PLATFORMS.some(p=>String(p.id)===keep)) sel.value = keep;
+  }
+}
+function renderTargets(kind){
+  const box = $("tgt_"+kind+"_list");
+  if(!box) return;
+  const withEvents = (kind === "notify");
+  box.innerHTML = TGT_STATE[kind].map((umo,i)=>{
+    const d = describeTarget(umo);
+    const plat = d.platform ? `<span class="p">${esc(d.platform)}</span>` : `<span class="p">自动</span>`;
+    const body = d.id
+      ? `<b>${esc(d.label)}</b><code>${esc(d.id)}</code>`
+      : `<code>${esc(String(umo))}</code>`;
+    const open = withEvents && !!TGT_OPEN[umo];
+    const head = [
+      withEvents ? ` data-tgt-open="${kind}:${i}"` : "",
+      withEvents ? ` title="点击展开 / 收起该会话的播报内容设置"` : "",
+    ].join("");
+    const sum = withEvents ? evtSummaryHtml(umo) : "";
+    const caret = withEvents ? `<span class="caret">▶</span>` : "";
+    const sub = withEvents ? renderTargetEvents(kind, i, umo) : "";
+    return `<div class="tgt${open?" open":""}${withEvents?" clickable":""}">`
+      + `<div class="tgt-hd"${head}>${plat}<div class="t">${body}</div>${sum}${caret}`
+      + `<button class="x" title="删除" data-tgt-del="${kind}:${i}">×</button></div>`
+      + sub + `</div>`;
+  }).join("");
+  box.querySelectorAll("[data-tgt-del]").forEach(b=>{
+    b.onclick = (ev)=>{
+      ev.stopPropagation();
+      const [k, idx] = b.dataset.tgtDel.split(":");
+      const removed = (TGT_STATE[k]||[])[+idx];
+      (TGT_STATE[k]||[]).splice(+idx, 1);
+      if(removed) delete TGT_EVENTS[removed];
+      renderTargets(k);
+      tgtMsg(k, "已移除，点「保存全部设置」生效");
+    };
+  });
+  // 点击会话行 → 展开 / 收起子菜单
+  box.querySelectorAll("[data-tgt-open]").forEach(hd=>{
+    hd.onclick = ()=>{
+      const [k, idx] = hd.dataset.tgtOpen.split(":");
+      const umo = (TGT_STATE[k]||[])[+idx];
+      if(!umo) return;
+      TGT_OPEN[umo] = !TGT_OPEN[umo];
+      renderTargets(k);
+    };
+  });
+  // 子菜单里的内容勾选
+  box.querySelectorAll("[data-tgt-ev]").forEach(ck=>{
+    ck.onchange = ()=>{
+      const [k, idx, group] = ck.dataset.tgtEv.split(":");
+      const umo = (TGT_STATE[k]||[])[+idx];
+      if(!umo) return;
+      const cur = evtList(umo).slice();
+      const pos = cur.indexOf(group);
+      if(ck.checked && pos < 0) cur.push(group);
+      if(!ck.checked && pos >= 0) cur.splice(pos, 1);
+      // 按固定顺序回写，避免勾选顺序影响配置可读性
+      TGT_EVENTS[umo] = NOTIFY_GROUPS.map(g=>g[0]).filter(g=>cur.includes(g));
+      renderTargets(k);
+      tgtMsg(k, "已更新该会话的播报内容，点「保存全部设置」生效");
+    };
+  });
+  // 全选 / 全不选
+  box.querySelectorAll("[data-tgt-all]").forEach(btn=>{
+    btn.onclick = ()=>{
+      const [k, idx, all] = btn.dataset.tgtAll.split(":");
+      const umo = (TGT_STATE[k]||[])[+idx];
+      if(!umo) return;
+      TGT_EVENTS[umo] = all === "1" ? NOTIFY_GROUPS.map(g=>g[0]) : [];
+      renderTargets(k);
+      tgtMsg(k, (all==="1" ? "该会话已全选" : "该会话已全部取消") + "，点「保存全部设置」生效");
+    };
+  });
+}
+// ---- 会话级播报内容（v0.17.0）----
+// 与后端 main.NOTIFY_EVENT_GROUPS / notify_* 全局开关一一对应
+const NOTIFY_GROUPS = [
+  ["join_leave", "玩家加入 / 离开", "notify_join_leave"],
+  ["chat",       "聊天内容",        "notify_chat"],
+  ["death",      "玩家死亡",        "notify_death"],
+  ["advancement","成就 / 进度",     "notify_advancement"],
+  ["command",    "玩家指令调用",    "notify_command"],
+];
+const ALL_NOTIFY_GROUPS = NOTIFY_GROUPS.map(g=>g[0]);
+let TGT_EVENTS = {};              // { 会话标识: [事件组] }；未记录 = 默认全开
+let TGT_OPEN = {};                // { 会话标识: 是否展开 }
+let NOTIFY_GATE = { enabled:false, types:{} };
+
+// 取某会话当前勾选的事件组；配置里没有该会话 = 默认全开
+function evtList(umo){
+  return Object.prototype.hasOwnProperty.call(TGT_EVENTS, umo)
+    ? TGT_EVENTS[umo].slice()
+    : ALL_NOTIFY_GROUPS.slice();
+}
+function evtSummaryHtml(umo){
+  const n = evtList(umo).length, total = ALL_NOTIFY_GROUPS.length;
+  if(n === total) return `<span class="sum">全部</span>`;
+  if(n === 0) return `<span class="sum mute">已静音</span>`;
+  return `<span class="sum">${n}/${total}</span>`;
+}
+function renderTargetEvents(kind, idx, umo){
+  const on = evtList(umo);
+  const rows = NOTIFY_GROUPS.map(([key,label,cfgKey])=>{
+    const gOn = NOTIFY_GATE.types[cfgKey] !== false;
+    const ck = on.includes(key);
+    const badge = gOn ? "" : `<span class="g">全局开关已关</span>`;
+    return `<label class="ev${gOn?"":" gated"}">`
+      + `<input type="checkbox" data-tgt-ev="${kind}:${idx}:${key}"${ck?" checked":""}>`
+      + `<span class="lb">${esc(label)}</span>${badge}</label>`;
+  }).join("");
+  const gate = NOTIFY_GATE.enabled ? "" :
+    `<div class="warn">⚠ 总开关「服务器事件转发」未开启，此处勾选暂不生效；总开关打开后才按此推送。</div>`;
+  return `<div class="tgt-sub">${gate}${rows}`
+    + `<div class="bar"><span>勾选该会话要接收的内容（默认全开）</span>`
+    + `<span><button data-tgt-all="${kind}:${idx}:1">全选</button> · `
+    + `<button data-tgt-all="${kind}:${idx}:0">全不选</button></span></div></div>`;
+}
+function collectTargetEvents(){
+  const out = {};
+  for(const umo of TGT_STATE.notify){
+    out[umo] = NOTIFY_GROUPS.map(g=>g[0]).filter(g=>evtList(umo).includes(g));
+  }
+  return out;
+}
+// 让子菜单里的「全局开关已关」提示随上方开关实时变化（无需先保存）
+const NOTIFY_SWITCH_IDS = {
+  notify_join_leave: "cfg_notify_jl",
+  notify_chat: "cfg_notify_chat",
+  notify_death: "cfg_notify_death",
+  notify_advancement: "cfg_notify_adv",
+  notify_command: "cfg_notify_cmd",
+};
+function syncNotifyGateFromForm(){
+  const master = $("cfg_ev_enabled");
+  NOTIFY_GATE.enabled = master ? !!master.checked : false;
+  NOTIFY_GROUPS.forEach(([, , cfgKey])=>{
+    const el = $(NOTIFY_SWITCH_IDS[cfgKey]);
+    NOTIFY_GATE.types[cfgKey] = el ? !!el.checked : true;
+  });
+}
+function bindNotifyGateWatch(){
+  [ "cfg_ev_enabled", ...Object.values(NOTIFY_SWITCH_IDS) ].forEach(id=>{
+    const el = $(id);
+    if(!el || el.dataset.gateBound) return;
+    el.dataset.gateBound = "1";
+    el.addEventListener("change", ()=>{ syncNotifyGateFromForm(); renderTargets("notify"); });
+  });
+}
+function tgtMsg(kind, html, isErr){
+  const el = $("tgt_"+kind+"_msg");
+  if(!el) return;
+  el.innerHTML = html || "";
+  el.style.color = isErr ? "var(--bad)" : "";
+}
+// 把用户输入转成标准会话标识；支持纯号码 / 类型:号码 / 完整标识
+function parseTargetInput(raw, platform, type){
+  const t = String(raw||"").trim().replace(/：/g, ":");
+  if(!t) return { error:"请先填 QQ 号或群号" };
+  const parts = t.split(":").map(x=>x.trim()).filter(x=>x!=="");
+  if(!parts.length) return { error:"请先填 QQ 号或群号" };
+  const prefix = platform ? platform + ":" : "";
+  if(parts.length >= 3){
+    const ty = TGT_ALIAS[parts[1].toLowerCase()] || parts[1];
+    return { umo: `${parts[0]}:${ty}:${parts.slice(2).join(":")}` };
+  }
+  if(parts.length === 2){
+    const head = TGT_ALIAS[parts[0].toLowerCase()];
+    const tail = TGT_ALIAS[parts[1].toLowerCase()];
+    if(head) return { umo: `${prefix}${head}:${parts[1]}` };
+    if(tail) return { umo: `${parts[0]}:${tail}:${parts[1]}` };
+    return { error:"格式无法识别，完整格式形如 aiocqhttp:FriendMessage:123456789" };
+  }
+  if(!/^\d+$/.test(parts[0])) return { error:"会话 ID 需要是纯数字（QQ 号或群号）" };
+  return { umo: `${prefix}${type}:${parts[0]}` };
+}
+function tgtPreview(kind){
+  const inp = $("tgt_"+kind+"_id");
+  if(!inp || !inp.value.trim()){ tgtMsg(kind, ""); return; }
+  const r = parseTargetInput(inp.value, $("tgt_"+kind+"_platform").value, $("tgt_"+kind+"_type").value);
+  if(r.error) tgtMsg(kind, esc(r.error), true);
+  else tgtMsg(kind, `将添加 <code>${esc(r.umo)}</code>`);
+}
+function addTarget(kind){
+  const inp = $("tgt_"+kind+"_id");
+  if(!inp) return;
+  const r = parseTargetInput(inp.value, $("tgt_"+kind+"_platform").value, $("tgt_"+kind+"_type").value);
+  if(r.error){ tgtMsg(kind, esc(r.error), true); return; }
+  if(TGT_STATE[kind].includes(r.umo)){ tgtMsg(kind, "该目标已在列表中", true); return; }
+  TGT_STATE[kind].push(r.umo);
+  if(kind === "notify") TGT_OPEN[r.umo] = true;   // 新会话默认展开，方便立刻勾选内容
+  inp.value = "";
+  renderTargets(kind);
+  tgtMsg(kind, `✓ 已加入 <code>${esc(r.umo)}</code>，点「保存全部设置」生效`);
+}
+function bindTargets(){
+  document.querySelectorAll("[data-tgt-add]").forEach(btn=>{
+    const kind = btn.dataset.tgtAdd;
+    btn.onclick = ()=>addTarget(kind);
+    const inp = $("tgt_"+kind+"_id");
+    if(inp){
+      inp.addEventListener("input", ()=>tgtPreview(kind));
+      inp.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); addTarget(kind); } });
+    }
+    ["_platform","_type"].forEach(sfx=>{
+      const s = $("tgt_"+kind+sfx);
+      if(s) s.addEventListener("change", ()=>tgtPreview(kind));
+    });
+  });
+}
+
+// 触发符号：标签式输入（添加一个显示一个，可逐个删除）（v0.17.7）
+// 存储格式仍是后端认的「|」分隔字符串（后端按 [,，|｜] 切分），UI 层负责拆装
+let SYM_STATE = [];
+const SYM_MAX = 12;
+// 是否区分大小写：由「聊天桥接 → 区分大小写」开关决定（v0.17.8）
+function symCaseSensitive(){ const el = $("cfg_bridge_case"); return !!(el && el.checked); }
+function symNorm(s){ const t = String(s||"").normalize("NFKC"); return symCaseSensitive() ? t : t.toLowerCase(); }
+function initSymbols(){
+  const hidden = $("cfg_bridge_prefix");
+  const raw = hidden ? (hidden.value || "") : "";
+  SYM_STATE = raw.split(/[,，|｜]/).map(x=>x.trim()).filter(Boolean);
+  const inp = $("sym_input");
+  if(inp) inp.onkeydown = ev=>{ if(ev.key === "Enter"){ ev.preventDefault(); addSymbol(); } };
+  const btn = $("sym_add");
+  if(btn) btn.onclick = addSymbol;
+  symMsg("");
+  renderSymbols();
+}
+function renderSymbols(){
+  const box = $("sym_list");
+  if(!box) return;
+  box.innerHTML = SYM_STATE.map((s,i)=>
+    `<span class="sym"><code>${esc(s)}</code>`
+    + `<button class="x" title="删除符号「${esc(s)}」" data-sym-del="${i}">×</button></span>`
+  ).join("");
+  box.querySelectorAll("[data-sym-del]").forEach(b=>{
+    b.onclick = ()=>{
+      const removed = SYM_STATE[+b.dataset.symDel];
+      SYM_STATE.splice(+b.dataset.symDel, 1);
+      renderSymbols();
+      symMsg(removed ? `已删除「${removed}」，点「保存全部设置」生效` : "", false);
+    };
+  });
+  syncSymbols();
+}
+function syncSymbols(){
+  const hidden = $("cfg_bridge_prefix");
+  if(hidden) hidden.value = SYM_STATE.join("|");
+  refreshBridgeHl();
+}
+function addSymbol(){
+  const inp = $("sym_input");
+  if(!inp) return;
+  const v = (inp.value || "").trim();
+  if(!v){ symMsg("先输入一个符号哦，比如 ! 或 群", true); return; }
+  if(/[,，|｜]/.test(v)){ symMsg("符号里不能包含 , 或 |（它们只用于分隔多个符号）", true); return; }
+  if(v.length > 12){ symMsg("单个符号最多 12 个字符", true); return; }
+  if(SYM_STATE.some(s=>symNorm(s) === symNorm(v))){
+    symMsg(symCaseSensitive()
+      ? `已存在等价符号「${v}」（全角/半角自动兼容，当前区分大小写，须完全一致）`
+      : `已存在等价符号「${v}」（全角/半角与大小写自动兼容，无需重复添加）`, true); return;
+  }
+  if(SYM_STATE.length >= SYM_MAX){ symMsg(`最多 ${SYM_MAX} 个符号，已经够用啦～`, true); return; }
+  SYM_STATE.push(v);
+  inp.value = "";
+  renderSymbols();
+  symMsg(`✓ 已添加「${v}」，点「保存全部设置」生效`, false, true);
+  inp.focus();
+}
+function symMsg(txt, isErr, isOk){
+  const el = $("sym_msg");
+  if(!el) return;
+  el.className = "sym-msg" + (isErr ? " err" : (isOk ? " ok" : ""));
+  el.textContent = txt || "";
+}
+// 高亮徽标：蓝=普通说明；无符号（转发全部聊天）时转绿表示当前生效
+function refreshBridgeHl(){
+  const el = $("bridge_prefix_hl");
+  if(!el) return;
+  const empty = !SYM_STATE.length;
+  el.classList.toggle("on", empty);
+  el.textContent = empty ? "不添加符号 = 转发全部聊天 · 生效中" : "不添加符号 = 转发全部聊天";
+  const sub = $("bridge_sw_sub");
+  if(sub) sub.textContent = empty
+    ? "玩家在游戏内说的每句话都会转发到会话"
+    : "玩家在游戏内发送带符号消息即转发到会话";
+}
+
+// 管理员：标签式输入（v0.21.1，与会话转发 / 触发符号一致的「逐个添加 + 单独删除」）
+// 隐藏域 #cfg_admin_ids 仍以「, 」保存纯文本，沿用 CFG_FIELDS 的 l 类型收集链路
+let ADM_STATE = [];
+function initAdmins(){
+  const hidden = $("cfg_admin_ids");
+  const raw = hidden ? (hidden.value || "") : "";
+  const seen = new Set();
+  ADM_STATE = raw.split(/[,，|｜]/).map(x=>x.trim()).filter(Boolean).filter(x=>{
+    const k = x.toLowerCase();
+    if(seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  const inp = $("adm_input");
+  if(inp) inp.onkeydown = ev=>{ if(ev.key === "Enter"){ ev.preventDefault(); addAdmin(); } };
+  const btn = $("adm_add");
+  if(btn) btn.onclick = addAdmin;
+  admMsg("");
+  renderAdmins();
+}
+function renderAdmins(){
+  const box = $("adm_list");
+  if(!box) return;
+  box.innerHTML = ADM_STATE.map((a,i)=>
+    `<span class="sym adm"><code>${esc(a)}</code>`
+    + `<button class="x" title="移除管理员「${esc(a)}」" data-adm-del="${i}">×</button></span>`
+  ).join("");
+  box.querySelectorAll("[data-adm-del]").forEach(b=>{
+    b.onclick = ()=>{
+      const removed = ADM_STATE[+b.dataset.admDel];
+      ADM_STATE.splice(+b.dataset.admDel, 1);
+      renderAdmins();
+      admMsg(removed ? `已移除「${removed}」，点「保存全部设置」生效` : "", false);
+    };
+  });
+  syncAdmins();
+}
+function syncAdmins(){
+  const hidden = $("cfg_admin_ids");
+  if(hidden) hidden.value = ADM_STATE.join(", ");
+}
+function addAdmin(){
+  const inp = $("adm_input");
+  if(!inp) return;
+  const v = (inp.value || "").trim();
+  if(!v){ admMsg("先输入 QQ 号或平台昵称哦，比如 123456789", true); return; }
+  if(/[,，|｜]/.test(v)){ admMsg("一个标签只填一个账号，不要带逗号或竖线", true); return; }
+  if(v.length > 64){ admMsg("单个账号最多 64 个字符", true); return; }
+  if(ADM_STATE.some(a=>a.toLowerCase() === v.toLowerCase())){
+    admMsg(`「${v}」已经在列表里啦，不用重复添加`, true); return;
+  }
+  ADM_STATE.push(v);
+  inp.value = "";
+  renderAdmins();
+  admMsg(`✓ 已添加管理员「${v}」，点「保存全部设置」生效`, false, true);
+  inp.focus();
+}
+function admMsg(txt, isErr, isOk){
+  const el = $("adm_msg");
+  if(!el) return;
+  el.className = "sym-msg" + (isErr ? " err" : (isOk ? " ok" : ""));
+  el.textContent = txt || "";
+}
+
+// 多 Agent 开关说明：随勾选状态变化，并与「已保存的值」对比标记待保存（v0.17.6）
+let WF_SAVED = null;
+function renderWfTip(){
+  const el = $("cfg_wf_tip");
+  if(!el) return;
+  const wf = !!$("cfg_wf_enabled").checked;
+  const tool = !!$("cfg_wf_tool").checked;
+  const steps = `<code>mc_search_knowledge</code>（查经验）→ <code>mc_search_item</code>（查 ID）`
+              + ` → <code>mc_get_recipes</code>（查配方）→ <code>mc_execute_command</code>（执行）`;
+  let cls, html;
+  if(wf && tool){
+    cls = "cv-tip ok";
+    html = `✓ 复杂任务（满配枪械 / 复杂 NBT）会自动走 <b>分类→模板判断→前瞻建库→实现→纠错</b> 流水线，`
+         + `后台执行、完成后自动通知；决策 AI 也会做「玩家守门」（未声明玩家时终止而非猜测）。`;
+  }else if(wf){
+    cls = "cv-tip warn";
+    html = `⚠ <b>「mc_workflow 工具」已关闭</b>：LLM 仍会在工具表里看到它，`
+         + `但调用时不会执行流水线，只会收到「请改用具体工具」的导航提示，`
+         + `复杂任务因此退化为单工具分步模式（${steps}）。`;
+  }else{
+    cls = "cv-tip bad";
+    html = `⚠ <b>「工作流总开关」已关闭</b>：五 Agent 流水线整体停用，`
+         + `所有复杂任务都会退化为单工具分步模式（${steps}），`
+         + `「玩家守门」同时失效——决策 AI 不再拦截未声明玩家的任务。`;
+  }
+  if(!(wf && tool)){
+    html += `<br>满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
+  }
+  if(WF_SAVED && (wf !== WF_SAVED.wf || tool !== WF_SAVED.tool)){
+    html += ` <span class="pend">改动未保存 · 点「保存全部设置」生效</span>`;
+  }
+  el.className = cls;
+  el.innerHTML = html;
+}
+
+async function loadSettings(){
+  let cfg = (OV&&OV.config)||{};
+  const r = await callGet("settings").catch(()=>({ok:false}));
+  if(r.ok && r.settings) cfg = { ...cfg, ...r.settings };
+  // mcs 指令组前缀跟随 AstrBot 唤醒词设置（不写死反斜杠；纯反斜杠唤醒词后端会按「无前缀」返回）
+  const wpEl = $("cmd_prefix_tip");
+  if(wpEl){
+    const wp = String((r && r.wake_prefix) || "").trim();
+    wpEl.innerHTML = wp
+      ? "AstrBot 聊天平台指令（不是在游戏里输入）；前缀跟随唤醒词设置，当前为 "
+        + `<code>${esc(wp)}</code>` + "，即输入 " + `<code>${esc(wp)}mcs 帮助</code>`
+      : "AstrBot 聊天平台指令（不是在游戏里输入）；群聊里需先按 AstrBot 的唤醒词唤醒，私聊可直接发送 "
+        + "<code>mcs 帮助</code>";
+  }
+  // 渐变输出格式下拉（选项来源与服务器页一致）
+  const fmtSel = $("cfg_grad_fmt");
+  if(fmtSel && !fmtSel.options.length){
+    fmtSel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  }
+  for(const [id,key,ty,dft] of CFG_FIELDS){
+    const el = $(id);
+    if(!el) continue;
+    const v = cfg[key];
+    if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : !!v;
+    else if(ty==="l") el.value = Array.isArray(v) ? v.join(", ") : (v==null?"":String(v));
+    else el.value = (v===undefined||v===null||v==="") ? (S_DEFAULTS[id]||"") : v;
+  }
+  // v0.21.15：异地 RCON 模式 → 目录框置灰 + 明确告知哪些能力被禁用
+  // v0.21.19：此刻开关里的值就是**后端已保存**的值 —— 把它钉成基准（RMT.saved），
+  // 之后主人随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
+  RMT.saved = !!$("cfg_remote_rcon_mode").checked;
+  syncRemoteModeUI();
+  // 多 Agent 开关的动态说明（随勾选状态实时变化，v0.17.6）
+  WF_SAVED = { wf: !!$("cfg_wf_enabled").checked, tool: !!$("cfg_wf_tool").checked };
+  bindPolicyUI();
+  bindTerminalUI();
+  ["cfg_wf_enabled","cfg_wf_tool"].forEach(id=>{
+    const el = $(id); if(el) el.onchange = renderWfTip;
+  });
+  renderWfTip();
+  // 区分大小写开关：切换后同步符号去重规则 + 提示（v0.17.8）
+  const caseEl = $("cfg_bridge_case");
+  if(caseEl) caseEl.onchange = ()=>{
+    renderSymbols();
+    symMsg(caseEl.checked
+      ? "已切换为「区分大小写」：符号须大小写完全一致才算命中，点「保存全部设置」生效"
+      : "已切换为「不区分大小写」：Q 与 q 等价，点「保存全部设置」生效", false);
+  };
+  // 会话目标选择器：平台下拉 + 目标列表
+  PLATFORMS = Array.isArray(r.platforms) ? r.platforms : [];
+  fillPlatformSelects();
+  for(const [kind,key] of Object.entries(TGT_KEYS)){
+    const v = cfg[key];
+    TGT_STATE[kind] = Array.isArray(v) ? v.map(x=>String(x)).filter(Boolean)
+                    : (v ? [String(v)] : []);
+    renderTargets(kind);
+    tgtMsg(kind, "");
+  }
+  // 触发符号：标签式输入（解析配置 → 逐个渲染 → 刷新高亮）（v0.17.7）
+  initSymbols();
+  // 管理员：标签式输入（v0.21.1）
+  initAdmins();
+  // 会话级播报内容 + 全局闸门状态（v0.17.0）
+  const evMap = cfg["notify_target_events"];
+  TGT_EVENTS = {};
+  if(evMap && typeof evMap === "object" && !Array.isArray(evMap)){
+    for(const [umo, groups] of Object.entries(evMap)){
+      const raw = Array.isArray(groups) ? groups
+                : (typeof groups === "string" ? groups.split(/[,，]/) : []);
+      TGT_EVENTS[umo] = ALL_NOTIFY_GROUPS.filter(g=>raw.map(x=>String(x).trim()).includes(g));
+    }
+  }
+  syncNotifyGateFromForm();
+  // 列表已带上子菜单，重新渲染一次让摘要与勾选状态同步
+  Object.keys(TGT_KEYS).forEach(k=>renderTargets(k));
+  bindNotifyGateWatch();
+}
+function collectSettings(){
+  const s = {};
+  for(const [id,key,ty] of CFG_FIELDS){
+    const el = $(id);
+    if(!el) continue;
+    if(ty==="b") s[key] = el.checked;
+    else if(ty==="l") s[key] = el.value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
+    else if(ty==="n"){ const x = parseFloat(el.value); if(!isNaN(x)) s[key] = x; }
+    else s[key] = el.value.trim() || S_DEFAULTS[id] || "";
+  }
+  // 会话目标由选择器维护；未改动时原样回传，避免被空值覆盖
+  for(const [kind,key] of Object.entries(TGT_KEYS)) s[key] = TGT_STATE[kind].slice();
+  // 每个会话单独勾选的播报内容（v0.17.0）
+  s["notify_target_events"] = collectTargetEvents();
+  return s;
+}
+async function saveSettings(){
+  const settings = collectSettings();
+  setSaveNotice("保存中…");
+  const r = await callPost("settings/save", { settings }).catch(()=>({ok:false,error:"请求失败"}));
+  if(r.ok){
+    // v0.17.1：插件未热重载时后端会静默忽略新键（保存看着成功、实际不生效）→ 明确提示
+    const applied = r.applied || {};
+    const ignored = Array.isArray(r.ignored) ? r.ignored : [];
+    const lost = ignored.length ? ignored
+              : (("notify_target_events" in applied) ? [] : ["notify_target_events"]);
+    if(lost.length){
+      setSaveNotice("⚠ 有 " + lost.length + " 项后端未接受（" + lost.slice(0,3).join("、")
+        + "）：插件可能未重载，请到 AstrBot「插件管理」重载本插件后重新保存", true);
+    }else{
+      setSaveNotice("✓ " + (r.notice||"设置已保存"));
+    }
+    await loadSettings();
+    loadWorkflow();
+    loadColors();
+    // v0.21.9：保存了「服务器目录 / 词典·知识库启停」就等于换了服务端 —— 立刻补检指纹不匹配。
+    // 此前只有切页签、刷新页面才会检测，主人停在设置页反复换服务端时会一直等不到弹窗。
+    if(["server_dir","dictionary_enabled","knowledge_enabled"].some(k => k in settings)){
+      await checkFingerprintNotice();
+    }
+  }else{
+    setSaveNotice(r.error||"保存失败", true);
+  }
+}
+// v0.21.16：异地 RCON 模式的前端表现 —— 目录框置灰，不可用区块「亚克力磨砂 + 文字告知」。
+// 仅影响设置页观感与说明；真正的执行级禁用在后端（工具闸门 + 初始化拒绝 + LLM 前置提醒）。
+// 判据来自后端（异地模式下依赖服务端本地文件的能力一律按设计禁用，见 main.py 的 REMOTE_MODE_HINT）：
+//   ① 事件播报 / 聊天桥接 —— 读不到服务端 logs/latest.log
+//   ② 物品词典 / 知识库   —— 要读服务端目录算内容指纹（mods/ 或 plugins/），算不出来
+//   ③ 服务器目录          —— 根本不用本地文件，填了也不校验
+//   ④ 物品ID搜索 / 配方查询 / Mod 列表 —— 全都建立在词典之上，跟着一起禁用
+// v0.21.19：异地模式的**能力归属只认后端已保存的状态**（RMT.saved）。
+// 开关（checkbox）只是个草稿：勾上/取消却没点保存时，后端能力一点没变，UI 就不该改写封禁 ——
+// 旧写法正是这么骗主人的：把开关一关，知识库立刻「解封」，点进去整页却照样不可用。
+const RMT = { on: false, saved: false, pending: false, painted: null };
+//   on      = 已保存状态（= saved，供服务器页、loadKnowledge 等处复用）
+//   pending = 开关草稿与已保存状态不一致（改了但还没点保存）
+const RMT_ROW_WHY = "依赖物品词典与内容指纹（要读服务端 mods/ 或 plugins/ 目录），异地模式下按设计不可用";
+const RMT_BLOCKS = [                       // [开关控件 id, 区块标题, 禁用原因]
+  ["cfg_ev_enabled", "服务器事件播报 · 不可用", "播报要读服务端 logs/latest.log；异地模式只映射了 RCON 端口，读不到本地日志"],
+  ["cfg_bridge_en", "聊天桥接 · 不可用", "游戏内聊天同样来自服务端日志；异地模式读不到，桥接无从触发"],
+  ["cfg_dict_en", "物品词典 / 知识库 · 不可用", "要靠服务端 mods/ 或 plugins/ 目录算内容指纹；异地模式下读不到本地文件，按设计禁用"],
+];
+const RMT_ROWS = ["cfg_tool_search", "cfg_tool_recipes", "cfg_tool_mods"];   // 行级：依赖词典的工具开关
+// 整页封禁：知识库的检索 / 沉淀 / 预设管理全部建立在「物品词典 + 整合包指纹」上，
+// 异地模式下整页没有一处能用 —— 与其在每张卡上盖牌子，不如整页封住说明白。
+const RMT_SEAL = {
+  id: "page_knowledge",
+  title: "知识库在异地 RCON 模式下不可用",
+  why: "物品词典与内容指纹要读服务端 mods/ 或 plugins/ 目录才算得出来，本页的检索、沉淀、预设管理全建立在它上面；"
+     + "异地模式只映射了 RCON 端口，读不到本地文件，所以这一页整体停摆。"
+     + "想恢复：到「设置」关掉异地 RCON 模式，并把「服务器目录」指向本机可读的服务端目录。",
+};
+
+// 给容器盖上亚克力提示牌（.rmt-badge）/ 行级小标签（.rmt-tag）/ 整页公告（.rmt-seal-card）；
+// 重复调用只更新文案，不叠牌子
+function rmtMark(el, title, why, mode){
+  if(!el) return;
+  const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
+  const chipMode = rowMode || softMode;                     // 小标签（span）；seal 是独立公告层
+  const cls = sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off"));
+  el.classList.add(cls);
+  const chipSel = sealMode ? ":scope > .rmt-seal-card"
+                           : (chipMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge");
+  let chip = el.querySelector(chipSel);
+  if(!chip){
+    chip = document.createElement(chipMode ? "span" : "div");
+    chip.className = sealMode ? "rmt-seal-card" : (chipMode ? "rmt-tag" : "rmt-badge");
+    if(sealMode){
+      chip.innerHTML = `<div class="rmt-seal-panel"><span class="ri">!</span><div>` +
+        `<b></b><i></i>` +
+        `<button class="btn sm" type="button" data-rmt-goto="settings">去「设置」处理</button>` +
+        `</div></div>`;
+    }else if(chipMode){
+      chip.textContent = title;
+    }else{
+      chip.innerHTML = `<span class="ri">!</span><span><b></b><i></i></span>`;
+    }
+    el.appendChild(chip);
+  }
+  if(rowMode){
+    chip.title = title + "：" + why;
+  }else if(softMode){
+    chip.textContent = title;
+    chip.title = why;
+    rmtSoftHint(el, why);          // 提示行直接换成「为什么不可用」——比盖在字上更清楚
+  }else{
+    chip.querySelector("b").textContent = title;
+    chip.querySelector("i").textContent = why;
+  }
+}
+// 公告里的「去设置」按钮：跳到设置页自己处理（公告层不参与模糊，按钮必须真的敢点）
+document.addEventListener("click", (e)=>{
+  const go = e.target && e.target.closest ? e.target.closest("[data-rmt-goto]") : null;
+  if(go && go.dataset.rmtGoto) switchTab(go.dataset.rmtGoto);
+});
+// 文字型区块把原提示行换成异地模式说明；关闭时还原（原文只记一次）
+const RMT_SD_HINT = "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。";
+function rmtSoftHint(el, why){
+  const hint = el.querySelector("#sd_hint");
+  if(!hint) return;
+  if(!el.dataset.hintKeep) el.dataset.hintKeep = hint.innerHTML;
+  hint.textContent = why || RMT_SD_HINT;
+}
+function rmtUnsoftHint(el){
+  const hint = el && el.querySelector("#sd_hint");
+  if(hint && el.dataset.hintKeep){ hint.innerHTML = el.dataset.hintKeep; delete el.dataset.hintKeep; }
+}
+// 关闭异地模式时还原：撤磨砂、摘牌子
+function rmtClear(el, mode){
+  if(!el) return;
+  const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
+  el.classList.remove(sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off")));
+  if(softMode) rmtUnsoftHint(el);
+  const chip = el.querySelector(sealMode ? ":scope > .rmt-seal-card"
+                     : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge"));
+  if(chip) chip.remove();
+}
+function syncRemoteModeUI(){
+  const sw = $("cfg_remote_rcon_mode");
+  if(!sw) return;
+  // v0.21.19：**封禁只认「后端已保存」的状态**（RMT.saved），不认开关当下的勾选。
+  // 开关是草稿：勾掉但没保存时，后端仍在异地模式 → 封禁必须照旧，只在旁边写明「尚未保存」。
+  const on = !!RMT.saved;
+  const draft = !!sw.checked;
+  const pending = draft !== on;
+  const wasSealed = RMT.painted;
+  RMT.on = on; RMT.pending = pending; RMT.painted = on;
+  // ① 服务器目录：这一栏跟着**草稿**走 —— 想改成本地模式，得先把目录填好再保存
+  const sd = $("cfg_server_dir");
+  if(sd) sd.disabled = draft;
+  const box = $("sd_box");
+  if(box){
+    box.classList.toggle("dimmed", draft);
+    if(draft) rmtMark(box, "异地模式 · 无需填写",
+                   "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。", "soft");
+    else rmtClear(box, "soft");
+  }
+  // ② 依赖服务端本地文件的卡片：整块磨砂封住（保存后才撤）
+  for(const [id, title, why] of RMT_BLOCKS){
+    const el = $(id);
+    const card = el && el.closest(".card");
+    if(!card) continue;
+    if(on) rmtMark(card, title, why); else rmtClear(card);
+  }
+  // ③ 依赖词典的工具开关：只封那一行（同行其他工具照旧可用）
+  for(const id of RMT_ROWS){
+    const el = $(id);
+    const row = el && el.closest(".sw-row");
+    if(!row) continue;
+    if(on) rmtMark(row, "该工具不可用", RMT_ROW_WHY, "row"); else rmtClear(row, "row");
+  }
+  const hint = $("remote_mode_hint");
+  if(hint) hint.style.display = on ? "block" : "none";
+  // 开关被拨到「关」却没保存时，这行说明照旧留着（它讲的是后端实况）——
+  // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得主人对着关掉的开关读「已开启」。
+  const hTag = $("rmt_hint_tag");
+  if(hTag) hTag.textContent = (on && pending) ? "后端当前已保存为『开启』：" : "已开启：";
+  // ④ 「开关动了但没保存」必须当场说清 —— 否则主人会以为封禁坏了 / 以为已经生效了
+  const pendEl = $("remote_mode_pending");
+  if(pendEl){
+    pendEl.style.display = pending ? "block" : "none";
+    if(pending){
+      pendEl.innerHTML = draft
+        ? "⚠ 开关已勾选，但<b>还没有保存</b> —— 本地文件类能力现在仍按原样可用；"
+          + "点上方「保存全部设置」后才会按异地模式禁用（下列区块届时才会封禁）。"
+        : "⚠ 开关已取消勾选，但<b>还没有保存</b> —— 后端仍在异地 RCON 模式："
+          + "物品词典 / 知识库 / 播报等<b>仍旧不可用</b>（下列区块与知识库页保持封禁）。"
+          + "点上方「保存全部设置」后才会真正恢复。";
+    }
+  }
+  // ⑤ 整页封禁：知识库整页都长在物品词典 / 整合包指纹上，一页全废 → 整页磨砂 + 一张公告
+  const kbPage = $(RMT_SEAL.id);
+  if(kbPage){
+    if(on){
+      // 主人刚把开关关掉却还没保存时，公告里也要留一句 —— 他点进来的第一眼就是这里
+      const why = RMT_SEAL.why + ((pending && !draft)
+        ? "（你已经把开关关掉了，但还没点「保存全部设置」—— 保存后这一页才会恢复。）" : "");
+      rmtMark(kbPage, RMT_SEAL.title, why, "seal");
+      const cnt = $("tab_kb_cnt");
+      if(cnt){ cnt.dataset.keep = cnt.dataset.keep || cnt.textContent; cnt.textContent = "—"; }
+    }else{
+      rmtClear(kbPage, "seal");
+      const cnt = $("tab_kb_cnt");
+      if(cnt && cnt.dataset.keep){ cnt.textContent = cnt.dataset.keep; delete cnt.dataset.keep; }
+      // 解封（= 保存后真的关掉了异地模式）且正停在这一页才补拉数据（否则 boot 时白发一次请求）
+      if(wasSealed === true && kbPage.classList.contains("active")
+         && typeof loadKnowledge === "function") loadKnowledge();
+    }
+  }
+  if(sw.dataset.bound !== "1"){
+    sw.dataset.bound = "1";
+    sw.addEventListener("change", ()=>{
+      syncRemoteModeUI();
+      setSaveNotice(sw.checked
+        ? "已勾选异地 RCON 模式：点上方「保存全部设置」后生效（届时目录可留空，本地文件类能力禁用）"
+        : "已取消勾选：点上方「保存全部设置」后生效（届时需填对「服务器目录」，否则保存会被拒绝）", false);
+    });
+  }
+}
+// v0.21.3：保存状态统一提示到顶部吸顶条（底部卡片已撤）；setNotice 自带 null 守卫
+function setSaveNotice(msg, isErr){
+  setNotice($("cfg_notice_top"), msg, isErr);
+}
+async function saveWfSwitch(key, el, noticeEl){
+  setNotice(noticeEl, "保存中…");
+  const r = await callPost("settings/save", { settings: { [key]: el.checked } }).catch(()=>({ok:false,error:"请求失败"}));
+  if(r.ok){
+    setNotice(noticeEl, "✓ " + (r.notice||"已保存"));
+    loadSettings();
+    // 立即刷新流水线状态，让停用/启用横幅与统计同步变化
+    if(typeof loadWorkflow==="function") loadWorkflow(true);
+  }else{
+    setNotice(noticeEl, r.error||"保存失败", true);
+    el.checked = !el.checked;
+  }
+}
+
+// ============ 文本颜色（单色 + 多锚点渐变色） ============
+const MC_HEX = {black:"#000000",dark_blue:"#0000AA",dark_green:"#00AA00",dark_aqua:"#00AAAA",dark_red:"#AA0000",dark_purple:"#AA00AA",gold:"#FFAA00",gray:"#AAAAAA",dark_gray:"#555555",blue:"#5555FF",green:"#55FF55",aqua:"#55FFFF",red:"#FF5555",light_purple:"#FF55FF",yellow:"#FFFF55",white:"#FFFFFF"};
+const CLR_DEF = {color_title:"gold",color_say:"white",color_feedback:"gold"};
+const CLR_ITEMS = [["clr_title","clr_title_txt","color_title"],["clr_say","clr_say_txt","color_say"],["clr_fb","clr_fb_txt","color_feedback"]];
+const GRAD_KEYS = {title:"gradient_colors_title",say:"gradient_colors_say",fb:"gradient_colors_feedback"};
+const GRAD_DEFAULTS = {title:"#FFAA00,#FF00FF",say:"#FFFFFF,#55FFFF",fb:"#FFAA00,#55FF55"};
+const FORMAT_LABELS = {
+  json:"Vanilla（JSON 文本组件）",
+  compat_section:"Vanilla 兼容（§x§R§R§G§G§B§B）",
+  compat_amp:"Vanilla 兼容（&x&R&R&G&G&B&B）",
+  legacy_amp:"Legacy（&#RRGGBB）"
+};
+let gradState = {title:["#FFAA00","#FF00FF"],say:["#FFFFFF","#55FFFF"],fb:["#FFAA00","#55FF55"]};
+
+function clrHex(v){
+  v = String(v||"").trim().toLowerCase();
+  if(/^#[0-9a-f]{6}$/.test(v)) return v.toUpperCase();
+  if(MC_HEX[v]) return MC_HEX[v];
+  return "#FFFFFF";
+}
+function stopsToArr(v){
+  return String(v||"").split(/[,，;；\s]+/).map(s=>s.trim()).filter(s=>s);
+}
+function renderStops(key){
+  const wrap = $("stops_" + key);
+  if(!wrap) return;
+  wrap.innerHTML = "";
+  gradState[key].forEach((hex, i)=>{
+    const row = document.createElement("div");
+    row.className = "frow"; row.style.marginTop = "6px";
+    const pick = document.createElement("input");
+    pick.type = "color"; pick.value = clrHex(hex);
+    pick.style.cssText = "width:46px;height:32px;padding:2px;flex:0 0 auto";
+    const txt = document.createElement("input");
+    txt.type = "text"; txt.value = hex; txt.placeholder = "#FFAA00";
+    const del = document.createElement("button");
+    del.className = "btn sm"; del.textContent = "×"; del.title = "删除该颜色";
+    del.style.cssText = "flex:0 0 auto;padding:6px 10px";
+    del.onclick = ()=>{
+      if(gradState[key].length <= 2){ setNotice($("clr_notice"), "渐变至少需要 2 个颜色", true); return; }
+      gradState[key].splice(i, 1); renderStops(key);
+    };
+    pick.addEventListener("input", ()=>{ gradState[key][i] = pick.value.toUpperCase(); txt.value = pick.value.toUpperCase(); });
+    txt.addEventListener("input", ()=>{ const v = txt.value.trim(); if(/^#[0-9a-fA-F]{6}$/.test(v)){ pick.value = v; gradState[key][i] = v.toUpperCase(); } });
+    row.append(pick, txt, del);
+    wrap.append(row);
+  });
+}
+function refreshGradVisibility(){
+  const on = $("clr_grad_en").checked;
+  document.querySelectorAll(".grad-wrap").forEach(el=>{ el.style.display = on ? "" : "none"; });
+}
+function bindColors(){
+  for(const [pick,txt] of CLR_ITEMS){
+    $(pick).addEventListener("input", ()=>{ $(txt).value = $(pick).value.toUpperCase(); });
+    $(txt).addEventListener("input", ()=>{ const v=$(txt).value.trim(); if(/^#[0-9a-fA-F]{6}$/.test(v)) $(pick).value = v; });
+  }
+  document.querySelectorAll("[data-add]").forEach(btn=>{
+    btn.onclick = ()=>{ const key = btn.dataset.add; gradState[key].push("#FFFFFF"); renderStops(key); };
+  });
+  $("clr_grad_en").addEventListener("change", refreshGradVisibility);
+  $("clr_save").onclick = saveColors;
+  $("clr_reset").onclick = resetColors;
+  const sel = $("clr_grad_fmt");
+  sel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+}
+async function loadColors(){
+  const r = await callGet("colors").catch(()=>({ok:false}));
+  if(!r.ok || !r.colors) return;
+  for(const [pick,txt,key] of CLR_ITEMS){
+    const v = r.colors[key] || CLR_DEF[key];
+    $(pick).value = clrHex(v); $(txt).value = v;
+  }
+  const g = r.gradient || {};
+  const stops = g.stops || {};
+  $("clr_grad_en").checked = !!g.enabled;
+  $("clr_grad_fmt").value = g.format || "json";
+  for(const key of Object.keys(GRAD_KEYS)){
+    let arr = stopsToArr(stops[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
+    if(arr.length < 2) arr = stopsToArr(GRAD_DEFAULTS[key]);
+    gradState[key] = arr; renderStops(key);
+  }
+  refreshGradVisibility();
+}
+async function saveColors(){
+  const payload = {};
+  for(const [pick,txt,key] of CLR_ITEMS) payload[key] = $(txt).value.trim() || $(pick).value;
+  payload.gradient_enabled = $("clr_grad_en").checked;
+  payload.gradient_format = $("clr_grad_fmt").value;
+  for(const key of Object.keys(GRAD_KEYS)) payload[GRAD_KEYS[key]] = gradState[key].join(",");
+  setNotice($("clr_notice"), "保存中…");
+  const r = await callPost("colors/save", payload).catch(()=>({ok:false,error:"请求失败"}));
+  if(r.ok){
+    setNotice($("clr_notice"), "✓ " + (r.notice||"设置已保存并即时生效"));
+    for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(r.colors[key]); $(txt).value = r.colors[key]; }
+    const g = r.gradient || {};
+    if(g.format) $("clr_grad_fmt").value = g.format;
+    for(const key of Object.keys(GRAD_KEYS)){
+      gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
+      renderStops(key);
+    }
+  } else {
+    setNotice($("clr_notice"), "✗ " + (r.error||"保存失败"), true);
+  }
+}
+async function resetColors(){
+  for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(CLR_DEF[key]); $(txt).value = CLR_DEF[key]; }
+  $("clr_grad_fmt").value = "json";
+  for(const key of Object.keys(GRAD_KEYS)){ gradState[key] = stopsToArr(GRAD_DEFAULTS[key]); renderStops(key); }
+  setNotice($("clr_notice"), "已填回默认值，点「保存颜色」生效");
+}
+
+// ============ 事件绑定 ============
+function bind(){
+  $("sv_refresh").onclick = loadServer;
+  $("sv_ev_refresh").onclick = loadServerEvents;
+  let bcMode = "chat";
+  document.querySelectorAll(".bc-mode").forEach(b=>b.addEventListener("click", ()=>{
+    bcMode = b.dataset.mode;
+    document.querySelectorAll(".bc-mode").forEach(x=>x.classList.toggle("active", x===b));
+  }));
+  $("bc_send").onclick = async ()=>{
+    const msg = $("bc_msg").value.trim();
+    if(!msg){ $("bc_out").textContent = "请输入广播内容"; return; }
+    $("bc_out").textContent = "发送中…";
+    const r = await callPost("server/broadcast", { message: msg, mode: bcMode }).catch(()=>({ok:false,error:"请求失败"}));
+    if(r.ok){ const lbl={chat:"聊天栏",title:"全屏标题",task:"模拟任务输出"}[r.mode]||r.mode; $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${esc(r.message)}`; $("bc_msg").value=""; }
+    else $("bc_out").innerHTML = `<span style="color:var(--bad)">✗ 失败：</span> ${esc(r.error||"未知错误")}`;
+  };
+  $("bc_msg").addEventListener("keydown", e=>{ if(e.key==="Enter") $("bc_send").click(); });
+  $("kb_search").oninput = renderKbList;
+  $("btn_add").onclick = async ()=>{
+    const topic = $("new_topic").value.trim(), content = $("new_content").value.trim();
+    if(!topic || !content){ setNotice($("kb_notice"), "主题和内容不能为空", true); return; }
+    const r = await callPost("kb/entry", { topic, content });
+    if(r.ok){ setNotice($("kb_notice"), "✓ 已写入知识库"); $("new_topic").value=""; $("new_content").value=""; kbReload(); }
+    else setNotice($("kb_notice"), r.error||"写入失败", true);
+  };
+  $("btn_clear").onclick = async ()=>{
+    const btn = $("btn_clear");
+    armConfirm(btn, "清空全部", async ()=>{
+      const r = await callPost("kb/clear");
+      setNotice($("kb_notice"), r.ok?"✓ 已清空":(r.error||"清空失败"), !r.ok);
+      if(r.ok) kbReload();
+    });
+  };
+  // 知识库预设栏（v0.18.0）
+  $("pre_new").onclick = ()=>{
+    const f = $("kb_new_form");
+    const show = f.style.display === "none";
+    f.style.display = show ? "flex" : "none";
+    PICK = { action:null, src:null, dst:null, renameId:null }; renderPresets();
+    if(show) $("np_name").focus();
+  };
+  $("np_cancel").onclick = ()=>{ $("kb_new_form").style.display = "none"; $("np_name").value=""; $("np_copy").checked=false; };
+  $("np_ok").onclick = async ()=>{
+    const name = $("np_name").value.trim();
+    if(!name){ setNotice($("kb_preset_notice"), "请先填写预设名称", true); return; }
+    const copy = $("np_copy").checked ? (KBP.presets.find(p=>p.active)||{}).id : null;
+    const r = await presetOp("kb/presets/create", { name, copy_from: copy });
+    if(r && r.ok){ $("kb_new_form").style.display="none"; $("np_name").value=""; $("np_copy").checked=false; }
+  };
+  $("np_name").addEventListener("keydown", e=>{ if(e.key==="Enter") $("np_ok").click(); });
+  $("pre_copy").onclick = ()=>startPick("copy");
+  $("pre_move").onclick = ()=>startPick("move");
+  $("pre_rename").onclick = ()=>startPick("rename");
+  $("pre_bind").onclick = ()=>startPick("bind");
+  $("pre_del").onclick = ()=>startPick("delete");
+  $("fp_go").onclick = ()=>fpModalDone(true);
+  $("fp_ok").onclick = ()=>fpModalDone(false);
+  // 知识条目详情 / 编辑弹窗（v0.21.11）—— null-safe：缺弹窗也不影响其它绑定
+  const kdSave = $("kbdet_save"), kdClose = $("kbdet_close"), kdMask = $("kbdet_modal"), kdTa = $("kbdet_content");
+  if(kdSave) kdSave.onclick = saveEntryDetail;
+  if(kdClose) kdClose.onclick = closeEntryDetail;
+  if(kdMask) kdMask.addEventListener("click", e => { if(e.target === kdMask) closeEntryDetail(); });
+  if(kdTa){
+    kdTa.addEventListener("keydown", e => {
+      if(e.key === "Enter" && (e.ctrlKey || e.metaKey)){ e.preventDefault(); saveEntryDetail(); }
+    });
+  }
+  document.addEventListener("keydown", e => {
+    if(e.key === "Escape" && kdMask && kdMask.style.display !== "none") closeEntryDetail();
+  });
+  $("bind_ok").onclick = bindConfirmDone;
+  $("bind_no").onclick = closeBindConfirm;
+  $("btn_rescan").onclick = async ()=>{
+    setNotice($("kb_notice"), "正在重算服务端指纹并重建物品词典…（可能需要几秒）");
+    const r = await callPost("rescan");
+    if(r.ok){
+      setNotice($("kb_notice"), "✓ " + (r.notice_text || "重建完成"));
+      await loadKnowledge(); checkFingerprintNotice();
+    }
+    else setNotice($("kb_notice"), r.error||"重建失败", true);
+  };
+  document.addEventListener("click", async e=>{
+    const b = e.target.closest("[data-act]"); if(!b) return;
+    const { act, topic } = b.dataset;
+    if(act==="toggle"){ await callPost("kb/toggle",{topic,enabled:b.dataset.en==="1"}); kbReload(); }
+    else if(act==="view"){ openEntryDetail(topic); }
+    else if(act==="del"){ armConfirm(b, "删除", async ()=>{ await callPost("kb/delete",{topic}); kbReload(); }); }
+    else if(act==="approve"){ await callPost("kb/approve",{topic,approve:true}); kbReload(); }
+    else if(act==="deny"){ armConfirm(b, "拒绝", async ()=>{ await callPost("kb/approve",{topic,approve:false}); kbReload(); }); }
+  });
+  $("sw_wf_enabled").onchange = ()=>saveWfSwitch("agent_workflow_enabled", $("sw_wf_enabled"), $("wf_notice"));
+  $("sw_wf_tool").onchange = ()=>saveWfSwitch("enable_mc_workflow", $("sw_wf_tool"), $("wf_notice"));
+  // v0.21.3：底部保存按钮已撤，统一走顶部吸顶条的「保存全部设置」；null-safe 绑定，缺按钮也不影响其它绑定
+  const saveBtn = $("btn_save_cfg_top");
+  if(saveBtn) saveBtn.onclick = saveSettings;
+  bindColors();
+  bindPrompts();
+  bindTargets();
+}
+
+// ============ 主题切换（v0.21.13）============
+// 按钮放顶栏右上角；选择存 localStorage，刷新与下次打开都记得。
+// 页面本身是 <html data-theme="..."> 驱动，JS 只负责改这个属性 + 同步按钮文案。
+const THEME_KEY = "mcctrl_theme";
+function applyTheme(t){
+  t = (t === "light") ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  const ico = $("theme_ico"), txt = $("theme_txt");
+  if(ico) ico.textContent = (t === "light") ? "☾" : "☀";
+  if(txt) txt.textContent = (t === "light") ? "深色" : "浅色";   // 写「点一下会变成什么」
+}
+function toggleTheme(){
+  const nxt = (document.documentElement.dataset.theme === "light") ? "dark" : "light";
+  try{ localStorage.setItem(THEME_KEY, nxt); }catch(e){}
+  applyTheme(nxt);
+}
+applyTheme(document.documentElement.dataset.theme);   // 脚本在 body 末尾，按钮已存在，先同步一次文案
+window.toggleTheme = toggleTheme;                     // 本页脚本在 IIFE 里，内联 onclick 必须走 window
+
+// ============ 初始化 ============
+// v0.20.1 修复：必须等 DOM 解析完成再 bind —— 本页两个 modal（#fp_modal / #bind_modal）
+// 写在
+// 本 <script> 之后，若在这里同步 bind()，$("fp_go") 等还是 null → bind 中途抛
+// TypeError → 后面的「保存全部设置」等按钮全部绑不上（点了没反应）。
+function boot(){
+  selectApi().then(({mode:m})=>{
+    mode = m;
+    modeTag();
+    const f = inIframe() ? "iframe 内" : "独立窗口";
+    connDot(null, mode==="bridge" ? `桥接模式 · ${f}` : `直连模式 · ${f}`);
+    if(mode==="direct" && inIframe()){
+      $("winbtn").style.display = "inline-block";
+    }
+    bind();
+    loadOverview();
+    loadServer();
+    loadKnowledge();
+    checkFingerprintNotice();
+    loadWorkflow();
+    loadSettings();
+    loadColors();
+  });
+}
+if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+else boot();
+})();
+</script>
+<!-- 服务端指纹变化 · 全屏提示 -->
+<div class="modal-mask" id="fp_modal" style="display:none">
+  <div class="modal-box">
+    <h2>检测到服务端指纹不匹配</h2>
+    <div class="sub">插件端不会自动切换知识库，请确认指定谁服务谁。本提示在指纹下次变动前只会出现一次。</div>
+    <div class="modal-kv">
+      <div class="k">当前服务端指纹</div><div class="v" id="fp_m_server">-</div>
+      <div class="k">内容来源</div><div class="v" style="font-family:var(--sans)" id="fp_m_content">-</div>
+      <div class="k">当前知识库预设</div><div class="v" style="font-family:var(--sans)" id="fp_m_preset">-</div>
+      <div class="k">预设绑定指纹</div><div class="v" id="fp_m_preset_fp">-</div>
+    </div>
+    <div class="why">两者不一致：可能是服务端内容（模组集合 / 插件集合）变过，也可能是本预设当初绑定的就是另一个服务端。
+      这个知识库里的经验可能不再适用于当前服务端，所以插件端这次<strong>没有自动继承、也没有自动切换</strong>
+      ——请确认指定哪个知识库服务哪个服务端。</div>
+    <div class="why" id="fp_weak" style="display:none;border-left-color:var(--bad)"></div>
+    <div class="modal-foot">
+      <!-- v0.21.10：原来的「本轮不再提醒」勾选框与「知道了」语义打架（两条路都只是记账），
+           主人拍板撤掉勾选框 —— 提示只在「这一轮指纹」里出现一次，指纹下次变动自动恢复。 -->
+      <div class="fp-note">同一轮指纹只提示这一次；服务端指纹下次变动时会再提醒一次。</div>
+      <div class="btnrow">
+        <button class="btn primary" id="fp_go">前往知识库处理</button>
+        <button class="btn" id="fp_ok">知道了</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 知识条目详情 / 编辑（v0.21.11）· 与指纹弹窗同款全屏子窗口 -->
+<div class="modal-mask" id="kbdet_modal" style="display:none">
+  <div class="modal-box wide" style="border-top-color:var(--cyan)">
+    <h2 id="kbdet_title">知识条目详情</h2>
+    <div class="sub kbdet-sub" id="kbdet_sub"></div>
+    <div class="modal-kv" id="kbdet_kv"></div>
+    <label class="f" for="kbdet_topic">主题 topic <span class="hl">可改名</span></label>
+    <input type="text" id="kbdet_topic" placeholder="topic">
+    <label class="f" for="kbdet_content">内容 content <span class="hl">可直接编辑</span></label>
+    <textarea id="kbdet_content" class="kbdet-ta" spellcheck="false"></textarea>
+    <div class="kbdet-note">保存 = 覆盖本条目（保留验证状态与创建时间，只刷新内容与更新时间）。
+      改名会连同条目一起迁移：目标主题若已存在会被拒绝，避免误覆盖。<br>
+      想清掉错误经验请用卡片上的「删除」——被删的主题会进墓碑，防止旧文件把它复活。</div>
+    <div class="kbdet-state" id="kbdet_state"></div>
+    <div class="modal-foot">
+      <div class="fp-note">Ctrl + Enter 保存 · Esc 关闭 · 点窗口外的空白处也能关</div>
+      <div class="btnrow">
+        <button class="btn" id="kbdet_close">关闭</button>
+        <button class="btn primary" id="kbdet_save">保存修改</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 绑定到本服务端 · 二次确认 -->
+<div class="modal-mask" id="bind_modal" style="display:none">
+  <div class="modal-box" style="border-top-color:var(--bad)">
+    <h2>确认把该预设绑定到本服务端？</h2>
+    <div class="sub">绑定只改写指纹声明，插件不会校验里面的经验是否真的适配当前整合包。</div>
+    <div class="modal-kv">
+      <div class="k">预设</div><div class="v" style="font-family:var(--sans)" id="bind_m_name">-</div>
+      <div class="k">预设绑定指纹</div><div class="v" id="bind_m_preset">-</div>
+      <div class="k">将改写为（当前服务端）</div><div class="v" id="bind_m_server">-</div>
+    </div>
+    <div class="why" style="border-left-color:var(--bad)">指纹不一致的告警会消失，但本预设的条目<strong>仍会照常被检索、原样喂给 AI</strong>：
+      如果这些经验其实来自别的整合包，绑定后错误经验<strong>不会因此变对</strong>，只是更难被发觉。
+      建议先核对内容，或改用「切换到匹配的预设」。</div>
+    <div class="modal-foot">
+      <div class="btnrow">
+        <button class="btn primary" id="bind_ok">确认绑定</button>
+        <button class="btn" id="bind_no">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

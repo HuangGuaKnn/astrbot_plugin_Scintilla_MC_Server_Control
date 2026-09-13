@@ -1,0 +1,1145 @@
+"""模组知识库引擎（学习型动态知识库）。
+
+设计目标：
+- 代码通用：不硬编码任何整合包特定知识，工具跨整合包可用
+- 知识动态：每个整合包一份知识库文件，换整合包自动切换/重建
+- LLM 智能路由：简单任务不查库直接执行；重型任务由 LLM 决定查询
+- 学习闭环：硬推理成功后通过 mc_save_knowledge 沉淀
+- 纠错闭环：结果出错时通过 mc_correct_knowledge 修正，条目带验证状态
+
+存储结构（JSON）：
+{
+  "server_id": "...",            # 当前整合包指纹（mods目录文件哈希）
+  "entries": {
+    "topic/关键词": {
+      "content": "知识内容",
+      "status": "verified|untested|corrected",
+      "created_at": "...",
+      "updated_at": "...",
+      "source": "auto_scan|llm_learn|user_correct"
+    }
+  }
+}
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+VALID_STATUS = ("verified", "untested", "corrected", "pending")
+
+# 老算法「mods 目录里一个 jar 都没有」时的指纹（= md5 空串）。这种「空整合包指纹」
+# 无法区分不同服务端：两个都没装 mod（或 server_dir 指到空壳目录）的服务端算出来
+# 一模一样，指纹比对与轮次记账都会失效 —— 必须点出来，不能装作正常。
+#
+# v0.21.20：指纹引擎改成分层来源（mods/ → plugins/ → 服务端形态），已经不会再产出
+# 这个值；常量保留只为兼容老 registry（预设可能仍绑着它），weak 判定改由引擎显式给出
+# （见 KnowledgePresetManager.server_weak）。
+EMPTY_SERVER_FP = hashlib.md5(b"").hexdigest()[:12]   # d41d8cd98f00
+
+# ================= 模组分类 / 模板识别 =================
+# 已知模组别名表（用于 topic/content 里没有命名空间时的兜底识别）
+KNOWN_MOD_ALIASES = {
+    "tac": ["tac", "枪械", "配件", "附件"],
+    "create": ["create", "机械动力"],
+    "ftbquests": ["ftbquests", "ftb quests", "任务书", "任务"],
+    "deceasedcraft": ["deceasedcraft", "幸存者", "村民职业"],
+    "minecraft": ["原版", "vanilla"],
+    "jei": ["jei"],
+}
+_TEMPLATE_WORDS = ("通用", "规则", "格式", "机制", "系统", "槽位", "结构", "原理", "流程", "命令", "配置", "枚举", "模板")
+_INSTANCE_WORDS = ("满改", "方案", "攻略", "做法", "发放", "发给", "给.*发")
+
+
+class KnowledgeState:
+    """知识库全局状态（热生效，WebUI 可即时修改）。
+
+    - enabled: 知识库能力总开关（关=完全走硬路线，不查不学不写）
+    - learning: 学习开关（关=不写入知识库，但可查询）
+    - auto_apply: 自动应用开关（开=学习即应用；关=进入 pending 待管理员审批）
+    """
+
+    def __init__(self, data_dir: str):
+        self.file_path = Path(data_dir) / "knowledge_state.json"
+        self.enabled = True
+        self.learning = True
+        self.auto_apply = True
+        self.load()
+
+    def load(self) -> None:
+        if self.file_path.exists():
+            try:
+                data = json.loads(self.file_path.read_text(encoding="utf-8"))
+                self.enabled = bool(data.get("enabled", True))
+                self.learning = bool(data.get("learning", True))
+                self.auto_apply = bool(data.get("auto_apply", True))
+            except Exception:
+                pass
+
+    def save(self) -> None:
+        try:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.file_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({
+                "enabled": self.enabled,
+                "learning": self.learning,
+                "auto_apply": self.auto_apply,
+            }, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self.file_path)
+        except Exception:
+            pass
+
+    def set(self, enabled: bool | None = None, learning: bool | None = None,
+            auto_apply: bool | None = None) -> dict:
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        if learning is not None:
+            self.learning = bool(learning)
+        if auto_apply is not None:
+            self.auto_apply = bool(auto_apply)
+        self.save()
+        return self.as_dict()
+
+    def as_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "learning": self.learning,
+            "auto_apply": self.auto_apply,
+        }
+
+
+class ModKnowledgeBase:
+    """模组知识库（预设槽位制）：检索、沉淀、纠错。
+
+    v0.18.0 起每个预设 = 一个独立文件 kb_preset_<预设ID>.json：
+    - 预设自带 fingerprint（绑定的服务端整合包指纹），**可以为 None = 未绑定**
+    - 未绑定的预设只在「第一次写入知识」时绑定到当时运行的服务端指纹
+    - 服务端指纹变化时本类不做任何自动切换/继承（由 KnowledgePresetManager 通知用户）
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        server_id: str | None = None,
+        preset_id: str | None = None,
+        preset_name: str | None = None,
+        fingerprint: str | None = None,
+        on_first_write=None,
+    ):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.server_id = server_id or "default"   # 当前运行服务端的整合包指纹（只读）
+        self.preset_id = preset_id or f"legacy_{self.server_id}"
+        self.preset_name = preset_name or f"知识库 {self.preset_id}"
+        self.fingerprint = fingerprint           # 本预设绑定的指纹，None=未绑定
+        self.on_first_write = on_first_write     # 首次写入时回调（用于绑定指纹）
+        self.file_path = self.data_dir / f"kb_preset_{self.preset_id}.json"
+        self.state = KnowledgeState(data_dir)
+        self._data: dict = {"preset_id": self.preset_id, "entries": {}}
+        self.load()
+
+    def bind(self, fingerprint: str | None) -> None:
+        """更新本预设绑定的指纹（None=解绑）。"""
+        self.fingerprint = fingerprint
+
+    def matches_server(self) -> bool | None:
+        """预设指纹与服务端指纹是否匹配：None=未绑定（不警告）。"""
+        if not self.fingerprint:
+            return None
+        return self.fingerprint == self.server_id
+
+    # ================= 基础 =================
+
+    def load(self) -> None:
+        if self.file_path.exists():
+            try:
+                self._data = json.loads(
+                    self.file_path.read_text(encoding="utf-8")
+                )
+                self._data.setdefault("entries", {})
+            except Exception:
+                self._data = {"preset_id": self.preset_id, "entries": {}}
+        self._data.setdefault("preset_id", self.preset_id)
+        self._data.setdefault("deleted", [])  # 墓碑：被删除的 topic（防旧文件继承复活）
+        self._migrate()
+
+    def reload(self) -> None:
+        """从磁盘重新读取（外部改动后刷新内存）。"""
+        self.load()
+
+    def entry_count(self) -> int:
+        return len(self._data.get("entries", {}))
+
+    def _migrate(self) -> None:
+        """旧条目惰性迁移：自动补 mod/kind 字段。"""
+        changed = False
+        for topic, e in self._data["entries"].items():
+            if "mod" not in e:
+                e["mod"] = self._detect_mod(topic, e.get("content", ""))
+                changed = True
+            if "kind" not in e:
+                e["kind"] = self._detect_kind(topic, e.get("content", ""))
+                changed = True
+        if changed:
+            self.save()
+
+    def save(self) -> None:
+        try:
+            self._data["preset_id"] = self.preset_id
+            self._data["updated_at"] = self._now()
+            tmp = self.file_path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self._data, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+            tmp.replace(self.file_path)
+        except Exception:
+            pass
+
+    def _now(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _topic_key(self, topic: str) -> str:
+        return topic.strip().lower()
+
+    # ================= 模组分类 / 模板识别 =================
+
+    # 常见非模组命名空间（如 NBT 字段名），识别时跳过
+    _NON_MOD_NS = {
+        "id", "item", "items", "value", "data", "json", "nbt", "tag", "tags",
+        "type", "name", "count", "slot", "key", "enchantments", "attachments",
+        "scope", "barrel", "stock", "under_barrel", "side_rail", "ir_device",
+        "extended_mag", "pistolscope", "gunskin", "damage", "size", "color",
+        "display", "text", "component", "block", "entity", "biome", "en", "zh",
+    }
+
+    def _detect_mod(self, topic: str, content: str = "") -> str:
+        """从 topic/content 识别所属模组。
+
+        策略：1) mod id 以词边界出现（最可靠，如 tac、ftbquests）；
+        2) 收集 `xxx:` 命名空间，跳过 NBT 字段黑名单；3) 别名表兜底
+        （按别名长度降序，减少「枪械师」撞「枪械」类误捕）；4) general。
+        """
+        text = f"{topic} {content}".lower()
+        # 1) mod id 词边界直接出现
+        for mod_id in KNOWN_MOD_ALIASES:
+            if re.search(rf"(?<![a-z0-9_]){re.escape(mod_id)}(?![a-z0-9_])", text):
+                return mod_id
+        # 2) 命名空间候选（跳过 NBT 字段黑名单）
+        for m in re.finditer(r"(?<![a-z0-9_])([a-z0-9_]+):", text):
+            ns = m.group(1)
+            if ns in self._NON_MOD_NS:
+                continue
+            if ns in KNOWN_MOD_ALIASES:
+                return ns
+            return ns
+        # 3) 别名表兜底（别名长的优先，降低误捕）
+        for mod_id, aliases in sorted(
+            KNOWN_MOD_ALIASES.items(),
+            key=lambda kv: -max((len(a) for a in kv[1]), default=0),
+        ):
+            if any(a in text for a in aliases):
+                return mod_id
+        return "general"
+
+    def _detect_kind(self, topic: str, content: str = "") -> str:
+        """判断条目类型：template=通用规则（可泛化套用）；instance=具体实例。"""
+        text = f"{topic} {content}".lower()
+        if any(w in text for w in _INSTANCE_WORDS):
+            return "instance"
+        if any(w in text for w in _TEMPLATE_WORDS):
+            return "template"
+        return "instance"
+
+    def _entry_view(self, topic: str) -> dict:
+        e = self._data["entries"][topic]
+        return {
+            "topic": topic,
+            "content": e.get("content", ""),
+            "status": e.get("status", "untested"),
+            "enabled": e.get("enabled", True),
+            "updated_at": e.get("updated_at", ""),
+            "mod": e.get("mod", "general"),
+            "kind": e.get("kind", "instance"),
+        }
+
+    # ================= 检索 =================
+
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        """关键词模糊检索知识条目。
+
+        举一反三：直接命中优先；命中不足时自动补召查询中涉及模组的
+        template 模板条目（可泛化套用到同类物品），并附带少量同模组实例。
+        返回 [{topic, content, status, mod, kind}]。
+        """
+        q = query.strip().lower()
+        if not q:
+            return []
+        # 分词：中文按字符、英文按单词
+        tokens = re.findall(r"[\u4e00-\u9fff]|[a-z0-9_]+", q)
+        exact, partial, scores = [], [], {}
+        for topic, entry in self._data["entries"].items():
+            if not entry.get("enabled", True):
+                continue  # 禁用的条目不参与检索
+            if entry.get("status") == "pending":
+                continue  # 待审批的条目尚未生效，不参与检索
+            haystack = f"{topic} {entry.get('content', '')}".lower()
+            score = sum(1 for t in tokens if t in haystack)
+            scores[topic] = score
+            if score >= len(tokens):
+                exact.append(topic)
+            elif score > 0:
+                partial.append(topic)
+        # 部分命中排序：匹配词数降序 → 模板(template)优先置顶，保证泛化模板不被截断
+        partial.sort(
+            key=lambda t: (
+                scores.get(t, 0),
+                self._data["entries"][t].get("kind") == "template",
+            ),
+            reverse=True,
+        )
+        ranked = exact + partial
+        out, seen = [], set()
+        for topic in ranked:
+            if topic in seen:
+                continue
+            seen.add(topic)
+            out.append(self._entry_view(topic))
+            if len(out) >= limit:
+                break
+        # 模板补召：query 含模组且结果不足时，追加该模组 template（可泛化）+ 少量实例
+        if len(out) < limit:
+            qmod = self._detect_mod(query, "")
+            if qmod != "general":
+                for topic, e in self._data["entries"].items():
+                    if topic in seen:
+                        continue
+                    if not e.get("enabled", True) or e.get("status") == "pending":
+                        continue
+                    if e.get("mod") != qmod:
+                        continue
+                    # template 优先补（≤2），instance 少量补（≤2）
+                    if e.get("kind") == "template":
+                        if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "template") >= 2:
+                            continue
+                    else:
+                        if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "instance") >= 2:
+                            continue
+                    seen.add(topic)
+                    out.append(self._entry_view(topic))
+                    if len(out) >= limit:
+                        break
+        return out
+
+    # ================= 沉淀 =================
+
+    def save_entry(
+        self,
+        topic: str,
+        content: str,
+        source: str = "llm_learn",
+        status: str = "untested",
+        rename_from: str = "",
+        manual: bool = False,
+    ) -> dict:
+        """写入/更新一条知识（学习沉淀）。返回条目信息。
+
+        自动应用关闭时（auto_apply=False），status 会被强制改为 pending，
+        进入 WebUI 审批队列，管理员批准后才生效。
+
+        rename_from（v0.21.11）：把旧主题的条目整体搬成新主题（WebUI 详情页改名用）——
+        沿用旧的 created_at / mod / kind，旧主题进墓碑防止被旧文件复活。
+        manual=True：主人亲手动笔（WebUI）→ 不再因 auto_apply 关闭而强制转 pending，
+        也不会莫名其妙把「已验证」降级成「未验证」。
+        """
+        key = self._topic_key(topic)
+        old_key = self._topic_key(rename_from) if rename_from else key
+        now = self._now()
+        # 手动重新写入 = 主人想复活这条知识 → 移出墓碑
+        deleted = self._data.setdefault("deleted", [])
+        if key in deleted:
+            deleted.remove(key)
+        old = self._data["entries"].get(old_key, {})
+        if old_key != key and old_key in self._data["entries"]:
+            # 改名：旧键搬走（不留残影），旧主题立墓碑
+            self._data["entries"].pop(old_key, None)
+            self._tombstone(old_key)
+        if status not in VALID_STATUS:
+            status = "untested"
+        # 待审批状态：旧条目若已应用，降级为 pending 等待重新审批（主人手动编辑除外）
+        if not manual and not self.state.auto_apply and old.get("status") not in ("pending",):
+            status = "pending"
+        entry = {
+            "content": content,
+            "status": status,
+            "enabled": old.get("enabled", True),
+            "created_at": old.get("created_at", now),
+            "updated_at": now,
+            "source": source,
+            "mod": old.get("mod") or self._detect_mod(topic, content),
+            "kind": old.get("kind") or self._detect_kind(topic, content),
+        }
+        self._data["entries"][key] = entry
+        self.save()
+        # v0.18.0：未绑定预设的「首次写入」→ 此刻绑定到当前服务端指纹
+        bound = None
+        if not self.fingerprint and callable(self.on_first_write):
+            try:
+                bound = self.on_first_write(self)
+            except Exception:
+                bound = None
+        out = {"topic": key, **entry}
+        if bound:
+            out["bound_fingerprint"] = bound
+        return out
+
+    # ================= 纠错 =================
+
+    def correct_entry(self, topic: str, correction: str) -> dict | None:
+        """纠错：覆盖已有知识并标记 corrected。topic 不存在时返回 None。"""
+        key = self._topic_key(topic)
+        if key not in self._data["entries"]:
+            return None
+        now = self._now()
+        entry = self._data["entries"][key]
+        entry["content"] = correction
+        entry["status"] = "corrected"
+        entry["updated_at"] = now
+        entry["source"] = "user_correct"
+        self.save()
+        return {"topic": key, **entry}
+
+    # ================= 条目管理（WebUI） =================
+
+    @staticmethod
+    def _public_entry(topic: str, e: dict) -> dict:
+        """条目对外字段（WebUI 列表与详情共用）。"""
+        return {
+            "topic": topic,
+            "content": e.get("content", ""),
+            "status": e.get("status", "untested"),
+            "enabled": e.get("enabled", True),
+            "source": e.get("source", ""),
+            "created_at": e.get("created_at", ""),
+            "updated_at": e.get("updated_at", ""),
+            "mod": e.get("mod", "general"),
+            "kind": e.get("kind", "instance"),
+        }
+
+    def get_entry(self, topic: str) -> dict | None:
+        """取单条条目（v0.21.11：详情弹窗 / 改名时校验原条目是否还在）。"""
+        key = self._topic_key(topic)
+        e = self._data["entries"].get(key)
+        return self._public_entry(key, e) if e is not None else None
+
+    def rename_exists(self, old_topic: str, new_topic: str) -> bool:
+        """改名目标是否撞到别的已有主题（撞了就该拒绝，别静默覆盖）。"""
+        old_key, new_key = self._topic_key(old_topic), self._topic_key(new_topic)
+        return new_key != old_key and new_key in self._data["entries"]
+
+    def list_entries(self, keyword: str = "", include_disabled: bool = True) -> list[dict]:
+        """列出全部条目（WebUI 用，含禁用与 pending）。"""
+        kw = keyword.strip().lower()
+        out = []
+        for topic, e in self._data["entries"].items():
+            if kw and kw not in topic.lower() and kw not in e.get("content", "").lower():
+                continue
+            if not include_disabled and not e.get("enabled", True):
+                continue
+            out.append(self._public_entry(topic, e))
+        out.sort(key=lambda x: x["updated_at"], reverse=True)
+        return out
+
+    def set_enabled(self, topic: str, enabled: bool) -> dict | None:
+        """启用/禁用条目。"""
+        key = self._topic_key(topic)
+        if key not in self._data["entries"]:
+            return None
+        self._data["entries"][key]["enabled"] = bool(enabled)
+        self.save()
+        return {"topic": key, "enabled": bool(enabled)}
+
+    def delete_entry(self, topic: str) -> bool:
+        """删除条目（含墓碑，防旧文件继承复活）。
+
+        v0.18.0 起不再联动清理其它预设文件——预设之间互相独立，
+        跨预设同步交给用户在知识库页手动「复制/移动」。
+        """
+        key = self._topic_key(topic)
+        if key in self._data["entries"]:
+            del self._data["entries"][key]
+            self._tombstone(key)
+            self.save()
+            return True
+        return False
+
+    def _tombstone(self, key: str) -> None:
+        """把 topic key 记入墓碑列表（继承时跳过）。"""
+        deleted = self._data.setdefault("deleted", [])
+        if key not in deleted:
+            deleted.append(key)
+
+    def _purge_from_legacy_files(self, key: str) -> None:
+        """同步删除所有旧指纹知识库文件里的同 topic 条目，彻底断源。"""
+        for f in self.data_dir.glob("mod_knowledge_*.json"):
+            if f.name == self.file_path.name:
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if key in data.get("entries", {}):
+                del data["entries"][key]
+                try:
+                    f.write_text(
+                        json.dumps(data, ensure_ascii=False, indent=1),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+
+    def approve_entry(self, topic: str, approve: bool = True) -> dict | None:
+        """审批 pending 条目：批准→verified（应用）；拒绝→删除。"""
+        key = self._topic_key(topic)
+        if key not in self._data["entries"]:
+            return None
+        if approve:
+            self._data["entries"][key]["status"] = "verified"
+            self._data["entries"][key]["source"] = "admin_approved"
+            self._data["entries"][key]["updated_at"] = self._now()
+            self.save()
+            return {"topic": key, "status": "verified", "approved": True}
+        del self._data["entries"][key]
+        self.save()
+        return {"topic": key, "approved": False}
+
+    def pending_entries(self) -> list[dict]:
+        """返回待审批条目。"""
+        return [e for e in self.list_entries() if e["status"] == "pending"]
+
+    def inherit_legacy_knowledge(self) -> dict:
+        """【v0.18.0 起不再自动调用】继承旧整合包指纹的知识库条目。
+
+        新流程：指纹变化不再自动继承/切换，改由用户在 WebUI 知识库页手动
+        选择预设、复制/移动知识。本方法仅保留给「手动找回旧文件」的场景。
+
+        扫描数据目录下所有 mod_knowledge_*.json（排除当前指纹），把当前库
+        没有的条目合并进来，source 标记为 inherited。已有条目保留不动。
+        """
+        inherited = 0
+        for f in sorted(self.data_dir.glob("mod_knowledge_*.json")):
+            if f.name == self.file_path.name:
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for topic, entry in data.get("entries", {}).items():
+                if topic in self._data["entries"]:
+                    continue  # 当前库已有，保留当前版本
+                if topic in self._data.setdefault("deleted", []):
+                    continue  # 墓碑：主人明确删除过，不复活
+                entry = dict(entry)
+                entry["source"] = f"inherited:{data.get('server_id', '?')}"
+                self._data["entries"][topic] = entry
+                inherited += 1
+        if inherited:
+            self.save()
+        return {
+            "inherited": inherited,
+            "total": self.stats()["total"],
+        }
+
+    # ================= 统计/管理 =================
+
+    def stats(self) -> dict:
+        entries = self._data["entries"]
+        match = self.matches_server()
+        return {
+            "server_id": self.server_id,
+            "preset_id": self.preset_id,
+            "preset_name": self.preset_name,
+            "fingerprint": self.fingerprint or "",
+            "bound": bool(self.fingerprint),
+            "match": match,        # True=匹配 / False=不匹配 / None=未绑定
+            "total": len(entries),
+            "verified": sum(1 for e in entries.values() if e.get("status") == "verified"),
+            "untested": sum(1 for e in entries.values() if e.get("status") == "untested"),
+            "corrected": sum(1 for e in entries.values() if e.get("status") == "corrected"),
+            "pending": sum(1 for e in entries.values() if e.get("status") == "pending"),
+            "disabled": sum(1 for e in entries.values() if not e.get("enabled", True)),
+            "template": sum(1 for e in entries.values() if e.get("kind") == "template"),
+            "instance": sum(1 for e in entries.values() if e.get("kind") != "template"),
+            "file": str(self.file_path),
+            "state": self.state.as_dict(),
+        }
+
+    def clear(self) -> dict:
+        """清空本预设（换整合包/重开时使用）：条目清空并记墓碑防复活。
+
+        v0.18.0 起只影响当前预设，不动其它预设文件（其它预设由用户在页面上管理）。
+        """
+        keys = list(self._data["entries"].keys())
+        for k in keys:
+            self._tombstone(k)
+        self._data["entries"] = {}
+        self.save()
+        return {"cleared": len(keys)}
+
+
+def compute_server_id(mods_dir: str) -> str:
+    """计算整合包指纹：mods 目录全部 jar 的名称+大小+修改时间的哈希。"""
+    try:
+        h = hashlib.md5()
+        entries = []
+        for p in sorted(Path(mods_dir).glob("*.jar")):
+            if p.name.lower().endswith(".disabled"):
+                continue
+            st = p.stat()
+            entries.append(f"{p.name}|{st.st_size}|{int(st.st_mtime)}")
+        h.update("|".join(entries).encode("utf-8"))
+        return h.hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
+# ===================== 预设管理器（v0.18.0） =====================
+
+
+def _preset_id() -> str:
+    import secrets
+
+    return "p" + secrets.token_hex(4)
+
+
+class KnowledgePresetManager:
+    """知识库预设槽位管理器。
+
+    设计（v0.18.0）：
+    - 每个预设 = 一个知识库文件 kb_preset_<id>.json，互不干扰
+    - 预设指纹（fingerprint）由用户决定，**新建预设默认不绑定**；未绑定的预设在
+      第一次写入知识时才绑定当时运行的服务端指纹
+    - 服务端指纹变化时**不再自动切换/继承知识库**，只把差异记为「待提醒」，
+      由 WebUI 在用户进入时弹全屏提示，用户在知识库页手动选择/绑定
+    - 支持把某个预设整体「复制 / 移动」到另一个预设（冲突 topic 默认保留目标版本）
+    """
+
+    REG_NAME = "kb_presets.json"
+
+    def __init__(self, data_dir: str, server_id: str, server_dir: str = ""):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.server_id = server_id or "unknown"
+        # v0.21.9：记住「当前服务端目录」——指纹算不出区别（mods 空目录）时靠它认出换了服务端
+        self.server_dir = (server_dir or "").strip()
+        # v0.21.20：指纹是否「认不出服务端」（mods 与 plugins 都没有内容）——由指纹引擎给定
+        self.server_weak: bool | None = None
+        self.reg_path = self.data_dir / self.REG_NAME
+        self.reg: dict = self._load_registry()
+        self.kb: ModKnowledgeBase | None = None
+        self.reload_active()
+
+    # ---------------- 注册表 ----------------
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _load_registry(self) -> dict:
+        if self.reg_path.exists():
+            try:
+                data = json.loads(self.reg_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("presets"), list):
+                    data.setdefault("active", None)
+                    migrated = self._migrate_notice(data)
+                    if self._recover_orphans(data) or migrated:
+                        self._write_registry_raw(data)
+                    return data
+            except Exception:
+                pass
+        return self._migrate_legacy()
+
+    def _migrate_notice(self, data: dict) -> bool:
+        """把老 registry 的 notice 字段（永久 suppressed + 单个 ack）迁移为「轮次列表」（v0.21.8）。
+
+        轮次 = (激活预设 × 服务端指纹)，弹窗与「本轮不再提醒」都按轮次记账 ——
+        同一轮只弹一次，服务端指纹下次变动（轮次翻新）时重新获得一次弹窗机会。
+        """
+        n = data.get("notice")
+        if not isinstance(n, dict):
+            n = data["notice"] = {}
+        migrated = False
+        if not isinstance(n.get("popup_keys"), list):
+            n["popup_keys"] = [str(n["ack"])] if n.get("ack") else []
+            migrated = True
+        if not isinstance(n.get("suppress_keys"), list):
+            # 老的 suppressed=True 是「永久不再提醒」→ 迁移为「本轮不再提醒」：
+            # 保留主人这次的选择，但指纹下次变动时会重新提示。
+            n["suppress_keys"] = (
+                [f"{data.get('active')}|{self.server_id}"] if n.get("suppressed") else []
+            )
+            migrated = True
+        for legacy in ("suppressed", "ack"):
+            if legacy in n:
+                n.pop(legacy, None)
+                migrated = True
+        # 老记账（ack / suppressed）对应的就是当前服务端指纹那一轮，别让新一轮判定把它清掉
+        n.setdefault("last_fp", self.server_id)
+        return migrated
+
+    def _recover_orphans(self, data: dict) -> bool:
+        """注册表里缺失、但磁盘上存在的预设文件 → 补登记（防注册表丢失）。"""
+        found = False
+        known = {p.get("id") for p in data["presets"]}
+        for f in sorted(self.data_dir.glob("kb_preset_*.json")):
+            pid = f.stem[len("kb_preset_"):]
+            if pid in known:
+                continue
+            fp = ""
+            try:
+                fp = str(json.loads(f.read_text(encoding="utf-8")).get("fingerprint") or "")
+            except Exception:
+                pass
+            data["presets"].append({
+                "id": pid,
+                "name": f"恢复的预设 {pid}",
+                "fingerprint": fp,
+                "created_at": self._now(),
+                "updated_at": self._now(),
+            })
+            found = True
+        return found
+
+    def _stamp_fp(self, pid: str, fp: str) -> None:
+        """把指纹同时写进预设文件本身（文件自描述，便于迁移/恢复）。"""
+        p = self.preset_path(pid)
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            d["fingerprint"] = fp or ""
+            p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _migrate_legacy(self) -> dict:
+        """首次运行：把旧 mod_knowledge_<指纹>.json 逐个导入为预设（原文件保持不动）。"""
+        presets: list[dict] = []
+        for f in sorted(self.data_dir.glob("mod_knowledge_*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            fp = str(data.get("server_id") or f.stem.replace("mod_knowledge_", ""))
+            pid = _preset_id()
+            body = {
+                "preset_id": pid,
+                "fingerprint": fp,
+                "entries": data.get("entries", {}),
+                "deleted": data.get("deleted", []),
+                "migrated_from": f.name,
+            }
+            try:
+                (self.data_dir / f"kb_preset_{pid}.json").write_text(
+                    json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8"
+                )
+            except Exception:
+                continue
+            presets.append({
+                "id": pid,
+                "name": f"旧知识库 {fp}",
+                "fingerprint": fp,
+                "created_at": self._now(),
+                "updated_at": self._now(),
+            })
+        if not presets:
+            # 全新安装：建一个「默认知识库」预设，**不预设指纹**（首次写入时才绑定）
+            pid = _preset_id()
+            (self.data_dir / f"kb_preset_{pid}.json").write_text(
+                json.dumps({"preset_id": pid, "fingerprint": "",
+                            "entries": {}, "deleted": []},
+                           ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+            presets.append({
+                "id": pid, "name": "默认知识库", "fingerprint": "",
+                "created_at": self._now(), "updated_at": self._now(),
+            })
+        # 激活项：优先绑定当前服务端指纹的那个，否则最新的非空预设
+        exact = next((p for p in presets if p["fingerprint"] == self.server_id), None)
+        if exact is None:
+            ranked = sorted(
+                presets,
+                key=lambda p: (self._file_entries(p["id"]) > 0, p["updated_at"]),
+                reverse=True,
+            )
+            exact = ranked[0]
+        reg = {
+            "active": exact["id"],
+            "presets": presets,
+            "notice": {"popup_keys": [], "suppress_keys": []},
+        }
+        self._write_registry_raw(reg)
+        return reg
+
+    def _write_registry_raw(self, reg: dict) -> None:
+        try:
+            tmp = self.reg_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self.reg_path)
+        except Exception:
+            pass
+
+    def save_registry(self) -> None:
+        self._write_registry_raw(self.reg)
+
+    # ---------------- 预设读写 ----------------
+
+    def preset_path(self, pid: str) -> Path:
+        return self.data_dir / f"kb_preset_{pid}.json"
+
+    def _file_entries(self, pid: str) -> int:
+        p = self.preset_path(pid)
+        if not p.exists():
+            return 0
+        try:
+            return len(json.loads(p.read_text(encoding="utf-8")).get("entries", {}))
+        except Exception:
+            return 0
+
+    def get(self, pid: str) -> dict | None:
+        return next((p for p in self.reg["presets"] if p.get("id") == pid), None)
+
+    def active_preset(self) -> dict | None:
+        return self.get(self.reg.get("active") or "")
+
+    def reload_active(self) -> ModKnowledgeBase | None:
+        """按当前激活预设重建 KB 实例（切换预设后调用）。"""
+        p = self.active_preset()
+        if p is None:
+            self.kb = None
+            return None
+        old_state = self.kb.state if self.kb is not None else None
+        kb = ModKnowledgeBase(
+            str(self.data_dir),
+            server_id=self.server_id,
+            preset_id=p["id"],
+            preset_name=p.get("name") or p["id"],
+            fingerprint=(p.get("fingerprint") or None),
+            on_first_write=self.bind_active_if_needed,
+        )
+        if old_state is not None:
+            kb.state = old_state
+        self.kb = kb
+        return kb
+
+    def set_server_id(self, server_id: str, server_dir: str | None = None,
+                      weak: bool | None = None) -> ModKnowledgeBase | None:
+        """就地更新「当前服务端」基准（v0.21.7：换服务端不必重载插件）。
+
+        只刷新比对基准与内存 KB 的 server_id，**不切换激活预设**——与 v0.18.0
+        「指纹变化不自动切换、只提醒」的策略一致。
+
+        v0.21.9：可一并更新服务端目录。指纹没变（例如两个服务端都是空 mods）但目录
+        换了，也要算「换了服务端」，弹窗轮次要翻新，否则提醒永远不会再出现。
+
+        v0.21.20：weak 由指纹引擎给出（mods/ 与 plugins/ 都没有内容 → 指纹认不出
+        服务端），带给 notice() 用于弹窗额外警告。
+        """
+        sid = server_id or "unknown"
+        ndir = self.server_dir if server_dir is None else (server_dir or "").strip()
+        nweak = self.server_weak if weak is None else bool(weak)
+        if sid == self.server_id and ndir == self.server_dir and nweak == self.server_weak:
+            return self.kb
+        self.server_id = sid
+        self.server_dir = ndir
+        self.server_weak = nweak
+        return self.reload_active()
+
+    # ---------------- 首次写入绑定 ----------------
+
+    def bind_active_if_needed(self, kb: ModKnowledgeBase) -> str | None:
+        """未绑定预设的首次知识写入 → 绑定当前服务端指纹。返回新指纹或 None。"""
+        p = self.active_preset()
+        if p is None or p.get("fingerprint"):
+            return None
+        p["fingerprint"] = self.server_id
+        p["updated_at"] = self._now()
+        kb.bind(self.server_id)
+        self._stamp_fp(p["id"], self.server_id)
+        self.save_registry()
+        return self.server_id
+
+    # ---------------- 预设操作 ----------------
+
+    def create(self, name: str = "", copy_from: str | None = None) -> dict:
+        """新建预设（默认不预设指纹）。copy_from 可指定从哪个预设复制条目。"""
+        pid = _preset_id()
+        entries, deleted = {}, []
+        if copy_from:
+            src = self.preset_path(copy_from)
+            if src.exists():
+                try:
+                    d = json.loads(src.read_text(encoding="utf-8"))
+                    entries = d.get("entries", {})
+                except Exception:
+                    entries = {}
+        (self.data_dir / f"kb_preset_{pid}.json").write_text(
+            json.dumps({"preset_id": pid, "fingerprint": "",
+                        "entries": entries, "deleted": deleted},
+                       ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        preset = {
+            "id": pid,
+            "name": (name or "").strip() or f"新预设 {len(self.reg['presets']) + 1}",
+            "fingerprint": "",          # ← 不预设指纹
+            "created_at": self._now(),
+            "updated_at": self._now(),
+        }
+        self.reg["presets"].append(preset)
+        self.save_registry()
+        return preset
+
+    def rename(self, pid: str, name: str) -> dict | None:
+        p = self.get(pid)
+        if p is None or not (name or "").strip():
+            return None
+        p["name"] = name.strip()
+        p["updated_at"] = self._now()
+        self.save_registry()
+        if self.kb is not None and pid == (self.active_preset() or {}).get("id"):
+            self.kb.preset_name = p["name"]
+        return p
+
+    def remove(self, pid: str) -> dict:
+        """删除预设（至少保留一个）。删除激活预设时自动切到第一个。"""
+        p = self.get(pid)
+        if p is None:
+            return {"ok": False, "error": "预设不存在"}
+        if len(self.reg["presets"]) <= 1:
+            return {"ok": False, "error": "至少要保留一个预设"}
+        self.reg["presets"] = [x for x in self.reg["presets"] if x.get("id") != pid]
+        try:
+            self.preset_path(pid).unlink(missing_ok=True)
+        except Exception:
+            pass
+        if self.reg.get("active") == pid:
+            self.reg["active"] = self.reg["presets"][0]["id"]
+            self.reload_active()
+        self.save_registry()
+        return {"ok": True, "removed": pid}
+
+    def switch(self, pid: str) -> dict:
+        p = self.get(pid)
+        if p is None:
+            return {"ok": False, "error": "预设不存在"}
+        self.reg["active"] = pid
+        self.save_registry()
+        self.reload_active()
+        return {"ok": True, "active": pid}
+
+    def bind(self, pid: str, fingerprint: str | None) -> dict | None:
+        """手动绑定/解绑预设指纹（fingerprint=None 表示解绑）。"""
+        p = self.get(pid)
+        if p is None:
+            return None
+        p["fingerprint"] = (fingerprint or "").strip()
+        p["updated_at"] = self._now()
+        self._stamp_fp(p["id"], p["fingerprint"])
+        self.save_registry()
+        if self.kb is not None and pid == self.reg.get("active"):
+            self.kb.bind(p["fingerprint"] or None)
+        return p
+
+    def transfer(self, src_id: str, dst_id: str, mode: str = "copy") -> dict:
+        """把 src 预设的条目整体复制/移动到 dst 预设（冲突 topic 默认保留目标版本）。"""
+        if src_id == dst_id:
+            return {"ok": False, "error": "源与目标不能是同一个预设"}
+        src_p, dst_p = self.preset_path(src_id), self.preset_path(dst_id)
+        sp, dp = self.get(src_id), self.get(dst_id)
+        if sp is None or dp is None or not src_p.exists() or not dst_p.exists():
+            return {"ok": False, "error": "预设文件不存在"}
+        try:
+            sd = json.loads(src_p.read_text(encoding="utf-8"))
+            dd = json.loads(dst_p.read_text(encoding="utf-8"))
+        except Exception as e:
+            return {"ok": False, "error": f"读取失败: {e}"}
+        s_entries, d_entries = sd.get("entries", {}), dd.setdefault("entries", {})
+        moved = conflict = 0
+        for topic, entry in list(s_entries.items()):
+            if topic in d_entries:
+                conflict += 1
+                continue
+            e = dict(entry)
+            e["source"] = f"imported:{sp.get('name')}"
+            d_entries[topic] = e
+            moved += 1
+        dd.setdefault("deleted", [])
+        try:
+            dst_p.write_text(json.dumps(dd, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:
+            return {"ok": False, "error": f"写入失败: {e}"}
+        if mode == "move":
+            sd["entries"] = {}
+            sd.setdefault("deleted", [])
+            try:
+                src_p.write_text(json.dumps(sd, ensure_ascii=False, indent=1), encoding="utf-8")
+            except Exception:
+                pass
+        # 刷新受影响的内存实例
+        if self.reg.get("active") in (src_id, dst_id):
+            self.reload_active()
+        return {"ok": True, "count": moved, "conflicts": conflict,
+                "mode": mode, "from": sp.get("name"), "to": dp.get("name")}
+
+    # ---------------- 指纹不匹配提醒（v0.21.8 重做 / v0.21.9 补轮次口径） ----------------
+    #
+    # 规则：检测到「激活预设的指纹 ≠ 当前服务端指纹」就弹一次全屏大弹窗；
+    #   这个弹窗以 (预设, 服务端) 为一个「轮次」，**同一轮只弹一次** ——
+    #   服务端下次再变（或换到别的预设），轮次更新，弹窗重新获得一次机会。
+    #   弹窗只要在 WebUI 里真的显示过就算数（不要求主人点按钮），
+    #   所以刷新页面、切页签都不会反复骚扰。
+    #
+    #   v0.21.9：「服务端」的判据 = 指纹 + 服务器目录。只比指纹会漏掉一种情况：
+    #   两个服务端都没装 mod（或 server_dir 指到了没有 mods 的空壳目录）时指纹算出来
+    #   一模一样（d41d8cd98f00），于是「换服务端」被判成「同一轮」→ 弹窗再也不出现。
+
+    _NOTICE_DEFAULT = {
+        "popup_keys": [],      # 本轮（一个服务端世代）里已经弹过的预设，最多记 20 条
+        "suppress_keys": [],   # 本轮里被「本轮不再提醒」静音的预设
+        "last_fp": "",         # 记账时的服务端指纹 —— 它一变就作废旧记账（重新给一次机会）
+        "last_dir": "",        # 记账时的服务端目录（v0.21.9）—— 指纹撞车时靠它认出换服
+    }
+    _MAX_NOTICE_KEYS = 20
+
+    def _notice_state(self) -> dict:
+        n = self.reg.setdefault("notice", {})
+        if not isinstance(n, dict):
+            n = self.reg["notice"] = {}
+        for k, v in self._NOTICE_DEFAULT.items():
+            if k in ("last_fp", "last_dir"):
+                n.setdefault(k, "")
+            elif not isinstance(n.get(k), list):
+                n[k] = list(v)
+        return n
+
+    def _roll_round_if_needed(self) -> dict:
+        """服务端一变（指纹或目录变了）→ 开新的一轮：作废上一轮的记账。
+
+        这样「服务端下次变动之前只弹一次」才成立：同一服务端世代里每个预设只弹一次，
+        服务端一变（哪怕变回旧值）就重新获得一次弹窗机会。
+        """
+        n = self._notice_state()
+        changed = (n.get("last_fp") != self.server_id
+                   or n.get("last_dir") != self.server_dir)
+        if changed:
+            # 指纹变了 → 换了整合包；指纹没变但目录变了 → 十有八九是两个服务端都没装 mod，
+            # 指纹撞在一起了（此时弹窗里还会额外警告「mods 目录是空的」）
+            n["last_fp"] = self.server_id
+            n["last_dir"] = self.server_dir
+            n["popup_keys"] = []
+            n["suppress_keys"] = []
+            self.save_registry()
+        return n
+
+    def notice_key(self, p: dict | None = None) -> str:
+        """当前轮次里该预设的记账 key：预设 × 服务端指纹。"""
+        p = p if p is not None else (self.active_preset() or {})
+        return f"{p.get('id')}|{self.server_id}"
+
+    def _remember(self, field: str, key: str) -> None:
+        """记下本轮某个预设（列表去重 + 保留最近若干条，避免无限膨胀）。"""
+        n = self._roll_round_if_needed()
+        keys = [k for k in n[field] if k != key]
+        keys.append(key)
+        n[field] = keys[-self._MAX_NOTICE_KEYS:]
+
+    def notice(self) -> dict:
+        """是否需要弹「整合包指纹不匹配」全屏提示。"""
+        p = self.active_preset()
+        n = self._roll_round_if_needed()
+        key = self.notice_key(p)
+        preset_fp = (p or {}).get("fingerprint") or ""
+        server_fp = self.server_id
+        mismatch = bool(p) and bool(preset_fp) and preset_fp != server_fp
+        suppressed = key in n["suppress_keys"]
+        popped = key in n["popup_keys"]
+        return {
+            "show": bool(mismatch and not suppressed and not popped),
+            "changed": mismatch,          # 兼容旧字段名：语义就是「不匹配」
+            "mismatch": mismatch,         # 概览页常驻标记用它（不随弹窗消失）
+            "suppressed": suppressed,
+            "popped": popped,
+            "key": key,
+            "server_fp": server_fp,
+            # v0.21.9：空 mods 目录 → 指纹恒为 d41d8cd98f00，认不出不同服务端，弹窗要额外警告
+            # v0.21.20：优先用指纹引擎给出的 weak（mods/ 与 plugins/ 都没内容）；
+            #          引擎缺席时（老路径 / 测试直接构造）退回旧判据
+            "server_fp_weak": (server_fp == EMPTY_SERVER_FP if self.server_weak is None
+                               else bool(self.server_weak)),
+            "server_dir": self.server_dir,
+            "preset_id": (p or {}).get("id"),
+            "preset_name": (p or {}).get("name"),
+            "preset_fp": preset_fp,
+        }
+
+    def mark_notice_shown(self) -> dict:
+        """WebUI 把弹窗真正显示出来时回调：记下「这一轮已经弹过了」。
+
+        只认「显示过」，不要求主人点确认按钮 —— 这就是「同一轮只弹一次」的实现。
+        """
+        self._remember("popup_keys", self.notice_key())
+        self.save_registry()
+        return self.notice()
+
+    def ack_notice(self, suppress: bool = False) -> dict:
+        """主人点了弹窗里的按钮：记本轮已弹；suppress=True 表示本轮不再提醒。"""
+        key = self.notice_key()
+        self._remember("popup_keys", key)
+        if suppress:
+            self._remember("suppress_keys", key)   # 只对本轮生效，指纹变动后自动恢复提示
+        self.save_registry()
+        return self.notice()
+
+    def set_suppress(self, on: bool) -> dict:
+        """开启/关闭「指纹不匹配提醒」（关闭=本轮静音；重新开启会立刻恢复本次提示）。"""
+        n = self._roll_round_if_needed()
+        key = self.notice_key()
+        if on:
+            self._remember("suppress_keys", key)
+        else:
+            n["suppress_keys"] = []
+            n["popup_keys"] = [k for k in n["popup_keys"] if k != key]  # 本轮重新给一次弹窗
+        self.save_registry()
+        return self.notice()
+
+    # ---------------- 展示 ----------------
+
+    def list_presets(self) -> list[dict]:
+        active = self.reg.get("active")
+        out = []
+        for p in self.reg["presets"]:
+            fp = p.get("fingerprint") or ""
+            out.append({
+                "id": p.get("id"),
+                "name": p.get("name") or p.get("id"),
+                "fingerprint": fp,
+                "bound": bool(fp),
+                "active": p.get("id") == active,
+                "entries": self._file_entries(p.get("id", "")),
+                "match": (fp == self.server_id) if fp else None,
+                "updated_at": p.get("updated_at", ""),
+                "created_at": p.get("created_at", ""),
+            })
+        return out
+
+    def status(self) -> dict:
+        return {
+            "server_fingerprint": self.server_id,
+            "active": self.reg.get("active"),
+            "presets": self.list_presets(),
+            "notice": self.notice(),
+        }
+

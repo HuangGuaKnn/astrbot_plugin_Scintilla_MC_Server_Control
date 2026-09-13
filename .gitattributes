@@ -1,0 +1,7 @@
+# 统一换行符：仓库内一律 LF，工作区 Windows 检出 CRLF
+* text=auto eol=lf
+
+# 二进制文件不要做换行转换
+*.png binary
+*.jpg binary
+*.zip binary
