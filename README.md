@@ -41,10 +41,20 @@
 
 ## 安装
 
- 把本目录放进 AstrBot 的插件目录即可：
-   ```
-   <AstrBot>/data/plugins/astrbot_plugin_Scintilla_MC_Server_Control/
-   ```
+### 方式一：AstrBot 应用市场（推荐）
+
+在 AstrBot WebUI 打开「插件市场」，搜索 **Minecraft Server 智控台** 或插件 ID `astrbot_plugin_Scintilla_MC_Server_Control`，点一下即可装好；以后本插件发新版本，也能在同一处直接升级（不用手动替换文件）。
+
+### 方式二：手动安装
+
+把本目录放进 AstrBot 的插件目录即可：
+
+```
+<AstrBot>/data/plugins/astrbot_plugin_Scintilla_MC_Server_Control/
+```
+
+也可以到 [Releases](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases) 下载打包好的 zip，解压后把整个文件夹放进 `data/plugins/`。
+
 可选依赖：`psutil`（只有 `mcs 状态` 的内存 / CPU / 运行时长需要，缺了会自动降级）。
 
 ---
@@ -140,6 +150,8 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 ---
 
 ## 常见问题
+
+> 下面是高频问题速查；更完整的排查清单见 **[常见问题（完整版）](docs/faq.md)**。
 
 **Q：工具都说「物品词典不可用」？**
 服务端目录没配好。到 WebUI「设置」页填 `server_dir` 并保存——保存即重算指纹与词典，不用重载插件。
