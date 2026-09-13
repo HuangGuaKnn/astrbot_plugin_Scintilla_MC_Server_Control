@@ -105,7 +105,7 @@ mcs 封禁 / 解封 <玩家>  （仅管理员）
 
 ## 多 Agent 工作流
 
-复杂任务（满配枪械、模组物品、复杂 NBT、批量指令）请让 AI 调用 `mc_workflow`，由流水线统一处理：
+复杂任务（数值计算、满配枪械、模组物品、复杂 NBT、批量指令）请让 AI 调用 `mc_workflow`，由流水线统一处理：
 
 ```
 分类 Agent → 模板判断 Agent → 前瞻建库 Agent → 实现 Agent → 纠错 Agent
