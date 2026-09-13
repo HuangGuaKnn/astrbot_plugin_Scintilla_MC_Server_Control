@@ -26,11 +26,13 @@
 **`remote_rcon_mode`** — 异地 RCON 模式（AstrBot 与服务端不同机、只映射 RCON 端口）  
 <sub>开关 · 默认：关</sub>
 
+> [!WARNING]
 > 开启后只走 RCON，可以不填「服务端目录」；但依赖本地文件的整块能力会按设计禁用：物品词典、知识库、服务器事件播报、版本探测、进程指标。终端与 WebUI 都会明确告知。
 
 **`server_dir`** — 服务端目录  
 <sub>文本 · 默认：空</sub>
 
+> [!NOTE]
 > 服务端根目录（整合包 / 插件服务端解压后的那一层），例如 D:\Minecraft\Servers\MyPack；读取 logs/latest.log 、mods/ 、plugins/ 均以它为根。保存时会做结构校验（logs/ 、libraries/ 、server.properties 、eula.txt 等特征），不像服务端根目录会拒绝保存。
 
 **`rcon_host`** — RCON 主机地址  
@@ -46,6 +48,7 @@
 **`rcon_password`** — RCON 密码  
 <sub>文本 · 默认：空</sub>
 
+> [!CAUTION]
 > 与 server.properties 中的 rcon.password 一致；以明文保存在插件配置中，请勿泄露
 
 **`rcon_timeout`** — RCON 超时（秒）  
@@ -67,6 +70,7 @@
 
 可选值：`whitelist` / `blacklist`
 
+> [!IMPORTANT]
 > 只管「命令工具」：mc_execute_command（执行指令）、mc_give_item（发物品）、mc_broadcast（广播）；喊话、状态、查询、绑定这类插件自带功能不受本策略影响（想限制喊话请改 say_command_public）。whitelist=白名单（默认）：非管理员完全不能使用命令工具；blacklist=黑名单：所有玩家都能使用命令工具，但危险命令（stop/op/ban/kick/whitelist…）与权限等级 3/4 的服务器管理命令仍仅管理员可用
 
 **`permission_hint_injection`** — 权限前置提醒（注入提示词）  
