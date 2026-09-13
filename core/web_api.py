@@ -21,7 +21,7 @@ PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
 # 插件展示信息（与 metadata.yaml 保持一致）
 # v0.21.22 开源卫生：# _cfg_path 不再写死本机路径（与 main.py 同款自适应写法），
 # 个人文案（昵称 / QQ 号示例）已换成中性示例，_backup/ 与测试产物已清理。
-def _metadata_version(fallback: str = "0.21.26") -> str:
+def _metadata_version(fallback: str = "0.21.38") -> str:
     """v0.21.14：version 直接从 metadata.yaml 读，不再手抄。
 
     以前这里硬编码 "v0.21.11"，metadata 都升到 0.21.13 了它还是旧的 ——
