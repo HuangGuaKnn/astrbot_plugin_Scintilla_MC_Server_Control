@@ -41,12 +41,11 @@
 
 ## 安装
 
-1. 把本目录放进 AstrBot 的插件目录：
+ 把本目录放进 AstrBot 的插件目录即可：
    ```
    <AstrBot>/data/plugins/astrbot_plugin_Scintilla_MC_Server_Control/
    ```
-2. 在 AstrBot 插件管理页点**重载**（插件自带「重载即生效」补丁，深度清理模块缓存，无需重启 AstrBot）。
-3. 可选依赖：`psutil`（只有 `mcs 状态` 的内存 / CPU / 运行时长需要，缺了会自动降级）。
+可选依赖：`psutil`（只有 `mcs 状态` 的内存 / CPU / 运行时长需要，缺了会自动降级）。
 
 ---
 
