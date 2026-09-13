@@ -153,6 +153,13 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 **Q：能控制基岩版 / 代理端吗？**
 只走 RCON 的标准能力，凡是不经 RCON 的功能（日志播报、词典、指纹）都要求能读到服务端目录。
 
+**Q：tacz 枪械满配这类复杂指令为什么不能稳定成功？**
+
+> [!CAUTION]
+> 受 AstrBot 与 Minecraft 服务端**端到端链路**的限制，目前过重的指令任务还不能保证一次成功——比如 tacz 枪械满配这类命令，可能无法稳定触发。
+> 插件已用「多 Agent 工作流 + 失败自动纠错重试」尽量兜底，但不承诺 100% 成功率。
+> 欢迎到 [Issues](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/issues) 提出建议与失败案例，帮助这个项目继续改进。
+
 ---
 
 ## 许可
