@@ -63,9 +63,9 @@ EVENTS = [
 
 def overview() -> dict:
     return {
-        "ok": True, "version": "v0.21.37",
+        "ok": True, "version": "v0.21.38",
         "plugin": {"name": "astrbot_plugin_Scintilla_MC_Server_Control", "display_name": "Minecraft Server 智控台",
-                   "version": "0.21.37", "author": "HuangGuaKnn",
+                   "version": "0.21.38", "author": "HuangGuaKnn",
                    "desc": "通过 RCON 用自然语言操控 Minecraft 服务器并具备高度完备的 WebUI：内置多 Agent 工作流处理整合包复杂任务；转发玩家进出/聊天/死亡/成就/对话/指令；平台指令组 mcs 支持绑定、喊话、状态查询与踢人封禁（管理员）。"},
         "rcon": {"ok": True, "host": "127.0.0.1", "port": 25575, "configured": True},
         "dictionary": {"enabled": True, "mods": 185, "items": 11894},
