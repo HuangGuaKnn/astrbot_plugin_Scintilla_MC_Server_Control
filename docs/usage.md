@@ -3,6 +3,7 @@
 [返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [常见问题](faq.md)
 
 从零到能用的完整流程，以及两种部署形态的取舍。
+建议使用WebUi进行设置，WebUi具备全部的设置功能，界面更方便且人性化，本指南将基于WebUi进行说明。
 
 ## 一、服务端开 RCON
 
