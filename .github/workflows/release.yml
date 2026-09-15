@@ -1,13 +1,12 @@
 name: release
 
-# 发版流程：改 metadata.yaml 的 version → push → 打 tag → 剩下的交给这里。
-#   git tag v0.21.39 && git push origin v0.21.39
+# 发版流程：改 metadata.yaml 的 version → push → 打 tag（推送 tag 即触发本流程）。
+#   git tag -a v0.21.39 -m "..." && git push origin v0.21.39
 # 附件用 git archive 生成（跟随 .gitattributes 的 export-ignore，不含 tests/），
 # 文件名与历史 Release 保持一致，旧下载链接继续有效。
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,15 +18,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: 校验标签与 metadata.yaml 版本是否一致
         run: |
+          set -e
           tag="${GITHUB_REF_NAME#v}"
-          ver=$(grep -E '^version:' metadata.yaml | head -1 | sed -E 's/^version:[[:space:]]*//; s/^v//' | tr -d '"'"'"' | tr -d '\r')
+          ver="$(awk '/^version:/{print $2; exit}' metadata.yaml)"
+          ver="${ver%\"}"; ver="${ver#\"}"; ver="${ver#v}"
           echo "tag=$tag  metadata=$ver"
           if [ "$tag" != "$ver" ]; then
             echo "::error::标签与 metadata.yaml 版本不一致（$tag != $ver）"
             exit 1
           fi
-      - name: 打包 zip
+      - name: 打包 zip（不含 tests/）
         run: |
+          set -e
           name="astrbot_plugin_Scintilla_MC_Server_Control_${GITHUB_REF_NAME}.zip"
           git archive --format=zip --prefix=astrbot_plugin_Scintilla_MC_Server_Control/ -o "$name" HEAD
           ls -lh "$name"
