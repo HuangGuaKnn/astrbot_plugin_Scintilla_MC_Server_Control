@@ -1,0 +1,73 @@
+name: Bug 反馈
+description: 插件报错、功能不符合预期、界面异常
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！麻烦尽量填全下面几项，排查会快很多。
+        （如果只是「怎么用」的问题，先看 README 的常见问题，可能已经有答案。）
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      description: 插件 WebUI「插件信息」卡片，或 metadata.yaml 里的 version
+      placeholder: v0.21.39
+    validations:
+      required: true
+  - type: input
+    id: astrbot_version
+    attributes:
+      label: AstrBot 版本
+      placeholder: v4.17.0（Dashboard 里可查）
+    validations:
+      required: true
+  - type: dropdown
+    id: server_kind
+    attributes:
+      label: 服务端类型
+      options:
+        - 原版（Vanilla）
+        - Paper / Spigot / Bukkit（插件端）
+        - Forge（模组端）
+        - Fabric（模组端）
+        - 整合包（在下文写整合包名）
+        - 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy_mode
+    attributes:
+      label: 部署方式
+      options:
+        - 与 AstrBot 同机（本地直连 RCON + server_dir）
+        - 异地 RCON（端口映射，服务端在另一台机器）
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 现象与复现步骤
+      placeholder: |
+        1. 在什么页面 / 发了什么指令
+        2. 期望的结果
+        3. 实际的结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: AstrBot 控制台或日志里的报错片段
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已搜索过 Issues，没有重复问题
+          required: true
+        - label: 已抹掉日志里的 RCON 密码、会话 ID、服务器地址等敏感信息
+          required: true
