@@ -34,11 +34,28 @@ jobs:
           git archive --format=zip --prefix=astrbot_plugin_Scintilla_MC_Server_Control/ -o "$name" HEAD
           ls -lh "$name"
           echo "ZIP=$name" >> "$GITHUB_ENV"
+      - name: 生成 Release 说明（优先取 CHANGELOG.md 对应小节）
+        run: |
+          set -e
+          awk -v v="$GITHUB_REF_NAME" '
+            $0 ~ "^## \\[" v "\\]" {flag=1; next}
+            flag && /^## \\[/ {exit}
+            flag {print}
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then rm -f notes.md; echo "CHANGELOG 没找到对应小节，改用自动生成"; fi
+          wc -l notes.md 2>/dev/null || true
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$ZIP" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          if [ -f notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
