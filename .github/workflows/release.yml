@@ -38,11 +38,11 @@ jobs:
         run: |
           set -e
           awk -v v="$GITHUB_REF_NAME" '
-            $0 ~ "^## \\[" v "\\]" {flag=1; next}
-            flag && /^## \\[/ {exit}
+            index($0, "## [" v "]") == 1 {flag = 1; next}
+            flag && index($0, "## [") == 1 {exit}
             flag {print}
           ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then rm -f notes.md; echo "CHANGELOG 没找到对应小节，改用自动生成"; fi
+          if [ ! -s notes.md ]; then rm -f notes.md; echo "CHANGELOG 里没有对应小节，改用自动生成"; fi
           wc -l notes.md 2>/dev/null || true
       - name: 发布 Release
         env:
