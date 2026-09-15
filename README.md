@@ -7,6 +7,14 @@
 > [!IMPORTANT]
 > 本项目大量使用 AI 进行辅助开发，但本人承诺已人工批阅所有代码，并保证可用。
 
+<p>
+  <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?label=release&amp;sort=semver"></a>
+  <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/github/license/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?label=license"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab?logo=python&amp;logoColor=white">
+  <img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.17.0-1f6feb">
+  <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?color=yellow"></a>
+</p>
+
 ## 文档
 
 | 页面 | 内容 |
@@ -37,7 +45,7 @@
 | 多 Agent 工作流 | 复杂整合包任务走 `分类 → 模板判断 → 前瞻建库 → 实现 → 纠错` 流水线，工具 `mc_workflow` 一键路由 |
 | 知识库 | 沉淀「物品 ID / NBT 写法 / 满配方案」等经验；按服务端指纹分预设，换服不串库 |
 | 外部平台指令组 | `mcs` 指令组：绑定 / 解绑 / 查询 / 喊话 / 状态 / 踢人 / 封禁 / 解封 |
-| 权限策略 | 命令工具支持**白名单**（默认，非管理员完全禁用）/ **黑名单** 两种策略，危险命令始终仅管理员 |
+| 权限策略 | 命令工具支持**白名单**（默认，非管理员完全禁用**口头命令工具**）/ **黑名单** 两种策略，危险命令始终仅管理员 |
 | 可视化设置 | 原生配置页 + 插件 WebUI（十个分组、深浅两套主题、顶部吸顶保存条） |
 
 ---

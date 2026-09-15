@@ -1,0 +1,34 @@
+name: tests
+
+# push / PR 时自动跑 tests/test_*.py 回归测试。
+# 需要本机浏览器的 ui_*_check.py 用例不在 CI 里跑，留在本机手动执行。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  regression:
+    # 想同时验证 Windows 可改成 matrix: os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        # psutil：插件可选依赖；astrbot：tests/_paths.py 用它反推 AstrBot 运行目录
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install psutil astrbot
+      - name: 语法检查（compileall）
+        run: python -m compileall -q main.py core pages tests || exit 1
+      - name: 跑回归测试
+        run: |
+          fail=0
+          for f in tests/test_*.py; do
+            echo "======== $f"
+            python "$f" || fail=1
+          done
+          exit $fail

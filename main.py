@@ -94,7 +94,7 @@ def load_cfg_group_index(schema_path: Path) -> dict:
 # 《命令》条目 Java 版命令表）。此处仅保留说明（v0.20.0 简化版）：
 #   * 闸门只管「命令工具」：mc_execute_command / mc_give_item / mc_broadcast；
 #     喊话、状态、查询、绑定等插件自带功能各有自己的开关，不受策略影响。
-#   * whitelist（默认）：非管理员完全不能用命令工具；
+#   * whitelist（默认）：非管理员完全不能用「口头命令工具」（执行指令 / 发物品 / 广播）；
 #   * blacklist：所有人都能用，但危险命令 + 权限等级 ≥ MIN_ADMIN_LEVEL(3) 的管理命令仅管理员。
 #
 # v0.21.0「拦截即终局」：光拦住不够，还得让决策 AI 知道这拦得没有商量余地。
@@ -203,6 +203,15 @@ def load_cfg_group_index(schema_path: Path) -> dict:
 #   「版本会一直显示 -」，免得主人以为是自己没配好。
 #   开关一勾即时生效、取消即还原（syncRemoteModeUI 负责挂牌与摘牌，重复调用不叠牌子）。
 
+#
+# v0.21.39 工程卫生 + 权限策略口径统一：
+#   * 口径：白名单下「非管理员完全不能使用口头命令工具（执行指令 / 发物品 / 广播），
+#     喊话 / 状态 / 查询 / 绑定等插件自带功能照旧」——README、WebUI 策略卡片、mcs 帮助、
+#     配置说明与市场文案（metadata.yaml）全链路对齐。
+#   * 修复：core/agent_llm.py 与 core/workflow.py 文件头的 UTF-8 BOM（静态工具会报 U+FEFF）。
+#   * 工程：新增 .github/workflows（tests.yml 跑回归、release.yml 打 tag 自动发版）、
+#     .editorconfig、CHANGELOG.md、Issue 模板与 README 徽章；Release 包不再带 tests/。
+#
 
 class McControlPlugin(Star):
     """AstrBot Minecraft 服务器控制插件（RCON + 服务器事件转发）。"""
@@ -680,7 +689,7 @@ class McControlPlugin(Star):
         return bool(self._admins) and str(self._sender_id(event)) in self._admins
 
     def _is_whitelist_policy(self) -> bool:
-        """当前是否为白名单策略（默认：非管理员不能用命令工具）。"""
+        """当前是否为白名单策略（默认：非管理员不能用口头命令工具）。"""
         return str(self._cfg("danger_command_policy", "whitelist") or "whitelist") != "blacklist"
 
     def _wake_prefix(self) -> str:
@@ -1062,7 +1071,7 @@ class McControlPlugin(Star):
     ) -> str | None:
         """命令工具权限闸门：返回 None 表示放行，否则返回**完整**的终局化拒绝文案。
 
-        白名单（默认）：非管理员不能用命令工具（执行指令 / 发物品 / 广播）；
+        白名单（默认）：非管理员不能用口头命令工具（执行指令 / 发物品 / 广播）；
         黑名单：所有人都能用，但危险命令与权限等级 ≥ 3 的管理命令仅管理员。
         详细等级表与判定逻辑见 core/java_commands.py。
 
@@ -1801,7 +1810,7 @@ class McControlPlugin(Star):
         lines.append(
             "当前命令工具策略："
             + (
-                "白名单（默认）——非管理员不能使用命令工具（执行指令 / 发物品 / 广播）；"
+                "白名单（默认）——非管理员不能使用口头命令工具（执行指令 / 发物品 / 广播）；"
                 "喊话、状态、查询、绑定这类自带功能不受影响。"
                 if self._is_whitelist_policy()
                 else "黑名单——所有人都能使用命令工具；但 stop / op / ban / kick / whitelist "

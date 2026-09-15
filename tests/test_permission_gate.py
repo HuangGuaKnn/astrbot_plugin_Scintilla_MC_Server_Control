@@ -4,7 +4,7 @@
     * 闸门只管「命令工具」——mc_execute_command / mc_give_item / mc_broadcast
       （也就等价于本模块的 check_command：只要这条命令来自命令工具就受检）；
       喊话、状态、查询、绑定这类插件自带功能不走这里。
-    * whitelist（默认）：非管理员**完全不能使用命令工具**；
+    * whitelist（默认）：非管理员**完全不能使用口头命令工具**；
     * blacklist：所有人都能用，但危险命令 + 权限等级 ≥ 3 的管理命令仍仅管理员。
 """
 import sys, importlib.util

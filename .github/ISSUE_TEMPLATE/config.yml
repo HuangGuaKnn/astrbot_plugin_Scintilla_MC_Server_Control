@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用文档与常见问题
+    url: https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control
+    about: 安装、配置、权限策略、常见问题先看 README 与 docs/
+  - name: AstrBot 官方文档
+    url: https://docs.astrbot.app/
+    about: 插件加载、Dashboard 使用等 AstrBot 本体的问题

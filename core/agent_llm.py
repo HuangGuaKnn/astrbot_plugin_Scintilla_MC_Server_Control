@@ -1,4 +1,4 @@
-﻿"""v0.7.0 多 Agent 工作流 · LLM 调用封装。
+"""v0.7.0 多 Agent 工作流 · LLM 调用封装。
 
 基于 AstrBot Context 的多 Provider 调用：
 - context.llm_generate(chat_provider_id=..., prompt=..., system_prompt=..., **kwargs)

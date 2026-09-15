@@ -1,0 +1,16 @@
+# 统一编辑器行为：UTF-8（无 BOM）+ LF，防止 BOM / CRLF 再次混入。
+# 背景：core/agent_llm.py 与 core/workflow.py 曾在文件头带过 UTF-8 BOM，
+# 运行时 Python 能容忍（PEP 263），但 ast.parse / linter / 审查脚本会直接报错。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{png,jpg,jpeg,gif,ico,zip}]
+insert_final_newline = false

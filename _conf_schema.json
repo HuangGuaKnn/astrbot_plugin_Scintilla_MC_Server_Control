@@ -55,7 +55,7 @@
       },
       "danger_command_policy": {
         "description": "命令工具白名单 / 黑名单",
-        "hint": "只管「命令工具」：mc_execute_command（执行指令）、mc_give_item（发物品）、mc_broadcast（广播）；喊话、状态、查询、绑定这类插件自带功能不受本策略影响（想限制喊话请改 say_command_public）。whitelist=白名单（默认）：非管理员完全不能使用命令工具；blacklist=黑名单：所有玩家都能使用命令工具，但危险命令（stop/op/ban/kick/whitelist…）与权限等级 3/4 的服务器管理命令仍仅管理员可用",
+        "hint": "只管「命令工具」：mc_execute_command（执行指令）、mc_give_item（发物品）、mc_broadcast（广播）；喊话、状态、查询、绑定这类插件自带功能不受本策略影响（想限制喊话请改 say_command_public）。whitelist=白名单（默认）：非管理员完全不能使用口头命令工具；blacklist=黑名单：所有玩家都能使用命令工具，但危险命令（stop/op/ban/kick/whitelist…）与权限等级 3/4 的服务器管理命令仍仅管理员可用",
         "type": "string",
         "options": [
           "whitelist",

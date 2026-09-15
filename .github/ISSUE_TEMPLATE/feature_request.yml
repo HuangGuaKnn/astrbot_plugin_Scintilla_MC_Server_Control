@@ -1,0 +1,31 @@
+name: 功能建议
+description: 想要的新功能、整合包适配、体验改进
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你在什么情况下需要它？
+      placeholder: 例如：某整合包里要批量发同一套 NBT 物品
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的结果
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在的替代做法 / 试过但不好用的办法
+    validations:
+      required: false
+  - type: input
+    id: modpack
+    attributes:
+      label: 相关整合包或 Mod（可选）
+      placeholder: 例如 ATM10 / TACZ + 匠魂
+    validations:
+      required: false
