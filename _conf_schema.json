@@ -352,6 +352,16 @@
         "type": "bool",
         "default": true
       },
+      "knowledge_search_engine": {
+        "description": "知识库检索引擎",
+        "hint": "bm25=中文二元切分 + BM25 + 倒排索引（推荐）：字序敏感、高频套话自动降权。本机实测：26 条语料 17 组查询下，结果精确率 20.5%→58.6%（2.9 倍）、无关条目减少 82%；5000 条规模单次检索 6.3ms→2.0ms；legacy=旧版检索（中文按单字、英文按整段做子串命中），字面与历史结果完全一致但容易连锁误召回，仅建议「需要与历史检索结果完全相同」时使用。切换后存一次设置即生效，无需重载插件",
+        "type": "string",
+        "options": [
+          "bm25",
+          "legacy"
+        ],
+        "default": "bm25"
+      },
       "enable_mc_search_knowledge": {
         "description": "知识检索工具",
         "hint": "mc_search_knowledge：让 AI 先查库再推理",

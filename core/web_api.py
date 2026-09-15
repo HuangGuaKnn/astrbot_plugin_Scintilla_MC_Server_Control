@@ -21,7 +21,7 @@ PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
 # 插件展示信息（与 metadata.yaml 保持一致）
 # v0.21.22 开源卫生：# _cfg_path 不再写死本机路径（与 main.py 同款自适应写法），
 # 个人文案（昵称 / QQ 号示例）已换成中性示例，_backup/ 与测试产物已清理。
-def _metadata_version(fallback: str = "0.21.39") -> str:
+def _metadata_version(fallback: str = "0.21.40") -> str:
     """v0.21.14：version 直接从 metadata.yaml 读，不再手抄。
 
     以前这里硬编码 "v0.21.11"，metadata 都升到 0.21.13 了它还是旧的 ——
@@ -257,6 +257,8 @@ class McControlWebApi:
     ENUM_SETTING_KEYS = {
         # 与 _conf_schema.json / main.py 的闸门实现保持一致
         "danger_command_policy": ("whitelist", "blacklist"),
+        # v0.21.40：知识库检索引擎（bm25=默认 / legacy=旧版兼容）
+        "knowledge_search_engine": ("bm25", "legacy"),
     }
 
     def _validate_settings(self, settings: dict):
@@ -450,6 +452,18 @@ class McControlWebApi:
                 "异地 RCON 模式已开启：只走 RCON —— 物品词典 / 知识库 / 服务器事件播报 / "
                 "版本探测 / 进程指标已按设计禁用"
             )
+
+        # v0.21.40：切换知识库检索引擎 → 立即换引擎（不必重建库实例、不必重载插件）
+        if "knowledge_search_engine" in changed:
+            try:
+                eng = self.plugin._kb_engine()
+                if self.plugin._kbman is not None:
+                    self.plugin._kbman.set_search_engine(eng)
+                effects.append(
+                    f"知识库检索引擎已切换为「{'BM25（推荐）' if eng == 'bm25' else '旧版（兼容）'}」"
+                )
+            except Exception as e:
+                effects.append(f"检索引擎切换失败：{e}")
 
         notice = f"已保存 {len(parsed)} 项并即时生效"
         if effects:

@@ -3,7 +3,7 @@ display_name: Minecraft Server 智控台
 short_desc: 用自然语言操控 Minecraft 服务器，整合包复杂任务一站式处理。
 desc: 通过 RCON 用自然语言操控 Minecraft 服务器并具备高度完备的 WebUI：内置多 Agent 工作流处理整合包复杂任务；转发玩家进出/聊天/死亡/成就/对话/指令；平台指令组 mcs 支持绑定、喊话、状态查询与踢人封禁（管理员）。
 help: 使用前请先在Minecraft服务端 server.properties 中开启RCON（enable-rcon=true 并设置 rcon.port 与 rcon.password），然后在插件配置中填写连接信息与管理员ID。更换服务端时只需在插件 WebUI「设置」页改 server_dir 并保存：整合包指纹与物品词典会就地重算、无需重载插件。插件设置已按「连接/权限/播报/桥接/指令/AI工具/知识库/外观/工作流/提示词」十大分组整理，原生设置页与插件 WebUI 均可视化调整；插件 WebUI 顶栏右上角可一键切换浅色/深色主题（选择会记住，首次跟随系统偏好）；多 Agent 五个角色（分类/判断/建库/实现/纠错）的系统提示词可在插件 WebUI「提示词」页或原生配置「⑩ 多 Agent 提示词」分组中查看与编辑，保存即生效、无需重启。复杂任务（满配枪械/模组任务等）请使用 mc_workflow 工具自动路由。命令工具有白名单/黑名单两种策略（默认白名单）：白名单下非管理员完全不能使用口头命令工具（执行指令/发物品/广播），黑名单下所有人都能用、但 stop/op/ban/kick/whitelist 等危险命令与权限等级 3/4 的管理命令仍仅管理员可用；喊话、状态、查询、绑定这类插件自带功能不受策略影响，可在 WebUI 设置页「权限与安全」下方的「命令工具 · 白名单 / 黑名单」窗口中切换。插件自带「重载即生效」补丁：在 AstrBot 插件管理页点「重载」时会深度清理模块缓存与 __pycache__（含 sys.path 方式引入的模块），插件更新重载即可应用、无需重启 AstrBot（聊天平台不再提供重载指令，重载请回 AstrBot 操作）。mcs 指令组（AstrBot 聊天平台指令，不是在游戏里输入；前缀跟随 AstrBot 唤醒词设置）：绑定/解绑/查询（自助绑定MC游戏名）、喊话 <内容>（带QQ昵称转发到服务器）、状态（mspt/tps/在线人数/运行时长/内存/CPU）、踢人 <玩家> [理由]、封禁 <玩家> [理由]、解封 <玩家>（后三者仅管理员）。
-version: v0.21.39
+version: v0.21.40
 author: HuangGuaKnn
 repo: https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control
 astrbot_version: ">=4.17.0"
