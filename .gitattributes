@@ -5,3 +5,6 @@
 *.png binary
 *.jpg binary
 *.zip binary
+
+# 发布包（git archive / Release 附件）里不带测试目录
+/tests/ export-ignore
