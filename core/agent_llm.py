@@ -12,15 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import time
 from typing import Any
 
+from astrbot.api import logger
 from astrbot.api.star import Context
 
-# AstrBot 全局 logger（带 plugin_tag 注入过滤器），作为无插件引用时的兜底
-logger = logging.getLogger("astrbot")
+# 规范要求：插件的日志器必须来自 astrbot.api（不得使用标准库 logging）。
+# 构造函数也收一个名为 logger 的参数（插件会传入自己的 plugin_tag logger），
+# 同名参数会在 __init__ 里遮蔽这个模块变量，故留一份别名供兜底使用。
+_DEFAULT_LOGGER = logger
 
 # 每个 Agent 的配置键 → 回退链中"主 Provider"配置键
 _MAIN_PROVIDER_CFG_KEY = "llm_provider_id"
@@ -34,6 +36,9 @@ class AgentLLM:
         self.config = config if isinstance(config, dict) else {}
         # get_cfg: 插件提供的配置读取函数（用于读插件配置）
         self._get_cfg = get_cfg or self._fallback_cfg
+        # 日志器：优先用插件传入的 AstrBot 插件 logger（带 plugin_tag 前缀），
+        # 否则用 astrbot.api 的全局 logger —— 两条路都是 astrbot.api 的日志器。
+        self._logger = _DEFAULT_LOGGER if logger is None else logger
 
     def _fallback_cfg(self, key: str, default=None):
         """兜底配置读取：兼容 v0.14.0 的分组配置与旧版平铺配置。"""
@@ -46,8 +51,6 @@ class AgentLLM:
             if isinstance(value, dict) and key in value:
                 return value[key]
         return default
-        # logger: 优先用插件传入的 AstrBot 插件 logger，否则用全局 astrbot logger
-        self._logger = logger or logging.getLogger("astrbot")
 
     # =============== Provider 解析 ===============
 
