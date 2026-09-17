@@ -103,9 +103,22 @@ class FakeEvent:
         self._extra[key] = value
 
 
+SYSTEM_PROMPT = "你是一个 Minecraft 服务器助手。"
+
+
 class FakeReq:
+    """ProviderRequest 的最小替身（v0.22.1：提示挂 extra_user_content_parts，不碰 system_prompt）。"""
+
     def __init__(self):
-        self.system_prompt = "你是一个 Minecraft 服务器助手。"
+        self.system_prompt = SYSTEM_PROMPT
+        self.extra_user_content_parts: list = []
+
+    @property
+    def hint_text(self) -> str:
+        out = []
+        for part in self.extra_user_content_parts:
+            out.append(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", ""))
+        return "\n\n".join(out)
 
 
 class HintSelf:
@@ -115,6 +128,8 @@ class HintSelf:
         self.config = plug.config
         self._cfg_index = plug._cfg_index
         self.local_files_degraded_reason = plug.local_files_degraded_reason
+        # 真身是 Star 子类，self.logger 由 AstrBot 提供；替身补一个即可
+        self.logger = logging.getLogger("HintSelf")
 
     def _cfg(self, key, default=None):
         box = self.config.get(self._cfg_index.get(key, ""), {})
@@ -126,8 +141,8 @@ class HintSelf:
         return True
 
 
-for _name in ("_inject_permission_hint", "is_remote_mode", "server_dir_check",
-              "local_files_degraded_reason", "_local_gate"):
+for _name in ("_inject_permission_hint", "_append_user_hint", "is_remote_mode",
+              "server_dir_check", "local_files_degraded_reason", "_local_gate"):
     setattr(HintSelf, _name, getattr(m.McControlPlugin, _name))
 
 
@@ -313,16 +328,19 @@ def main() -> int:
         hs = HintSelf(p1)
         ev, req = FakeEvent(), FakeReq()
         asyncio.run(m.McControlPlugin._inject_permission_hint(hs, ev, req))
-        print("      注入片段：", req.system_prompt[:78].replace(chr(10), " "))
-        check("LLM 请求阶段先告知「能力降级」", "能力降级提醒" in req.system_prompt)
+        print("      注入片段：", req.hint_text[:78].replace(chr(10), " "))
+        check("LLM 请求阶段先告知「能力降级」", "能力降级提醒" in req.hint_text)
         check("点名不可用的查询工具 + 说明重试无效",
-              "mc_search_item" in req.system_prompt and "重试与" in req.system_prompt)
-        check("告知恢复办法", "关闭异地 RCON 模式或修正服务器目录即可恢复" in req.system_prompt)
+              "mc_search_item" in req.hint_text and "重试与" in req.hint_text)
+        check("告知恢复办法", "关闭异地 RCON 模式或修正服务器目录即可恢复" in req.hint_text)
+        check("提示走用户消息内容块（不改写 system_prompt）",
+              req.extra_user_content_parts and req.system_prompt == SYSTEM_PROMPT)
 
         hs2 = HintSelf(p4)
         req2 = FakeReq()
         asyncio.run(m.McControlPlugin._inject_permission_hint(hs2, FakeEvent(), req2))
-        check("一切正常 → 不注入（不打扰）", "能力降级提醒" not in req2.system_prompt)
+        check("一切正常 → 不注入（不打扰）",
+              "能力降级提醒" not in req2.hint_text and not req2.extra_user_content_parts)
 
     if FAIL:
         print(chr(10) + "✗ 失败项:")

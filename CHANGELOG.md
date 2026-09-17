@@ -7,6 +7,28 @@
 > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
 > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
 
+## [v0.22.1] - 2026-09-18
+
+> 一句话：把 v0.22.0 被市场审核驳回的两条意见修掉了 —— 日志器全部改走 `astrbot.api`，权限前置提醒不再改写系统提示词（改挂用户消息的额外内容块，保住提示词前缀缓存）。
+
+> 审核原文两条：1)【必须整改】日志记录：`core/hot_reload.py`、`core/agent_llm.py` 用了标准库 `logging.getLogger("astrbot")`，规范要求日志器必须且只能是 `from astrbot.api import logger`；2)【建议优化】上下文注入：`main.py` 的权限前置提醒直接向 `req.system_prompt` 追加含请求者 ID 的动态内容，会影响缓存命中率。
+
+### 修复
+
+- **日志器统一到 `astrbot.api`**（上架规范「必须整改」项）
+  - `core/hot_reload.py` 与 `core/agent_llm.py` 的 `import logging`、`logging.getLogger("astrbot")` 全部删除，改为 `from astrbot.api import logger`；`hot_reload` 的 6 处日志调用点直接使用该 logger（保留 `plugin_tag` 注入）。
+  - 顺手清掉 `core/agent_llm.py` 里那一行**死代码**：`self._logger = ...` 原先落在 `_fallback_cfg()` 的 `return` 之后，永远不会执行 —— 也就是说**未传 `logger` 构造 `AgentLLM` 时 `self._logger` 根本不存在**，一旦要打警告就会 `AttributeError`。现在赋值挪进 `__init__`，插件传入的 logger 仍优先。
+- **权限前置提醒不再改写系统提示词**（上架规范「建议优化」项）
+  - `main.py` 新增统一注入出口 `_append_user_hint()`：四处注入点全部改为把提示块追加到 `req.extra_user_content_parts`（格式 `{"type": "text", "text": ...}`，与 AstrBot 自身的系统提醒同一注入点，拼在同一轮用户消息的尾部）。
+  - 语义不变：模型在同一轮照样读得到「哪些工具会被拒、有哪些替代方式」；变的是**系统提示词一个字都不动**，前缀缓存不再因为请求者 ID 变化而失效。
+  - 老版本 AstrBot 若没有该字段，**宁可不提醒**（权限闸门本身仍然拦得住），也不回退去写 `system_prompt`。
+  - 配置项 `permission_hint_injection` 的说明同步改为「注入本轮对话」，`_conf_schema.json`、`docs/configure.md`、插件 WebUI 设置页三处口径对齐。
+
+### 测试
+
+- 新增 `tests/test_review_compliance.py`：把这次的两条审核意见钉成自动化护栏 —— 发布包内的源码（`main.py` / `core/`）不得出现任何标准库 logging 用法、不得给 `.system_prompt` 赋值；并做运行期验证（`hot_reload` 的模块级 logger 就是 `astrbot.api.logger`、`AgentLLM` 不传 logger 时 `_logger` 仍可用）。
+- 更新 `tests/test_tool_guard.py`、`tests/test_remote_rcon_mode.py`：提示改从 `extra_user_content_parts` 读取，并新增「`system_prompt` 一字未动」断言（含老版本无该字段时也不回退）。
+
 ## [v0.22.0] - 2026-09-18
 
 > 一句话：知识库检索一口气连升三档 —— 「换种说法也能查到」的语义通道、召回之后的精排、以及手动指定嵌入 / 重排模型；顺带把设置页那一排卡片的高度、广播页的叫法都收拾齐了。

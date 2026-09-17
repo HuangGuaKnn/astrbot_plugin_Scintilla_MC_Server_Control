@@ -102,7 +102,7 @@ def load_cfg_group_index(schema_path: Path) -> dict:
 #      避免工具因 TypeError 根本没跑起来（LLM 会误判成「用法不对」而反复重试）；
 #   2) deny_result / latch_result —— 拒绝文案「终局化」（明说不是参数问题、重试与换工具都无效）；
 #   3) DenyLatch —— 会话级闩锁：一轮对话内被拦过，后续命令类调用直接短路；
-#   4) on_llm_request —— 请求阶段就把「哪些工具用不了」写进系统提示词，从源头劝退。
+#   4) on_llm_request —— 请求阶段就把「哪些工具用不了」挂到用户消息的额外内容块里，从源头劝退。
 #
 # v0.21.1 前端设置页：管理员 admin_ids 改为「标签式」输入（与触发符号 / 会话转发一致），
 #   逐个添加（输入框 + 添加按钮，回车也行）、单个 × 删除、重复项自动拦截，
@@ -1387,14 +1387,40 @@ class McControlPlugin(Star):
 
     # ================= 权限前置提醒（v0.21.0） =================
 
+    def _append_user_hint(self, req: ProviderRequest, blocks: list[str]) -> None:
+        """把提示块挂到「用户消息的额外内容块」上（v0.22.1：不再改写 system_prompt）。
+
+        为什么不写 system_prompt：这段内容含**请求者 ID**，每人 / 每会话都不同。
+        系统提示词一旦被动态内容拼改，前缀缓存（prompt cache）当场失效，
+        命中率掉下去 = 又慢又贵。AstrBot 给插件准备的正规注入口是
+        `ProviderRequest.extra_user_content_parts`（AstrBot 自身的系统提醒也走它）：
+        它被拼在同一条用户消息的末尾，模型照样读得到，但系统提示词一个字不动。
+
+        老版本 AstrBot 没有该字段时**宁可不提醒**（权限闸门本身仍然拦得住），
+        也绝不回退去改写 system_prompt。
+        """
+        if not blocks:
+            return
+        parts = getattr(req, "extra_user_content_parts", None)
+        if parts is None:
+            self.logger.debug(
+                "当前 AstrBot 无 extra_user_content_parts 字段，跳过权限前置提醒"
+            )
+            return
+        for block in blocks:
+            parts.append({"type": "text", "text": block})
+
     @filter.on_llm_request()
     async def _inject_permission_hint(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """在 LLM 请求组装阶段把「哪些工具用不了」写进系统提示词。
+        """在 LLM 请求组装阶段把「哪些工具用不了」挂到用户消息的额外内容块上。
 
         比事后拦截更早一步：让模型从一开始就知道命令工具不可用，
         从源头减少「明知不可为而硬试」。同一次事件的多轮工具循环只注入一次。
+
+        注意：**不改写 system_prompt**（含请求者 ID 的动态内容会废掉前缀缓存），
+        所有注入统一走 _append_user_hint。
         """
         try:
             if not self._cfg("permission_hint_injection", True):
@@ -1424,17 +1450,17 @@ class McControlPlugin(Star):
                 )
             if event.get_extra("_mc_perm_hint_done"):
                 if blocks:
-                    req.system_prompt = f"{req.system_prompt or ''}" + "\n\n" + "\n\n".join(blocks)
+                    self._append_user_hint(req, blocks)
                 return
             if self._is_admin(event):
                 if blocks:
-                    req.system_prompt = f"{req.system_prompt or ''}" + "\n\n" + "\n\n".join(blocks)
+                    self._append_user_hint(req, blocks)
                     event.set_extra("_mc_perm_hint_done", True)
                 return
             enabled = [t for t in COMMAND_TOOLS if self._tool_enabled(t)]
             if not enabled:
                 if blocks:
-                    req.system_prompt = f"{req.system_prompt or ''}" + "\n\n" + "\n\n".join(blocks)
+                    self._append_user_hint(req, blocks)
                     event.set_extra("_mc_perm_hint_done", True)
                 return
             sender = self._sender_id(event)
@@ -1463,7 +1489,7 @@ class McControlPlugin(Star):
                     "被拒绝时请如实告知用户，不要改写参数重试，也不要换成别的工具绕过。"
                 )
             blocks.append(hint)
-            req.system_prompt = f"{req.system_prompt or ''}" + "\n\n" + "\n\n".join(blocks)
+            self._append_user_hint(req, blocks)
             event.set_extra("_mc_perm_hint_done", True)
         except Exception as e:  # 提示注入失败绝不能影响正常对话
             self.logger.warning("权限前置提醒注入失败: %s", e)

@@ -883,8 +883,8 @@ try{
       改个参数、换个工具接着硬试。
     </div>
     <div class="sw-row">
-      <div class="sw-t"><b>权限前置提醒（注入提示词）</b>
-        <span>非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」写进系统提示词，从源头劝退</span></div>
+      <div class="sw-t"><b>权限前置提醒（注入本轮对话）</b>
+        <span>非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里（不动系统提示词，避免影响缓存命中），从源头劝退</span></div>
       <label class="sw"><input type="checkbox" id="cfg_perm_hint"><span class="sl"></span></label>
     </div>
     <div class="sw-row">
