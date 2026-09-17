@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) · [界面效果](gallery.md) · [使用指南](usage.md) · [常见问题](faq.md)
 
-插件全部配置共 **10 个分组、79 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
+插件全部配置共 **10 个分组、83 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
 
 > 本页每一项的说明与插件内的提示文字一致。「默认」标注的是开箱值。
 
@@ -291,7 +291,7 @@
 
 ## 7. 词典与知识库
 
-`knowledge` · 共 6 项
+`knowledge` · 共 10 项
 
 **`dictionary_enabled`** — 物品词典  
 <sub>开关 · 默认：开</sub>
@@ -328,6 +328,43 @@
 
 > mc_correct_knowledge：用正确方案覆盖错误条目（纠错闭环）
 
+**`knowledge_semantic_search`** — 语义增强检索（只建议大型服务器启用）  
+<sub>开关 · 默认：关</sub>
+
+> 知识库在 BM25 字面匹配之外再走一条「嵌入向量」语义通道，两条通道各排名次后用 **RRF 融合**，并带相似度门槛
+> （`0.50`）过滤无关候选。开启后提问可以「换种说法」——问「后台连不上了」也能捞到库里那条「RCON 连接失败排查」。
+> 本机实测（438 条语料 / 24 组带标准答案查询）：Hit@1 75.0% → 87.5%、Hit@6 79.2% → 100%（口语改写型 Hit@6
+> 58.3% → 100%），无关条目误召回归零。
+> **代价**：每次检索多一次嵌入调用（约 300~500ms）；建库时每条约一次嵌入调用（后台分批补算、只算新增 / 改动条目、
+> 结果落盘缓存）。**只建议条目多、提问常用口语改写的大型服务器启用**，小库用 BM25 已经够准。
+> 前提：先在 AstrBot「服务提供商」添加一个 Embedding 模型，否则本通道安静退化为纯 BM25（不报错）。
+
+**`knowledge_rerank`** — 重排序精排（召回后加一道 Cross-Encoder 重排）  
+<sub>开关 · 默认：关</sub>
+
+> 检索升级为「召回 → 精排」两段式：先用 BM25（可叠加语义通道）召回首 20 条候选池，再交给 **Rerank 模型**
+> 逐条打分重排，最后取前几条。召回看的是「词 / 向量像不像」，精排看的是「查询与条目的真实相关性」，
+> 能把召回到了但排不前的正确条目提上来。
+> **与语义通道相互独立**：没有嵌入模型也能单独开；两者同开就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。
+> **代价**：每次检索多一次重排 API 往返，小库（几十条）不值得开。
+> 前提：先在 AstrBot「服务提供商」添加一个 Rerank 模型（如 `vllm_rerank` / `Qwen3-Reranker`），
+> 否则开关开着也不报错，安静退化为召回顺序。
+
+**`knowledge_embed_provider_id`** — 指定嵌入模型（留空 = 自动用第一个）  
+<sub>文本 · 默认：空</sub>
+
+> 语义增强检索用哪个嵌入模型：填 AstrBot「服务提供商」里 Embedding 模型的 **ID**（形如 `qwen3-embed`）。
+> 留空＝用 AstrBot 里加载的第一个嵌入模型（与旧行为一致）。WebUI 设置页有下拉可直接选。
+> 指定的模型被删除 / 停用 / 改名后会**安静回落到第一个**，保存设置时提示「已回落」，不会让检索失效。
+
+**`knowledge_rerank_provider_id`** — 指定重排序模型（留空 = 自动用第一个）  
+<sub>文本 · 默认：空</sub>
+
+> 重排序精排用哪个 Rerank 模型：填 AstrBot「服务提供商」里 Rerank 模型的 **ID**（形如 `qwen3-reranker`）。
+> 留空＝用 AstrBot 里加载的第一个 Rerank 模型（与旧行为一致）。WebUI 设置页有下拉可直接选。
+> 指定的模型失效时同样回落到第一个并提示；**换嵌入模型会触发整库向量重算**（不同模型的向量不通用），
+> 换 Rerank 模型无需重算。
+
 ## 8. 外观 · 反馈与渐变颜色
 
 `appearance` · 共 10 项
@@ -354,32 +391,32 @@
 
 > json=Vanilla（JSON 文本组件，推荐）｜compat_section=Vanilla 兼容（§x§R§R§G§G§B§B）｜compat_amp=Vanilla 兼容（&x&R&R&G&G&B&B）｜legacy_amp=Legacy（&#RRGGBB）
 
-**`color_say`** — 普通喊话颜色  
+**`color_say`** — 聊天栏颜色（普通喊话）  
 <sub>文本 · 默认：white</sub>
 
 > mcs 喊话 的聊天栏颜色。支持 hex(#FF0000) / RGB(255,0,0) / 十进制(16711680) 或色名(white/red/gold…)
 
-**`gradient_colors_say`** — 普通喊话 · 渐变锚点  
+**`gradient_colors_say`** — 聊天栏 · 渐变锚点（普通喊话）  
 <sub>文本 · 默认：#FFFFFF,#55FFFF</sub>
 
 > 2 个以上锚点色，逗号分隔，如 #FFFFFF,#55FFFF
 
-**`color_title`** — 全屏喊话颜色  
+**`color_title`** — 全屏标题颜色（全屏喊话）  
 <sub>文本 · 默认：gold</sub>
 
 > mcs 全屏喊话 的 title 大字颜色，格式同上
 
-**`gradient_colors_title`** — 全屏喊话 · 渐变锚点  
+**`gradient_colors_title`** — 全屏标题 · 渐变锚点（全屏喊话）  
 <sub>文本 · 默认：#FFAA00,#FF00FF</sub>
 
 > 2 个以上锚点色，逗号分隔，如 #FFAA00,#FF00FF
 
-**`color_feedback`** — 任务输出颜色  
+**`color_feedback`** — 模拟任务输出颜色  
 <sub>文本 · 默认：gold</sub>
 
 > 署名反馈的颜色，格式同上
 
-**`gradient_colors_feedback`** — 任务输出 · 渐变锚点  
+**`gradient_colors_feedback`** — 模拟任务输出 · 渐变锚点  
 <sub>文本 · 默认：#FFAA00,#55FF55</sub>
 
 > 2 个以上锚点色，逗号分隔，如 #FFAA00,#55FF55

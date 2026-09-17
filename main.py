@@ -204,6 +204,37 @@ def load_cfg_group_index(schema_path: Path) -> dict:
 #   开关一勾即时生效、取消即还原（syncRemoteModeUI 负责挂牌与摘牌，重复调用不叠牌子）。
 
 #
+# v0.21.42 重排序精排（可选 · 默认关闭）：
+#   * 配置项 knowledge_rerank：检索升级为「召回 → 精排」两段式 —— 先用 BM25
+#     （+可选语义通道 RRF）召回 RERANK_POOL=20 条候选池，再交给 Rerank 模型
+#     （Cross-Encoder）逐条打分重排，最后取前 limit 条。
+#   * 与语义通道**相互独立**：没有嵌入模型也能单独开（只对 BM25 召回池精排）；
+#     两者同时开启就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。
+#   * 取 AstrBot 已加载的第一个 Rerank Provider（如 siliconflow_rerank /
+#     Qwen3-Reranker-8B）；没配置时开关开了也不报错，安静退化为召回顺序。
+#   * 精排是纯附加延迟（多一次 API 往返），小库不值得开——条目多、问法杂时才划算。
+#   * 实现要点：召回与补召逻辑分别抽成 _rank_candidates / _template_fill，
+#     普通检索与精排检索共用同一套召回口径，避免两条路径行为漂移。
+#
+# v0.21.41 语义增强检索（可选 · 默认关闭，只建议大型服务器启用）：
+#   * 配置项 knowledge_semantic_search：知识库在 BM25 之外再走一条「嵌入向量」语义
+#     通道，两条通道各排各的名次、再用 RRF（倒数排名融合）合并。开启后提问可以
+#     「换种说法」——问「后台连不上了」也能捞到库里那条「RCON 连接失败排查」。
+#   * 只建议大型服务器启用：每次检索多一次嵌入调用（约 300~500ms），建库时每条约
+#     一次嵌入调用（后台分批 + 落盘缓存 + 只算新增/改动条目）。小库用 BM25 已经够准。
+#   * 需要先在 AstrBot「服务提供商」添加一个 Embedding 模型（推荐文本嵌入模型）；
+#     没配置时开关开了也不报错，安静退化为纯 BM25。
+#   * 无关查询误召回：RRF 只看名次、不看分数，所以还要一道**余弦相似度门槛**
+#     （SEMANTIC_MIN_SIM = 0.50）把「整库都不相关」的查询挡在融合之外。
+#   * 本机实测（438 条语料 / 24 组带标准答案查询 / 槽位 K=6）：
+#       纯 BM25              Hit@1 75.0%  Hit@6  79.2%  MRR 0.771  无关误召回 0
+#       + 语义（无门槛）      Hit@1 83.3%  Hit@6  91.7%  MRR 0.868  无关误召回 18
+#       + 语义（门槛 0.50）   Hit@1 87.5%  Hit@6 100.0%  MRR 0.931  无关误召回 0  ← 当前
+#     （拆分看：字面型 Hit@1 91.7%→100%；口语改写型 Hit@1 58.3%→75.0%、Hit@6 58.3%→100%）
+#   * 另修一处建库性能：向量入库改为整批拼接（原本逐条 vstack 是 O(n²)，5000 条要 21s）。
+#   * 新增 tests/test_kb_semantic_search.py（14 组断言）：融合生效、门槛边界、换模型
+#     （维度不符）安全退化、开关关闭、批量入库性能。
+#
 # v0.21.40 知识库检索引擎换代（BM25 成为默认，旧版降为可选项）：
 #   * 新增 BM25 检索引擎：中文二元切分（bigram，保留字序）+ BM25（idf 自动压低
 #     「通用/方案/规则」等高频套话）+ 倒排索引 + 最低分门槛。
@@ -307,7 +338,9 @@ class McControlPlugin(Star):
                 self._server_identity = ident
                 kid = ident["fingerprint"]
                 self._kbman = KnowledgePresetManager(
-                    str(kdir), kid, server_dir, search_engine=self._kb_engine()
+                    str(kdir), kid, server_dir, search_engine=self._kb_engine(),
+                    semantic_enabled=self._kb_semantic(),
+                    rerank_enabled=self._kb_rerank(),
                 )
                 self._kbman.server_weak = ident.get("weak")
                 self._apply_active_knowledge()
@@ -334,6 +367,13 @@ class McControlPlugin(Star):
                         "请到知识库页选择/绑定预设。",
                         notice["preset_name"], notice["preset_fp"], notice["server_fp"],
                     )
+                # v0.21.41：语义通道开着就后台补算向量（不阻塞启动；失败不影响其它功能）
+                if self._kb_semantic():
+                    self._inject_embed_fn()
+                    asyncio.create_task(self._kb_build_semantic())
+                # v0.21.42：精排开关开着就注入重排序调用（无需预计算，注完即用）
+                if self._kb_rerank():
+                    self._inject_rerank_fn()
             except Exception as e:
                 self.logger.warning("模组知识库初始化失败: %s", e)
         # 初始化玩家绑定存储（v0.9.0：决策AI玩家守门）
@@ -745,6 +785,200 @@ class McControlPlugin(Star):
         value = str(self._cfg("knowledge_search_engine", DEFAULT_SEARCH_ENGINE) or "").strip()
         return value if value in SEARCH_ENGINES else DEFAULT_SEARCH_ENGINE
 
+    def _kb_semantic(self) -> bool:
+        """读取「语义增强检索」开关（v0.21.41，默认关闭）。"""
+        return bool(self._cfg("knowledge_semantic_search", False))
+
+    def _kb_rerank(self) -> bool:
+        """读取「重排序精排」开关（v0.21.42，默认关闭）。"""
+        return bool(self._cfg("knowledge_rerank", False))
+
+    # ---- 模型挑选（v0.21.43：可手动指定嵌入 / 重排序模型）----
+    # 在此之前固定取「已加载的第一个」，多模型用户没得选。现在两条通道各自支持
+    # 指定 provider id（配置项 knowledge_embed_provider_id / knowledge_rerank_provider_id），
+    # 留空仍按老规矩取第一个 —— 不指定就跟以前一模一样，保持向后兼容。
+
+    @staticmethod
+    def _inst_provider_id(inst) -> str:
+        """从 Provider 实例上取它的 provider id（取不到给空串，绝不抛异常）。"""
+        cfg = getattr(inst, "provider_config", None)
+        if isinstance(cfg, dict):
+            return str(cfg.get("id") or "").strip()
+        return str(getattr(inst, "provider_id", "") or "").strip()
+
+    def _provider_insts(self, kind: str) -> list:
+        """取 AstrBot 已加载的嵌入 / 重排序 Provider **实例**列表（挑模型用）。
+
+        kind：embedding | rerank。AstrBot 侧接口异常时给空列表 —— 对调用方而言只是
+        「没得选」，检索照常回落，不报错。
+        """
+        try:
+            if kind == "rerank":
+                return list(self.context.provider_manager.rerank_provider_insts or [])
+            return list(self.context.get_all_embedding_providers() or [])
+        except Exception:
+            return []
+
+    def _provider_choices(self, kind: str, insts: list | None = None) -> list:
+        """把实例列表转成前端下拉能用的 [{id, model, type}]（设置页用）。
+
+        注意与 _pick_provider 的分工：**挑模型要用实例**，而这里产出的是纯 dict
+        —— dict 上没有 provider_config，喂给 _pick_provider 会永远匹配不上
+        （v0.21.43 的测试就靠这条逮住过一次：active 会一直空着）。
+        """
+        insts = self._provider_insts(kind) if insts is None else insts
+        out = []
+        for inst in insts:
+            cfg = getattr(inst, "provider_config", None)
+            cfg = cfg if isinstance(cfg, dict) else {}
+            out.append({
+                "id": self._inst_provider_id(inst),
+                "model": str(cfg.get("model") or ""),
+                "type": str(cfg.get("type") or ""),
+            })
+        return out
+
+    def _pick_provider(self, insts: list, want_id: str, kind_cn: str):
+        """按配置指定的 id 挑 Provider 实例；没指定或指定失效则回落第一个。
+
+        回落只打一条 warning 不报错：模型被删掉 / 停用 / 改名时，检索应当照常可用
+        ——「锦上添花」的通道宁可降级，也不能让主人整条检索用不了。
+        """
+        if not insts:
+            return None
+        want_id = str(want_id or "").strip()
+        if want_id:
+            for inst in insts:
+                if self._inst_provider_id(inst) == want_id:
+                    return inst
+            self.logger.warning(
+                "知识库指定的%s模型 %s 不存在（未配置 / 未启用 / 已删除），回落到第一个可用模型",
+                kind_cn, want_id,
+            )
+        return insts[0]
+
+    def kb_model_status(self) -> dict:
+        """设置页展示用：两条通道各自的候选列表、配置值、实际生效的 provider id。
+
+        fallback=True 表示「指定了但没找到，已回落」——设置页要如实提示主人，
+        不能让主人以为指定生效了。
+        """
+        status = {}
+        # 注意：配置键是 knowledge_embed_provider_id / knowledge_rerank_provider_id
+        # —— 不是 f"knowledge_{kind}_provider_id"（embed 后面没有 ding），这里写显式映射，
+        # 免得下一个人手滑拼错（v0.21.43 的测试就是靠这条断言逮住过一次）。
+        for kind, cn, cfg_key in (
+            ("embedding", "嵌入", "knowledge_embed_provider_id"),
+            ("rerank", "重排序", "knowledge_rerank_provider_id"),
+        ):
+            insts = self._provider_insts(kind)          # 挑模型必须用实例，不能用 dict 列表
+            want = str(self._cfg(cfg_key, "") or "").strip()
+            picked = self._pick_provider(insts, want, cn)
+            active = self._inst_provider_id(picked) if picked is not None else ""
+            status[kind] = {
+                "choices": self._provider_choices(kind, insts),
+                "configured": want,
+                "active": active,
+                "fallback": bool(want) and bool(active) and active != want,
+            }
+        return status
+
+    def kb_effective_label(self, kind: str) -> str:
+        """当前**实际生效**的模型展示名（提示文案用）：如 `qwen3-embed · Qwen3-Embedding-4B`。
+
+        指定了却没找到时会带上「已回落到第一个」的提醒 —— 提示文案必须说实话，
+        不能让主人以为指定的模型生效了。
+        """
+        st = (self.kb_model_status() or {}).get(kind) or {}
+        cid = st.get("active") or ""
+        if not cid:
+            return ""
+        model = ""
+        for c in st.get("choices") or []:
+            if c.get("id") == cid:
+                model = c.get("model") or ""
+                break
+        label = f"{cid} · {model}" if model else cid
+        if st.get("fallback"):
+            label += "（指定的模型没找到，已回落到第一个）"
+        return label
+
+    def _resolve_embed_fn(self):
+        """构造知识库用的异步嵌入调用（没配好嵌入模型则返回 None）。
+
+        优先用配置指定的那个嵌入 Provider（knowledge_embed_provider_id，v0.21.43）；
+        留空或指定失效则取 AstrBot 已加载的第一个（与记忆库 / 知识库页同一个）。
+        调它的 get_embeddings(批量)。任何异常都吞掉并返回 None —— 语义通道是
+        「锦上添花」的可选能力，缺模型时应当安静退化为纯 BM25，而不是让检索报错。
+        """
+        providers = self._provider_insts("embedding")
+        provider = self._pick_provider(
+            providers, self._cfg("knowledge_embed_provider_id", ""), "嵌入"
+        )
+        if provider is None:
+            return None
+
+        async def _embed(texts: list[str]) -> list[list[float]]:
+            out = await provider.get_embeddings(list(texts))
+            return [list(v) for v in out]
+
+        return _embed
+
+    def _resolve_rerank_fn(self):
+        """构造知识库用的异步重排序调用（没配好 Rerank 模型则返回 None）。
+
+        优先用配置指定的那个 Rerank Provider（knowledge_rerank_provider_id，v0.21.43）；
+        留空或指定失效则取 AstrBot 已加载的第一个 Rerank Provider（取实例，不按 id 硬编码）。
+        调它的 rerank(query, documents)。返回 [(index, score)]，index 是**候选
+        列表中的下标**（与 AstrBot RerankResult 的语义一致，由调用方按池子下标
+        还原成 topic）。任何异常都吞掉并返回 None —— 精排是可选的锦上添花能力，
+        缺模型时应当安静退化为召回顺序，而不是让检索报错。
+        """
+        provs = self._provider_insts("rerank")
+        provider = self._pick_provider(
+            provs, self._cfg("knowledge_rerank_provider_id", ""), "重排序"
+        )
+        if provider is None:
+            return None
+
+        async def _rerank(query: str, docs: list[str]):
+            res = await provider.rerank(query, list(docs))
+            out = []
+            for r in res or []:
+                try:
+                    out.append((int(r.index), float(r.relevance_score)))
+                except Exception:
+                    continue
+            return out
+
+        return _rerank
+
+    def _inject_embed_fn(self) -> bool:
+        """把嵌入调用注入知识库（预设管理器 + 当前 KB 实例）。返回是否可用。"""
+        fn = self._resolve_embed_fn()
+        man = getattr(self, "_kbman", None)
+        if man is not None:
+            man.embed_fn = fn
+            if man.kb is not None:
+                man.kb.embed_fn = fn
+        kb = getattr(self, "_knowledge", None)
+        if kb is not None:
+            kb.embed_fn = fn
+        return fn is not None
+
+    def _inject_rerank_fn(self) -> bool:
+        """把重排序调用注入知识库（预设管理器 + 当前 KB 实例）。返回是否可用。"""
+        fn = self._resolve_rerank_fn()
+        man = getattr(self, "_kbman", None)
+        if man is not None:
+            man.rerank_fn = fn
+            if man.kb is not None:
+                man.kb.rerank_fn = fn
+        kb = getattr(self, "_knowledge", None)
+        if kb is not None:
+            kb.rerank_fn = fn
+        return fn is not None
+
     def _apply_active_knowledge(self) -> None:
         """把内存中的知识库实例切到「当前激活预设」（WebUI 切换预设后调用）。"""
         man = getattr(self, "_kbman", None)
@@ -753,7 +987,46 @@ class McControlPlugin(Star):
         kb = man.kb if man.kb is not None else man.reload_active()
         if kb is not None:
             kb.on_first_write = man.bind_active_if_needed
+            kb.embed_fn = getattr(man, "embed_fn", None)
+            kb.rerank_fn = getattr(man, "rerank_fn", None)
         self._knowledge = kb
+
+    async def _kb_build_semantic(self, force: bool = False) -> dict:
+        """后台补算知识库向量（语义通道专用）。失败只记日志，不影响其它功能。"""
+        kb = getattr(self, "_knowledge", None)
+        if kb is None:
+            return {"ok": False, "reason": "知识库未初始化"}
+        if not self._inject_embed_fn():
+            return {"ok": False, "reason": "未找到可用的嵌入模型 Provider"}
+        try:
+            return await kb.build_vectors(force=force)
+        except Exception as e:
+            self.logger.warning("知识库向量构建失败: %s", e)
+            return {"ok": False, "reason": str(e)}
+
+    def _kb_touch_vectors(self) -> None:
+        """知识写入后，后台把新条目补进向量索引（语义通道关闭时什么都不做）。
+
+        「攒一下再算」的理由：批量导入 / 连续纠错时会连着触发很多次，
+        每次立刻烧一次嵌入调用既费额度又没必要 —— 加个小延迟合并。
+        """
+        if not self._kb_semantic():
+            return
+        try:
+            task = getattr(self, "_kb_vec_task", None)
+            if task is not None and not task.done():
+                return            # 已有一轮在排队/进行中，等它把这批一起带走
+            self._kb_vec_task = asyncio.create_task(self._kb_debounced_vectors())
+        except Exception:
+            pass
+
+    async def _kb_debounced_vectors(self) -> None:
+        """延后一小会儿再算，让连续的写入合并成一轮。"""
+        try:
+            await asyncio.sleep(2.0)
+            await self._kb_build_semantic()
+        except Exception as e:
+            self.logger.debug("知识库向量补算调度异常（已忽略）: %s", e)
 
     async def _restart_event_listener(self) -> str:
         """按当前配置重启日志监听器（WebUI 保存设置后热应用）。
@@ -848,7 +1121,9 @@ class McControlPlugin(Star):
                 if man is None:
                     try:
                         self._kbman = KnowledgePresetManager(
-                            str(kdir), kid, server_dir, search_engine=self._kb_engine()
+                            str(kdir), kid, server_dir, search_engine=self._kb_engine(),
+                            semantic_enabled=self._kb_semantic(),
+                            rerank_enabled=self._kb_rerank(),
                         )
                         self._kbman.server_weak = ident.get("weak")
                         self._apply_active_knowledge()
@@ -2553,7 +2828,7 @@ class McControlPlugin(Star):
                 )
         except Exception:
             warn = ""
-        results = self._knowledge.search(topic)
+        results = await self._knowledge.asearch(topic)
         if not results:
             return (
                 f"知识库中未找到与「{topic}」相关的沉淀知识。"
@@ -2596,6 +2871,7 @@ class McControlPlugin(Star):
         if not self._knowledge.state.learning:
             return "知识库学习已关闭，不会写入任何知识。"
         entry = self._knowledge.save_entry(topic, content, source="llm_learn")
+        self._kb_touch_vectors()
         if entry["status"] == "pending":
             return (
                 f"⏳ 知识已提交【{entry['topic']}】待管理员审批（自动应用已关闭）。\n"
@@ -2634,6 +2910,7 @@ class McControlPlugin(Star):
         entry = self._knowledge.correct_entry(topic, correction)
         if entry is None:
             return f"知识库中不存在「{topic}」，请用 mc_save_knowledge 新增。"
+        self._kb_touch_vectors()
         return (
             f"✓ 知识已纠正【{entry['topic']}】（状态: {entry['status']}）\n"
             f"{correction}"
