@@ -191,7 +191,7 @@ class MCWorkflow:
         kb_entries = []
         if kb is not None:
             try:
-                kb_entries = kb.search(request, limit=KB_RESULT_LIMIT)
+                kb_entries = await kb.asearch(request, limit=KB_RESULT_LIMIT)
             except Exception as e:
                 self.logger.warning("知识库检索失败: %s", e)
         kb_text = self._fmt_entries(kb_entries, "知识库检索结果")

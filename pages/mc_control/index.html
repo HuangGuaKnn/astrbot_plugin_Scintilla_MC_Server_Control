@@ -364,6 +364,22 @@ summary:hover{text-decoration:underline}
 #page_settings > .set-sec:first-child{margin-top:2px}
 .sw-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;align-items:start}
 .sw-grid .sw-row{padding:10px 2px}
+/* v0.21.44：知识库卡里 7 个开关收在两列，行距收一点，卡片高度再让一档 */
+.kb-card .sw-grid{align-items:stretch}   /* 同行两格拉平：副标题两行时虚线不错位 */
+.kb-card .sw-grid .sw-row{padding:6px 2px}
+.kb-card label.f{margin-top:9px}
+
+/* v0.21.44：知识库卡的原理说明收进折叠区（默认收起）—— 卡片高度不再被文案撑高，
+   同排左卡的大片空档随之消失。summary 样式只在卡内生效，不动全局 details/summary。 */
+details.kb-fold{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
+details.kb-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0}
+details.kb-fold>summary::-webkit-details-marker{display:none}
+details.kb-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
+details.kb-fold[open]>summary::before{content:"▾"}
+details.kb-fold>summary::after{content:"（点开看实测数据与前提）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
+details.kb-fold[open]>summary::after{content:"（点标题收起）"}
+details.kb-fold .hint{margin-top:9px;line-height:1.7}
+details.kb-fold .hint b{color:var(--dim);font-weight:600}
 /* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
 /* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
 #sd_box.dimmed input{pointer-events:none;color:var(--dim);opacity:1;
@@ -571,7 +587,7 @@ try{
     </div>
     <div class="frow"><input type="text" id="bc_msg" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
     <div class="bc-out" id="bc_out">广播结果会显示在这里</div>
-    <div class="hint" style="margin-top:8px">颜色跟随上方「文本颜色」设置：聊天栏=普通喊话色 · 全屏标题=全屏喊话色 · 模拟任务输出=任务输出色</div>
+    <div class="hint" style="margin-top:8px">颜色跟随下方「文本颜色」卡片：聊天栏 / 全屏标题 / 模拟任务输出，各用同名那一格的颜色</div>
   </div>
   <div class="card" id="srv_color_card">
     <h3><span class="dot" style="background:var(--ok)"></span>文本颜色 <span class="right muted" style="font-weight:normal">保存后即时生效</span></h3>
@@ -585,19 +601,7 @@ try{
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
       <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">全屏喊话 <span class="muted">title</span></div>
-        <div class="frow">
-          <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
-          <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
-        </div>
-        <div class="grad-wrap" id="grad_block_title" style="display:none">
-          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
-          <div id="stops_title"></div>
-          <button class="btn sm" data-add="title" style="margin-top:6px">＋ 添加颜色</button>
-        </div>
-      </div>
-      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">普通喊话 <span class="muted">chat</span></div>
+        <div style="font-size:13px;margin-bottom:6px">聊天栏 <span class="muted">chat</span></div>
         <div class="frow">
           <input type="color" id="clr_say" value="#ffffff" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
           <input type="text" id="clr_say_txt" placeholder="#FFFFFF 或 255,255,255" value="#ffffff">
@@ -609,7 +613,19 @@ try{
         </div>
       </div>
       <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">任务输出 <span class="muted">反馈</span></div>
+        <div style="font-size:13px;margin-bottom:6px">全屏标题 <span class="muted">title</span></div>
+        <div class="frow">
+          <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
+        </div>
+        <div class="grad-wrap" id="grad_block_title" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_title"></div>
+          <button class="btn sm" data-add="title" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">模拟任务输出 <span class="muted">反馈</span></div>
         <div class="frow">
           <input type="color" id="clr_fb" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
           <input type="text" id="clr_fb_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
@@ -1020,42 +1036,50 @@ try{
       </div>
       <div class="hint" style="margin-top:10px">这些开关控制 AI（LLM）能调用的工具；关闭后对应能力立即不可用</div>
     </div>
-    <div class="card">
+    <div class="card kb-card">
       <h3><span class="dot" style="background:var(--violet)"></span>词典与知识库</h3>
-      <div class="sw-row" style="border-top:none;margin-top:2px">
-        <div class="sw-t"><b>物品词典</b><span>dictionary_enabled · 扫描 mods/ 构建（插件服只能取到原版物品）</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_dict_en"><span class="sl"></span></label>
+      <!-- v0.21.44：这张卡原先靠 5 段长 hint 堆到 ≈1260px，同排左卡被撑成 814px 空档。
+           现在「开关 / 下拉」留在外面、原理与实测数据收进底部折叠区（默认收起），
+           7 个开关收成两列两组 —— 默认一眼只看得到「要开哪个」，想看理由再点开。 -->
+      <div class="sw-grid" style="margin-top:2px">
+        <div class="sw-row"><div class="sw-t"><b>物品词典</b><span>dictionary_enabled · 扫 mods/</span></div><label class="sw"><input type="checkbox" id="cfg_dict_en"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>学习型知识库</b><span>knowledge_enabled · 指纹隔离</span></div><label class="sw"><input type="checkbox" id="cfg_kb_en"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>知识检索</b><span>mc_search_knowledge</span></div><label class="sw"><input type="checkbox" id="cfg_tool_kb_search"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>知识沉淀</b><span>mc_save_knowledge</span></div><label class="sw"><input type="checkbox" id="cfg_tool_kb_save"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>知识纠错</b><span>mc_correct_knowledge</span></div><label class="sw"><input type="checkbox" id="cfg_tool_kb_correct"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>语义增强检索</b><span>加嵌入向量通道<br>（仅推荐大型长期运行服务器开启）</span></div><label class="sw"><input type="checkbox" id="cfg_kb_semantic"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>重排序精排</b><span>候选池交 Rerank 逐条重排</span></div><label class="sw"><input type="checkbox" id="cfg_kb_rerank"><span class="sl"></span></label></div>
       </div>
-      <div class="sw-row">
-        <div class="sw-t"><b>学习型知识库</b><span>knowledge_enabled · 按服务端内容指纹隔离（mods/ 或 plugins/）</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_kb_en"><span class="sl"></span></label>
-      </div>
-      <div class="sw-row">
-        <div class="sw-t"><b>知识检索</b><span>mc_search_knowledge</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_tool_kb_search"><span class="sl"></span></label>
-      </div>
-      <div class="sw-row">
-        <div class="sw-t"><b>知识沉淀</b><span>mc_save_knowledge</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_tool_kb_save"><span class="sl"></span></label>
-      </div>
-      <div class="sw-row">
-        <div class="sw-t"><b>知识纠错</b><span>mc_correct_knowledge</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_tool_kb_correct"><span class="sl"></span></label>
-      </div>
-      <label class="f">检索引擎（知识库用哪种算法找条目）</label>
+      <label class="f">检索引擎</label>
       <select id="cfg_kb_engine">
         <option value="bm25">BM25 · 中文二元切分（推荐，默认）</option>
         <option value="legacy">旧版 · 中文单字匹配（兼容）</option>
       </select>
-      <div class="hint">
-        <b>BM25</b>：按「字序」匹配，查「黄铜」不会捞出「铜黄」；权重会自动压低
-        「通用 / 方案 / 规则」这类套话，长条目也不会靠字数多而霸榜 —— 实测结果精确率
-        20.5% → 58.6%（2.9 倍）、无关条目减少 82%，5000 条规模检索也从 6.3ms 降到 2.0ms。<br>
-        <b>旧版</b>：中文按单字、英文按整段做子串命中，字面与历史结果完全一致，但容易连锁误召回
-        （查「满配一把枪」会捞出一堆含「配 / 方 / 案」的条目）。仅在需要与历史检索结果完全对齐时才选。
-        <br>切换后点「保存全部设置」即时生效，无需重载插件。
+      <div class="frow" style="gap:16px;align-items:flex-start;margin-top:12px">
+        <div>
+          <label class="f" style="margin-top:0">嵌入模型 <span class="sep">（语义通道）</span></label>
+          <select id="cfg_kb_embed_p"><option value="">读取中…</option></select>
+          <div class="hint" id="kb_embed_p_tip"></div>
+        </div>
+        <div>
+          <label class="f" style="margin-top:0">重排序模型 <span class="sep">（精排）</span></label>
+          <select id="cfg_kb_rerank_p"><option value="">读取中…</option></select>
+          <div class="hint" id="kb_rerank_p_tip"></div>
+        </div>
       </div>
-      <div class="hint" style="margin-top:10px">词典与知识库在插件启动时构建；改 server_dir 或这两项开关会在保存时就地重建（无需重载插件），其余开关即时生效</div>
+      <details class="kb-fold">
+        <summary>检索引擎与增强检索怎么选</summary>
+        <div class="hint"><b>检索引擎</b>：BM25 按「字序」匹配，查「黄铜」不会捞出「铜黄」，权重自动压低「通用 / 方案 / 规则」这类套话，长条目也不会靠字数霸榜 —— 实测结果精确率 20.5% → 58.6%（2.9 倍）、无关条目减少 82%，5000 条规模检索 6.3ms → 2.0ms。切换后点「保存全部设置」即时生效，无需重载插件。<br>
+        <b>旧版</b>：中文按单字、英文按整段做子串命中，字面与历史结果完全一致，但容易连锁误召回（查「满配一把枪」会捞出一堆含「配 / 方 / 案」的条目）。仅在需要与历史检索结果完全对齐时才选。</div>
+        <div class="hint"><b>语义增强检索</b>：只建议大型服务器启用 —— 开启后提问可以「换种说法」问，例如问「后台连不上了」，也能捞到库里那条「RCON 连接失败排查」。本机实测（438 条语料 / 24 组查询）：Hit@1 75.0% → 87.5%、Hit@6 79.2% → 100%（口语改写型 Hit@6 58.3% → 100%），无关条目误召回同步归零。<br>
+        <b>代价</b>：每次检索多一次嵌入调用（约 300~500ms 延迟）；建库时每条约一次，只算新增 / 改动过的条目，结果落盘缓存，不会重复烧。<br>
+        <b>前提</b>：先在 AstrBot「服务提供商」里添加一个 Embedding 模型（如 Qwen3-Embedding-4B）。没有的话开关开了也不生效 —— 检索会安静退化成纯 BM25，不报错；条目少的小库用 BM25 已经够准，故默认关闭。</div>
+        <div class="hint"><b>重排序精排</b>：库大了、问法杂了之后，「召回」难免把真正对的条目排到中游 —— 精排（Cross-Encoder）把候选池逐条与提问重新比对，看的是真实相关性，能把该在前面的提上来。开启后检索变成两段式：先召回 20 条候选，再精排取前几条。<br>
+        <b>与语义增强检索独立</b>：没有 Embedding 模型也能单开（只对 BM25 召回池精排）；两者同开就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。<br>
+        <b>代价 / 前提</b>：每次检索多一次重排 API 往返（约几百毫秒），小库不值这份延迟，故默认关闭；需先在「服务提供商」里添加一个 Rerank 模型（如 vllm_rerank / Qwen3-Reranker-8B），没配置时开关开了也不报错 —— 检索安静退化为召回顺序。</div>
+        <div class="hint"><b>模型回落</b>：上面两个下拉只列 AstrBot 里<b>已加载</b>的模型（配置了但没启用、或加载失败的不会出现）；留空 = 自动使用第一个（与不指定时行为完全一致）；指定的模型哪天被删了，检索会自动回落到第一个并在保存时提示，不会因此失效。<br>
+        <b>生效时机</b>：词典与知识库在插件启动时构建；改 server_dir 或「物品词典 / 学习型知识库」这两项开关会在保存时就地重建（无需重载插件），其余开关即时生效。</div>
+      </details>
     </div>
   </div>
 
@@ -1078,17 +1102,17 @@ try{
       </div>
       <label class="f">渐变输出格式</label>
       <select id="cfg_grad_fmt"></select>
-      <label class="f">全屏喊话 · 单色 / 渐变锚点</label>
-      <div class="frow">
-        <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
-        <input type="text" id="cfg_grad_title_t" placeholder="#FFAA00,#FF00FF">
-      </div>
-      <label class="f">普通喊话 · 单色 / 渐变锚点</label>
+      <label class="f">聊天栏 · 单色 / 渐变锚点</label>
       <div class="frow">
         <input type="text" id="cfg_color_say_t" placeholder="white 或 #FFFFFF">
         <input type="text" id="cfg_grad_say_t" placeholder="#FFFFFF,#55FFFF">
       </div>
-      <label class="f">任务输出 · 单色 / 渐变锚点</label>
+      <label class="f">全屏标题 · 单色 / 渐变锚点</label>
+      <div class="frow">
+        <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
+        <input type="text" id="cfg_grad_title_t" placeholder="#FFAA00,#FF00FF">
+      </div>
+      <label class="f">模拟任务输出 · 单色 / 渐变锚点</label>
       <div class="frow">
         <input type="text" id="cfg_color_fb_t" placeholder="gold 或 #FFAA00">
         <input type="text" id="cfg_grad_fb_t" placeholder="#FFAA00,#55FF55">
@@ -2047,6 +2071,10 @@ const CFG_FIELDS = [
   ["cfg_dict_en","dictionary_enabled","b",true],
   ["cfg_kb_en","knowledge_enabled","b",true],
   ["cfg_kb_engine","knowledge_search_engine","s"],
+  ["cfg_kb_semantic","knowledge_semantic_search","b",false],
+  ["cfg_kb_rerank","knowledge_rerank","b",false],
+  ["cfg_kb_embed_p","knowledge_embed_provider_id","s"],
+  ["cfg_kb_rerank_p","knowledge_rerank_provider_id","s"],
   ["cfg_tool_kb_search","enable_mc_search_knowledge","b",true],
   ["cfg_tool_kb_save","enable_mc_save_knowledge","b",true],
   ["cfg_tool_kb_correct","enable_mc_correct_knowledge","b",true],
@@ -2552,6 +2580,91 @@ function renderWfTip(){
   el.innerHTML = html;
 }
 
+// ============ 知识库模型选择（v0.21.43） ============
+// 两条可选通道（语义增强 / 重排序精排）各自可以指定用哪个 Provider，留空 = 取第一个。
+// 候选来自后端 /kb/models（AstrBot **已加载**的 Provider 实例，不读配置文件）——
+// 下拉里能选的就一定可用。时序上「填充列表」与「应用配置值」谁先谁后都会发生，
+// 所以用 ensureProviderOption 兜住：配置里的值即使不在列表里也先补一个占位项，
+// 绝不因为列表没回来就把主人的选择悄悄清空。
+let KB_MODELS = null;         // 后端返回的模型信息；null = 还没取到
+let KB_MODELS_ERR = "";       // 取列表失败的原因（仅用于提示文案）
+let KB_MODELS_BUSY = false;
+
+function ensureProviderOption(el, val){
+  if(!el || el.tagName !== "SELECT" || !val) return;
+  if(Array.prototype.some.call(el.options, o=>o.value===val)) return;
+  const o = document.createElement("option");
+  o.value = val;
+  o.textContent = val + "（当前 AstrBot 里未加载）";
+  el.appendChild(o);
+}
+function fillProviderSelect(id, kind){
+  const sel = $(id);
+  if(!sel) return;
+  const st = (KB_MODELS||{})[kind];
+  if(!st) return;
+  const saved = sel.value;                       // 保住当前值（可能来自配置，也可能是主人刚选的）
+  const list = st.choices || [];
+  sel.innerHTML = [`<option value="">自动 · 用 AstrBot 里加载的第一个</option>`]
+    .concat(list.map(p=>`<option value="${esc(p.id)}">${esc(p.model ? p.id+" · "+p.model : p.id)}</option>`))
+    .join("");
+  ensureProviderOption(sel, saved);
+  sel.value = saved || "";
+  renderKbModelTips();
+}
+function renderKbModelTips(){
+  const pairs = [
+    ["kb_embed_p_tip","cfg_kb_embed_p","embedding","语义增强检索","纯 BM25"],
+    ["kb_rerank_p_tip","cfg_kb_rerank_p","rerank","重排序精排","召回顺序"],
+  ];
+  for(const [tipId, selId, kind, chName, degrade] of pairs){
+    const tip = $(tipId);
+    if(!tip) continue;
+    if(!KB_MODELS){
+      tip.innerHTML = KB_MODELS_ERR
+        ? `读不到模型列表（${esc(KB_MODELS_ERR)}）—— 不影响功能：留空即自动使用第一个已加载的模型`
+        : "正在读取 AstrBot 已加载的模型…";
+      continue;
+    }
+    const s = KB_MODELS[kind] || {};
+    const list = s.choices || [];
+    const sel = $(selId);
+    const picked = sel ? sel.value : "";
+    if(!list.length){
+      tip.innerHTML = `<b>没检测到已加载的 ${kind==="embedding"?"Embedding":"Rerank"} 模型</b>：`
+        + `先去 AstrBot「服务提供商」里添加一个再回来（本页会自动刷新）。此处留空即可 —— `
+        + `${chName}开着也不报错，检索会安静退化为${degrade}。`;
+      continue;
+    }
+    const act = list.find(p=>p.id===s.active);
+    const actLabel = act ? (act.model ? act.id+" · "+act.model : act.id) : (s.active||"（无）");
+    const lines = [`当前生效：<b>${esc(actLabel)}</b>（已加载 ${list.length} 个可选）`];
+    if(s.fallback){
+      lines.push(`⚠ 配置里指定的 <code>${esc(s.configured)}</code> 在已加载的模型里找不到`
+        + `（可能没启用、名字改了、或已删除），已回落到第一个`);
+    }
+    if(picked !== (s.configured||"")){
+      lines.push(`点「保存全部设置」后改为：<b>${esc(picked||"自动（第一个）")}</b>`);
+    }
+    tip.innerHTML = lines.join("<br>");
+  }
+}
+async function loadKbModels(){
+  if(KB_MODELS_BUSY) return;
+  KB_MODELS_BUSY = true;
+  try{
+    const r = await callGet("kb/models");
+    if(r && r.ok){ KB_MODELS = r; KB_MODELS_ERR = ""; }
+    else KB_MODELS_ERR = (r && r.error) || "后端未返回";
+  }catch(e){
+    KB_MODELS_ERR = String(e && e.message || e);
+  }
+  KB_MODELS_BUSY = false;
+  fillProviderSelect("cfg_kb_embed_p", "embedding");
+  fillProviderSelect("cfg_kb_rerank_p", "rerank");
+  if(!KB_MODELS) renderKbModelTips();
+}
+
 async function loadSettings(){
   let cfg = (OV&&OV.config)||{};
   const r = await callGet("settings").catch(()=>({ok:false}));
@@ -2577,7 +2690,11 @@ async function loadSettings(){
     const v = cfg[key];
     if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : !!v;
     else if(ty==="l") el.value = Array.isArray(v) ? v.join(", ") : (v==null?"":String(v));
-    else el.value = (v===undefined||v===null||v==="") ? (S_DEFAULTS[id]||"") : v;
+    else {
+      const val = (v===undefined||v===null||v==="") ? (S_DEFAULTS[id]||"") : v;
+      ensureProviderOption(el, val);   // v0.21.43：下拉先补位，避免 el.value 静默失败把配置清空
+      el.value = val;
+    }
   }
   // v0.21.15：异地 RCON 模式 → 目录框置灰 + 明确告知哪些能力被禁用
   // v0.21.19：此刻开关里的值就是**后端已保存**的值 —— 把它钉成基准（RMT.saved），
@@ -2592,6 +2709,10 @@ async function loadSettings(){
     const el = $(id); if(el) el.onchange = renderWfTip;
   });
   renderWfTip();
+  // 知识库模型下拉：改动后即时刷新提示（v0.21.43）
+  ["cfg_kb_embed_p","cfg_kb_rerank_p"].forEach(id=>{
+    const el = $(id); if(el) el.onchange = renderKbModelTips;
+  });
   // 区分大小写开关：切换后同步符号去重规则 + 提示（v0.17.8）
   const caseEl = $("cfg_bridge_case");
   if(caseEl) caseEl.onchange = ()=>{
@@ -2628,6 +2749,17 @@ async function loadSettings(){
   // 列表已带上子菜单，重新渲染一次让摘要与勾选状态同步
   Object.keys(TGT_KEYS).forEach(k=>renderTargets(k));
   bindNotifyGateWatch();
+  // v0.21.43：知识库「嵌入 / 重排序模型」下拉 —— 有缓存就直接重填（保存后刷新走这里），
+  // 没缓存则先渲染提示、再拉一次列表（不阻塞设置页其它内容显示）
+  if(KB_MODELS){
+    fillProviderSelect("cfg_kb_embed_p", "embedding");
+    fillProviderSelect("cfg_kb_rerank_p", "rerank");
+    // 缓存已渲染完成，再静默刷新一次：模型可能刚在 AstrBot 里加/删，或刚被切换过
+    loadKbModels();
+  }else{
+    renderKbModelTips();
+    loadKbModels();
+  }
 }
 function collectSettings(){
   const s = {};

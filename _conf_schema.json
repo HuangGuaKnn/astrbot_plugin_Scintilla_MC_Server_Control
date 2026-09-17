@@ -379,6 +379,30 @@
         "hint": "mc_correct_knowledge：用正确方案覆盖错误条目（纠错闭环）",
         "type": "bool",
         "default": true
+      },
+      "knowledge_semantic_search": {
+        "description": "语义增强检索（只建议大型服务器启用）",
+        "hint": "开启后知识库除 BM25 字面匹配外，再走一条嵌入向量语义通道，两通道用 RRF 融合，并带相似度门槛过滤无关候选。适合条目多、且提问常用口语改写的大型服务器（如「后台连不上了」也能找到「RCON 连接失败排查」）。本机实测（438 条语料 / 24 组查询）：Hit@1 75.0%→87.5%、Hit@6 79.2%→100%（口语改写型 Hit@6 58.3%→100%），无关条目误召回归零。代价：检索时多一次嵌入调用（约 300~500ms 延迟），建库时每条约一次嵌入调用（后台分批、只算新增/改动条目）。需要先在 AstrBot「服务提供商」添加一个 Embedding 模型（推荐文本嵌入模型），否则本通道安静退化为纯 BM25。",
+        "type": "bool",
+        "default": false
+      },
+      "knowledge_rerank": {
+        "description": "重排序精排（召回后加一道 Cross-Encoder 重排）",
+        "hint": "开启后知识库检索升级为「召回 → 精排」两段式：先用 BM25（可叠加语义通道）召回首 20 条候选池，再交给 Rerank 模型逐条打分重排，最后取前几条。精排看的是「查询与条目的真实相关性」，能把召回到了但排不前的正确条目提上来。与「语义增强检索」相互独立：没有嵌入模型也能单独开；两者同开就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。需要先在 AstrBot「服务提供商」添加一个 Rerank 模型（如 vllm_rerank / Qwen3-Reranker），否则本通道安静退化为召回顺序。代价：每次检索多一次重排 API 往返，小库（几十条）不值得开，条目多、问法杂时才划算。",
+        "type": "bool",
+        "default": false
+      },
+      "knowledge_embed_provider_id": {
+        "description": "指定嵌入模型（留空 = 自动用第一个）",
+        "hint": "语义增强检索用哪个嵌入模型：填 AstrBot「服务提供商」里 Embedding 模型的 ID（形如 qwen3-embed）。留空 = 使用 AstrBot 里加载的第一个嵌入模型（与旧行为一致）。配置了多个嵌入模型时用它指定；指定的模型被删除 / 停用后会安静回落到第一个，并在 WebUI 保存时提示，不会让检索失效。WebUI 设置页有下拉可直接选。",
+        "type": "string",
+        "default": ""
+      },
+      "knowledge_rerank_provider_id": {
+        "description": "指定重排序模型（留空 = 自动用第一个）",
+        "hint": "重排序精排用哪个 Rerank 模型：填 AstrBot「服务提供商」里 Rerank 模型的 ID（形如 qwen3-reranker）。留空 = 使用 AstrBot 里加载的第一个 Rerank 模型（与旧行为一致）。配置了多个重排序模型时用它指定；指定的模型被删除 / 停用后会安静回落到第一个，并在 WebUI 保存时提示，不会让检索失效。WebUI 设置页有下拉可直接选。",
+        "type": "string",
+        "default": ""
       }
     }
   },
@@ -418,37 +442,37 @@
         "default": "json"
       },
       "color_say": {
-        "description": "普通喊话颜色",
+        "description": "聊天栏颜色（普通喊话）",
         "hint": "mcs 喊话 的聊天栏颜色。支持 hex(#FF0000) / RGB(255,0,0) / 十进制(16711680) 或色名(white/red/gold…)",
         "type": "string",
         "default": "white"
       },
       "gradient_colors_say": {
-        "description": "普通喊话 · 渐变锚点",
+        "description": "聊天栏 · 渐变锚点（普通喊话）",
         "hint": "2 个以上锚点色，逗号分隔，如 #FFFFFF,#55FFFF",
         "type": "string",
         "default": "#FFFFFF,#55FFFF"
       },
       "color_title": {
-        "description": "全屏喊话颜色",
+        "description": "全屏标题颜色（全屏喊话）",
         "hint": "mcs 全屏喊话 的 title 大字颜色，格式同上",
         "type": "string",
         "default": "gold"
       },
       "gradient_colors_title": {
-        "description": "全屏喊话 · 渐变锚点",
+        "description": "全屏标题 · 渐变锚点（全屏喊话）",
         "hint": "2 个以上锚点色，逗号分隔，如 #FFAA00,#FF00FF",
         "type": "string",
         "default": "#FFAA00,#FF00FF"
       },
       "color_feedback": {
-        "description": "任务输出颜色",
+        "description": "模拟任务输出颜色",
         "hint": "署名反馈的颜色，格式同上",
         "type": "string",
         "default": "gold"
       },
       "gradient_colors_feedback": {
-        "description": "任务输出 · 渐变锚点",
+        "description": "模拟任务输出 · 渐变锚点",
         "hint": "2 个以上锚点色，逗号分隔，如 #FFAA00,#55FF55",
         "type": "string",
         "default": "#FFAA00,#55FF55"

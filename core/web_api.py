@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -73,6 +74,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/kb/presets/bind", self.bind_preset, ["POST"], "绑定/解绑预设指纹")
         reg(f"{PAGE_PREFIX}/kb/presets/transfer", self.transfer_preset, ["POST"], "复制/移动预设知识")
         reg(f"{PAGE_PREFIX}/kb/presets/notice", self.preset_notice, ["POST"], "指纹变化提醒操作")
+        reg(f"{PAGE_PREFIX}/kb/models", self.get_kb_models, ["GET"], "知识库可选的嵌入/重排序模型")
         reg(f"{PAGE_PREFIX}/rescan", self.rescan, ["POST"], "重建词典与知识库")
         reg(f"{PAGE_PREFIX}/workflow/status", self.get_workflow_status, ["GET"], "多Agent工作流状态")
         reg(f"{PAGE_PREFIX}/prompts", self.get_prompts, ["GET"], "读取多Agent提示词")
@@ -121,6 +123,25 @@ class McControlWebApi:
         return {"online": online, "max": maxp, "players": players}
 
     # ================= 状态 =================
+
+    async def get_kb_models(self):
+        """设置页用：列出可指定的嵌入 / 重排序模型 + 当前实际生效的那个。
+
+        v0.21.43 新增。choices 直接来自 AstrBot **已加载**的 Provider 实例（不读配置文件），
+        所以「配置里有、但没启用 / 加载失败」的模型不会出现在下拉里 —— 下拉能选的一定可用。
+        semantic_stats / rerank_stats 是两条通道的运行态（向量是否就绪、待补算多少条）。
+        """
+        try:
+            status = self.plugin.kb_model_status()
+        except Exception as e:                            # noqa: BLE001
+            return json_response({"ok": False, "error": f"读取模型列表失败：{e}"})
+        kb = self._kb()
+        return json_response({
+            "ok": True,
+            **status,
+            "semantic_stats": kb.semantic_stats() if kb is not None else {},
+            "rerank_stats": kb.rerank_stats() if kb is not None else {},
+        })
 
     async def get_state(self):
         kb = self._kb()
@@ -228,6 +249,8 @@ class McControlWebApi:
         "enable_unban_command", "enable_banlist_command",
         "enable_help_command", "enable_title_command",
         "feedback_tellraw", "dictionary_enabled", "knowledge_enabled",
+        "knowledge_semantic_search",
+        "knowledge_rerank",
         "enable_mc_search_knowledge", "enable_mc_save_knowledge",
         "enable_mc_correct_knowledge", "agent_workflow_enabled",
         "enable_mc_workflow", "gradient_enabled",
@@ -253,6 +276,8 @@ class McControlWebApi:
         "llm_provider_id", "agent_classifier_provider_id",
         "agent_judge_provider_id", "agent_engineer_provider_id",
         "agent_implementer_provider_id", "agent_corrector_provider_id",
+        # v0.21.43：知识库两条可选通道各自指定用哪个 Provider（留空 = 自动取第一个）
+        "knowledge_embed_provider_id", "knowledge_rerank_provider_id",
     )
     ENUM_SETTING_KEYS = {
         # 与 _conf_schema.json / main.py 的闸门实现保持一致
@@ -464,6 +489,90 @@ class McControlWebApi:
                 )
             except Exception as e:
                 effects.append(f"检索引擎切换失败：{e}")
+
+        # v0.21.41：开关语义增强检索 → 立即切换通道，并把缺向量后台补齐
+        if "knowledge_semantic_search" in changed:
+            try:
+                on = self.plugin._kb_semantic()
+                if self.plugin._kbman is not None:
+                    self.plugin._kbman.set_semantic_enabled(on)
+                if on:
+                    ok = self.plugin._inject_embed_fn()
+                    if not ok:
+                        effects.append(
+                            "⚠ 语义增强检索已开启，但没有找到可用的嵌入模型 —— "
+                            "请先在 AstrBot「服务提供商」里添加一个 Embedding 模型，"
+                            "否则本通道会安静退化为纯 BM25"
+                        )
+                    else:
+                        asyncio.create_task(self.plugin._kb_build_semantic())
+                        effects.append("语义增强检索已开启：向量索引正在后台补齐（新增条目才会重算）")
+                else:
+                    effects.append("语义增强检索已关闭：检索回到纯 BM25")
+            except Exception as e:
+                effects.append(f"语义增强检索切换失败：{e}")
+
+        # v0.21.42：开关重排序精排 → 立即生效（注入/撤销 rerank 调用）
+        if "knowledge_rerank" in changed:
+            try:
+                on = self.plugin._kb_rerank()
+                if self.plugin._kbman is not None:
+                    self.plugin._kbman.set_rerank_enabled(on)
+                if on:
+                    ok = self.plugin._inject_rerank_fn()
+                    if not ok:
+                        effects.append(
+                            "⚠ 重排序精排已开启，但没有找到可用的 Rerank 模型 —— "
+                            "请先在 AstrBot「服务提供商」里添加一个 Rerank 模型，"
+                            "否则检索会安静退化为召回顺序"
+                        )
+                    else:
+                        effects.append("重排序精排已开启：检索升级为「召回 → 精排」两段式")
+                else:
+                    effects.append("重排序精排已关闭：检索回到召回顺序")
+            except Exception as e:
+                effects.append(f"重排序精排切换失败：{e}")
+
+        # v0.21.43：改「指定嵌入 / 重排序模型」→ 立即重新注入调用
+        # 注意：换了嵌入模型，旧向量是**别的模型**算出来的（维度与语义空间都不通用），
+        # 必须整库重算，不能留着串味 —— 所以这里用 force 重建而不是增量补齐。
+        if {"knowledge_embed_provider_id", "knowledge_rerank_provider_id"} & changed:
+            try:
+                if "knowledge_rerank_provider_id" in changed:
+                    if self.plugin._inject_rerank_fn():
+                        label = self.plugin.kb_effective_label("rerank")
+                        effects.append(
+                            f"重排序模型已切换为「{label}」" if label
+                            else "重排序模型已切换"
+                        )
+                    elif self.plugin._kb_rerank():
+                        effects.append(
+                            "⚠ 重排序精排开着，但没有可用的 Rerank 模型 —— "
+                            "检索会安静退化为召回顺序"
+                        )
+                if "knowledge_embed_provider_id" in changed:
+                    if self.plugin._inject_embed_fn():
+                        label = self.plugin.kb_effective_label("embedding")
+                        if self.plugin._kb_semantic():
+                            asyncio.create_task(
+                                self.plugin._kb_build_semantic(force=True)
+                            )
+                            effects.append(
+                                f"嵌入模型已切换为「{label or '（未指明）'}」："
+                                "向量索引正在后台整库重算（旧模型算的向量不通用）"
+                            )
+                        else:
+                            effects.append(
+                                f"嵌入模型已切换为「{label or '（未指明）'}」"
+                                "（语义增强检索未开启，暂时用不上）"
+                            )
+                    elif self.plugin._kb_semantic():
+                        effects.append(
+                            "⚠ 语义增强检索开着，但没有可用的嵌入模型 —— "
+                            "本通道会安静退化为纯 BM25"
+                        )
+            except Exception as e:                        # noqa: BLE001
+                effects.append(f"模型切换失败：{e}")
 
         notice = f"已保存 {len(parsed)} 项并即时生效"
         if effects:

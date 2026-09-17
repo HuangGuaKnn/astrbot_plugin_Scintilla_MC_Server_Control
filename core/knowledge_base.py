@@ -31,6 +31,11 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+try:                      # numpy 随 AstrBot（faiss 依赖）一起提供；缺了就让语义通道自动失效
+    import numpy as _np
+except Exception:         # pragma: no cover
+    _np = None
+
 VALID_STATUS = ("verified", "untested", "corrected", "pending")
 
 # ================= 检索引擎 =================
@@ -48,6 +53,75 @@ VALID_STATUS = ("verified", "untested", "corrected", "pending")
 #   仅建议「需要与历史检索结果完全一致」的场景使用。
 DEFAULT_SEARCH_ENGINE = "bm25"
 SEARCH_ENGINES = ("bm25", "legacy")
+
+# ================= 语义增强检索（可选 · v0.21.41） =================
+# 配置项 knowledge.semantic_search（**默认关闭**，见 _conf_schema.json）：
+# 开启后知识库除 BM25 词法通道外，再走一条「嵌入向量」语义通道，两通道用
+# RRF（Reciprocal Rank Fusion，倒数排名融合）合并。适合条目多、且用户爱用
+# 口语改写提问的大型服务器；条目少时 BM25 已经够准，收益有限。
+#
+# ── 为什么是 RRF，而不是「归一化加权 + 硬门槛」 ──
+# 两条通道分数尺度完全不同（BM25 无上界、余弦 0~1）。v1 评测用 min-max 归一化
+# 加权 + 0.35 硬门槛，语义型查询 Hit@1 直接归零：gold 只在单通道强（BM25 零命中、
+# dense 排在很后面），归一化后融合分过不了门槛，被整条砍掉。RRF 只看名次、不看
+# 分数，天然免疫尺度问题，是业界混合检索的标准做法。
+#
+# ── 关于余弦门槛（v0.21.41 定稿时的两难，现已被 SEMANTIC_MIN_SIM 解决）──
+# 一开始**刻意不做**绝对门槛，理由是实测过两种嵌入模型的余弦分布差异很大：
+#   · Qwen3-Embedding-4B：无关查询 top1 最高 0.460，相关查询最低 0.505 → 可分
+#   · Qwen3-VL-Embedding-8B（多模态）：无关 0.568、真命中可低至 0.257 → 重叠
+# 门槛一旦按某个模型标定，换模型就可能整条通道失效（要么全被切掉、要么放进噪声）。
+# 但「不做门槛」也有代价：RRF 只看名次，无关提问照样会被塞进候选池并加分，
+# 实测 3 条无关查询的返回条数从 0 涨到 18。最终定案是「门槛 + 候选池」双保险，
+# 因为默认/推荐的嵌入模型就是 4B 文本模型，该场景下 0.50 是最优点。
+# 选多模态模型时门槛会把语义通道压到接近失效，但**退化方向是安全的**
+# （实测仍 ≥ 纯 BM25，不会把命中挤掉），所以不必为它调参。
+#
+# ── 本机实测（438 条语料 / 24 组带标准答案查询 / 参考槽位 K=6）──
+#   纯 BM25                         Hit@1 75.0%  Hit@6  79.2%  MRR 0.771  噪声 0
+#   BM25 + 语义（RRF，无门槛）      Hit@1 83.3%  Hit@6  91.7%  MRR 0.868  噪声 18
+#   BM25 + 语义（RRF + 门槛 0.50）  Hit@1 87.5%  Hit@6 100.0%  MRR 0.931  噪声 0  ← 当前
+#     └ 拆分：字面型 Hit@1 91.7%→100%；语义型 Hit@1 58.3%→75.0%、Hit@6 58.3%→100%
+#   换多模态嵌入模型（同参数）：Hit@1 37.5% / Hit@6 83.3%（高于它自身无门槛的
+#   75.0%，也高于纯 BM25 的 79.2% —— 只把语义通道压弱，不会把命中挤掉）
+# 代价：建库时每条约一次嵌入调用（后台分批、带落盘缓存、只算新增/改动条目）；
+# 检索时多一次查询嵌入调用，约 300~500ms 延迟。这是它「只建议大型服务器启用」
+# 的原因——小库用 BM25 就够了，不值这份延迟与 API 开销。
+SEMANTIC_POOL = 60            # 嵌入通道参与融合的候选池上限（名次越靠后越像噪声）
+RRF_K = 60                    # RRF 平滑常数（业界默认 60）
+SEMANTIC_BATCH = 16           # 建向量索引时的批大小（一次嵌入调用算几条）
+
+# ================= 重排序精排（可选 · v0.21.42） =================
+# 配置项 knowledge.rerank（**默认关闭**）：
+# 开启后检索变成「召回 → 精排」两段式 —— 先用 BM25（+可选语义通道 RRF）召回
+# 一个候选池，再把这个池子交给 Rerank 模型（Cross-Encoder）逐条打分重排，
+# 最后取前 limit 条。召回阶段看的是「词/向量像不像」，精排阶段看的是
+# 「查询与条目真实相关性」，能把召回到了但排不前的 gold 提上来。
+#
+# 为什么单独做一个开关：rerank 是**纯附加延迟**（多一次 API 往返），
+# 小库（几十条）BM25 已经够准，不值这份开销；条目多、问法杂时才划算。
+# 与语义通道相互独立：没有嵌入模型也能单独开 rerank（只对 BM25 召回池精排）。
+#
+# 候选池大小：池子太小会漏掉召回阶段排名靠后的 gold（rerank 救不回来），
+# 太大则单次 rerank 的 token 成本与延迟上升。20 是评测脚本
+# （tests/bench_kb_engines.py，RERANK_POOL）用的值，对齐它。
+RERANK_POOL = 20
+# 精排后是否保留「模板补召」：rerank 已经在池内做了全局比较，补召会绕过精排
+# 顺序追加条目，因此在精排结果不足 limit 时才补（与普通检索同口径）。
+
+# 余弦相似度门槛：低于它的候选不参与融合。
+#
+# 为什么需要它：RRF 只看名次、不看分数，所以哪怕提问跟整库毫无关系
+# （「今天午饭吃什么」），嵌入通道也一定会给出 60 个「最像的」候选并按名次加分，
+# 于是凭空多出一批噪声（实测 3 条无关查询从 0 条变成 18 条）。
+# 余弦相似度则是有绝对尺度的——本机实测（438 条语料）：
+#   相关查询 top1 余弦 最低 0.505 / 中位 0.644；无关查询 top1 余弦 最高 0.460
+# 取 0.50 卡在两者之间：噪声归零，且指标反而更高
+#   （Hit@1 75%→87.5%、Hit@6 79.2%→100%、语义型 Hit@6 83.3%→100%）。
+# 注意：这条门槛只挡「整库都不相关」的查询，不影响正常的跨说法召回
+#   （「游戏里连不上后台控制台了」余弦远高于 0.5）。
+SEMANTIC_MIN_SIM = 0.50
+VECTOR_CACHE_SUFFIX = ".vec.npz"
 
 # BM25 最低分门槛：低于「本条最高分 × 该比例」的候选直接丢弃。
 # 0.35 是评测出的甜点——命中数不减，返回的无关条目砍掉约 44%（省 token）。
@@ -135,6 +209,147 @@ class BM25Index:
                     tf + self.k1 * (1 - self.b + self.b * self.dl[topic] / self.avgdl)
                 )
         return dict(out)
+
+
+class SemanticIndex:
+    """嵌入向量索引（v0.21.41，可选通道）。
+
+    与 BM25Index 的分工：BM25 管「字面命中」，本类管「说法不同但意思一样」——
+    用户问「游戏里连不上后台控制台了」，库里存的是「运维 RCON 连接失败排查」，
+    字面一个词都不重合，只有向量能拉得上。
+
+    设计约束（重要）：嵌入调用是 async 的，而 search() 是同步方法（被多处同步调用）。
+    所以本类**只存向量与做点积**，真正的 API 调用由外部注入的 embed_fn 完成：
+    查询向量由 asearch() 在进入同步检索前先算好，建库向量由 build() 在后台分批算好。
+    这样同步检索路径上永远不会出现 await，调用方不必改造成异步。
+    """
+
+    def __init__(self, dim: int = 0):
+        self.dim = dim
+        self.topics: list[str] = []          # 行号 → topic
+        self.hashes: list[str] = []          # 行号 → 内容哈希（判复用/失效）
+        self.matrix = None                   # (N, dim) float32，已 L2 归一化
+        self._pos: dict[str, int] = {}       # topic → 行号
+
+    # ---------- 构建 ----------
+
+    @staticmethod
+    def content_hash(topic: str, entry: dict) -> str:
+        """条目内容指纹：topic + 正文 + 启停状态。
+
+        禁用/待审批条目不该留在向量池里（BM25 侧同样排除），所以状态进哈希，
+        重启条目的开关会触发这一条重算，不用整库重建。
+        """
+        raw = f"{topic}\x00{entry.get('content', '')}\x00{int(bool(entry.get('enabled', True)))}"
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+    def needs(self, topic: str, entry: dict) -> bool:
+        """该条目是否需要（重）算向量。"""
+        return self._pos.get(topic) is None or self.hashes[self._pos[topic]] != self.content_hash(topic, entry)
+
+    def missing(self, entries: dict) -> list[str]:
+        """尚未建向量 / 内容已变动的 topic 列表。"""
+        return [t for t, e in entries.items() if self.needs(t, e)]
+
+    def has(self, topic: str) -> bool:
+        return topic in self._pos
+
+    def set_vectors(self, topics: list[str], entries: dict, vectors) -> None:
+        """把一批新算的向量并入索引（同 topic 覆盖旧行）。
+
+        性能注意：新增行先攒在列表里、最后**一次性 vstack**。
+        早期写法是每行都 vstack 一次，建 4000 条时等于复制矩阵 4000 次
+        （O(n²)，实测要好几秒）；批量建库正是「大型服务器」的典型场景，
+        所以这里必须整批拼接。
+        """
+        if _np is None or not topics or vectors is None:
+            return
+        mat = _np.asarray(vectors, dtype="float32")
+        if mat.ndim == 1:
+            mat = mat.reshape(1, -1)
+        if mat.shape[0] != len(topics):
+            return
+        norms = _np.linalg.norm(mat, axis=1, keepdims=True)
+        mat = mat / _np.maximum(norms, 1e-9)
+        self.dim = int(mat.shape[1])
+        fresh: list = []
+        for i, topic in enumerate(topics):
+            h = self.content_hash(topic, entries.get(topic) or {})
+            pos = self._pos.get(topic)
+            if pos is None:
+                self._pos[topic] = len(self.topics)
+                self.topics.append(topic)
+                self.hashes.append(h)
+                fresh.append(mat[i])
+            else:
+                self.hashes[pos] = h
+                self.matrix[pos] = mat[i]
+        if fresh:
+            block = _np.stack(fresh) if len(fresh) > 1 else fresh[0].reshape(1, -1)
+            self.matrix = block if self.matrix is None else _np.vstack([self.matrix, block])
+
+    def prune(self, entries: dict) -> int:
+        """剔除已删除条目的向量（保持矩阵与条目表一致），返回剔除条数。"""
+        if _np is None or self.matrix is None:
+            return 0
+        keep = [i for i, t in enumerate(self.topics) if t in entries]
+        drop = len(self.topics) - len(keep)
+        if drop:
+            self.matrix = self.matrix[keep] if keep else None
+            self.topics = [self.topics[i] for i in keep]
+            self.hashes = [self.hashes[i] for i in keep]
+            self._pos = {t: i for i, t in enumerate(self.topics)}
+            self.dim = int(self.matrix.shape[1]) if self.matrix is not None else self.dim
+        return drop
+
+    # ---------- 查询 ----------
+
+    def rank(self, query_vec) -> list[str]:
+        """按余弦相似度返回降序 topic 列表（截到候选池上限，并过相似度门槛）。"""
+        if _np is None or self.matrix is None or query_vec is None or not self.topics:
+            return []
+        q = _np.asarray(query_vec, dtype="float32").ravel()
+        if q.shape[0] != self.matrix.shape[1]:
+            # 换过嵌入模型（维度不同）→ 本次直接放弃语义通道，别拿旧向量硬算
+            return []
+        q = q / max(float(_np.linalg.norm(q)), 1e-9)
+        sims = self.matrix @ q
+        order = _np.argsort(-sims)[:SEMANTIC_POOL]
+        if SEMANTIC_MIN_SIM > 0:
+            # 门槛之外的候选一律不参与融合：RRF 不看分数尺度，没有这道闸
+            # 无关提问也会被塞进 60 个"最像的"候选、平白招来噪声。
+            order = [i for i in order if float(sims[int(i)]) >= SEMANTIC_MIN_SIM]
+        return [self.topics[int(i)] for i in order]
+
+    # ---------- 落盘 ----------
+
+    def save(self, path: Path) -> None:
+        if _np is None or self.matrix is None:
+            return
+        try:
+            _np.savez_compressed(
+                path, matrix=self.matrix,
+                topics=_np.array(self.topics, dtype=object),
+                hashes=_np.array(self.hashes, dtype=object),
+            )
+        except Exception:
+            pass
+
+    def load(self, path: Path) -> bool:
+        if _np is None or not path.exists():
+            return False
+        try:
+            with _np.load(path, allow_pickle=True) as z:
+                self.matrix = _np.asarray(z["matrix"], dtype="float32")
+                self.topics = [str(x) for x in z["topics"]]
+                self.hashes = [str(x) for x in z["hashes"]]
+                self.dim = int(self.matrix.shape[1]) if self.matrix.ndim == 2 else 0
+            self._pos = {t: i for i, t in enumerate(self.topics)}
+            return True
+        except Exception:
+            self.matrix, self.topics, self.hashes, self._pos = None, [], [], {}
+            return False
+
 
 # 老算法「mods 目录里一个 jar 都没有」时的指纹（= md5 空串）。这种「空整合包指纹」
 # 无法区分不同服务端：两个都没装 mod（或 server_dir 指到空壳目录）的服务端算出来
@@ -229,6 +444,11 @@ class ModKnowledgeBase:
     - "legacy"：旧版单字/整段子串命中计数（保留为可选项）
     索引只在 load()/save() 时重建——所有写操作都会走到 save()，所以内存索引
     与磁盘内容始终一致，不需要在每个写方法里各挂一次钩子。
+
+    v0.21.41 起可叠加语义通道（semantic_enabled，默认关；配置项 knowledge.semantic_search）：
+    BM25 与嵌入向量两条通道各自排名，再用 RRF 融合。嵌入调用是异步的，而本类
+    检索是同步的——所以向量在这里「只算一次、存起来」：查询向量由 asearch()
+    提前算好传进来，库侧向量由 build_vectors() 后台分批算好并落盘缓存。
     """
 
     def __init__(
@@ -240,6 +460,8 @@ class ModKnowledgeBase:
         fingerprint: str | None = None,
         on_first_write=None,
         search_engine: str = DEFAULT_SEARCH_ENGINE,
+        semantic_enabled: bool = False,
+        rerank_enabled: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +478,173 @@ class ModKnowledgeBase:
         self.file_path = self.data_dir / f"kb_preset_{self.preset_id}.json"
         self.state = KnowledgeState(data_dir)
         self._data: dict = {"preset_id": self.preset_id, "entries": {}}
+        # 语义通道（默认关）：向量索引 + 嵌入调用函数（由插件注入，可能为 None）
+        self.semantic_enabled = bool(semantic_enabled)
+        self._sem: SemanticIndex | None = None
+        self.embed_fn = None                     # async (list[str]) -> list[list[float]]
+        self.vec_path = self.file_path.with_suffix(VECTOR_CACHE_SUFFIX)
+        # 重排序精排（默认关，v0.21.42）：候选池交给 Rerank 模型重排
+        self.rerank_enabled = bool(rerank_enabled)
+        self.rerank_fn = None                    # async (query, docs) -> [(index, score)]
         self.load()
+
+    # ================= 语义通道 =================
+
+    def set_semantic_enabled(self, on: bool) -> bool:
+        """开关语义通道（WebUI 即时生效）。返回实际状态。"""
+        self.semantic_enabled = bool(on)
+        if self.semantic_enabled and self._sem is None:
+            sem = SemanticIndex()
+            if not sem.load(self.vec_path):
+                self._sem = sem          # 缓存不存在/损坏 → 用空索引，等 build_vectors 补
+            else:
+                self._sem = sem
+        if self._sem is not None:
+            self._sem.prune(self._searchable())
+        return self.semantic_enabled
+
+    def semantic_ready(self) -> bool:
+        """语义通道是否真正可用（开关开着 + 有向量 + 维度对得上）。"""
+        return bool(
+            self.semantic_enabled and self._sem is not None
+            and self._sem.matrix is not None and self._sem.topics
+        )
+
+    def semantic_stats(self) -> dict:
+        ready = self.semantic_ready()
+        pending = len(self._sem.missing(self._searchable())) if self._sem is not None else 0
+        return {
+            "enabled": self.semantic_enabled,
+            "ready": ready,
+            "vectors": len(self._sem.topics) if self._sem is not None else 0,
+            "pending": pending,
+            "dim": self._sem.dim if self._sem is not None else 0,
+            "has_embed_fn": self.embed_fn is not None,
+        }
+
+    # ================= 重排序精排（v0.21.42） =================
+
+    def set_rerank_enabled(self, on: bool) -> bool:
+        """开关重排序精排（WebUI 即时生效）。返回实际状态。"""
+        self.rerank_enabled = bool(on)
+        return self.rerank_enabled
+
+    def rerank_stats(self) -> dict:
+        """精排通道状态（用于 WebUI / 诊断）。"""
+        return {
+            "enabled": self.rerank_enabled,
+            "has_rerank_fn": self.rerank_fn is not None,
+            "pool": RERANK_POOL,
+        }
+
+    def rerank_ready(self) -> bool:
+        """精排通道是否真正可用（开关开着 + 有 rerank 调用）。"""
+        return bool(self.rerank_enabled and self.rerank_fn is not None)
+
+    async def build_vectors(self, force: bool = False) -> dict:
+        """为「新增 / 内容有变」的条目补算向量（后台调用，可安全重复执行）。
+
+        force=True 时整库重算（换嵌入模型、怀疑缓存脏了时用）。
+        返回统计信息；嵌入调用失败不抛异常，交由上层提示。
+        """
+        if not self.semantic_enabled:
+            return {"ok": False, "reason": "语义通道未开启"}
+        if self.embed_fn is None:
+            return {"ok": False, "reason": "未注入嵌入调用（缺少可用的嵌入模型 Provider）"}
+        entries = self._searchable()
+        if self._sem is None:
+            self._sem = SemanticIndex()
+        if force:
+            self._sem = SemanticIndex()
+        self._sem.prune(entries)
+        todo = list(entries.keys()) if force else self._sem.missing(entries)
+        if not todo:
+            return {"ok": True, "added": 0, "total": len(self._sem.topics), "skipped": True}
+        added, failed = 0, 0
+        for i in range(0, len(todo), SEMANTIC_BATCH):
+            batch = todo[i:i + SEMANTIC_BATCH]
+            texts = [f"{t} {entries[t].get('content', '')}" for t in batch]
+            try:
+                vectors = await self.embed_fn(texts)
+                if not vectors or len(vectors) != len(batch):
+                    failed += len(batch)
+                    continue
+                # 换过模型会改变维度 → 旧行与新行维度不一致，整库重算更稳妥
+                if self._sem.dim and self._sem.matrix is not None and \
+                        len(vectors[0]) != self._sem.matrix.shape[1]:
+                    self._sem = SemanticIndex()
+                self._sem.set_vectors(batch, entries, vectors)
+                added += len(batch)
+            except Exception:
+                failed += len(batch)
+                continue
+        self._sem.save(self.vec_path)
+        return {
+            "ok": True, "added": added, "failed": failed,
+            "total": len(self._sem.topics), "dim": self._sem.dim,
+        }
+
+    async def asearch(self, query: str, limit: int = 10) -> list[dict]:
+        """search() 的异步入口：先算查询向量（语义通道），再走检索。
+
+        调用方（async 上下文）应优先用它；同步调用 search() 仍然可用，只是
+        带不上语义通道与精排（都依赖异步 API 调用），自动退化为纯 BM25。
+
+        v0.21.42：开启重排序精排时走「召回 → 精排」两段式（见 _search_with_rerank）。
+        """
+        qvec = None
+        if self.semantic_ready() and self.embed_fn is not None and query.strip():
+            try:
+                out = await self.embed_fn([query.strip()])
+                if out:
+                    qvec = out[0]
+            except Exception:
+                qvec = None          # 嵌入失败不该让整次检索失败，退化为纯 BM25
+        if self.rerank_ready() and query.strip():
+            return await self._search_with_rerank(query, limit=limit, query_vec=qvec)
+        return self.search(query, limit=limit, query_vec=qvec)
+
+    async def _search_with_rerank(self, query: str, limit: int = 10,
+                                  query_vec=None) -> list[dict]:
+        """「召回 → 精排」检索（v0.21.42，精排开关打开时由 asearch 调用）。
+
+        召回：复用 _rank_candidates（BM25 或 BM25+语义 RRF），取候选池前
+        RERANK_POOL 条；精排：把池内条目文档交给 Rerank 模型逐条打分，按分数
+        降序取前 limit 条。任何异常都退回普通 search() —— 精排是锦上添花，
+        不该让整次检索失败。
+        """
+        pool = self._rank_candidates(query, query_vec)[:RERANK_POOL]
+        if not pool:
+            return []
+        entries = self._searchable()
+        # 文档口径与建向量一致（topic + 正文）：topic 是最强的相关性信号
+        docs = [f"{t} {entries.get(t, {}).get('content', '')}" for t in pool]
+        try:
+            scored = await self.rerank_fn(query, docs)
+        except Exception:
+            return self.search(query, limit=limit, query_vec=query_vec)
+        # rerank 只回「它给过分的那些」：没回的候选按原召回顺序兜底排在其后
+        order: dict[int, float] = {}
+        for item in scored or []:
+            try:
+                idx, score = item[0], item[1]
+            except Exception:
+                continue
+            if isinstance(idx, int) and 0 <= idx < len(pool):
+                order[idx] = float(score)
+        ranked = sorted(range(len(pool)),
+                        key=lambda i: (-order.get(i, float("-inf")), i))
+        out, seen = [], set()
+        for i in ranked:
+            topic = pool[i]
+            if topic in seen:
+                continue
+            seen.add(topic)
+            out.append(self._entry_view(topic))
+            if len(out) >= limit:
+                break
+        self._template_fill(query, out, seen, limit)
+        return out
 
     def set_search_engine(self, engine: str) -> str:
         """切换检索引擎（WebUI 即时生效）。返回实际生效的引擎名。"""
@@ -289,7 +677,18 @@ class ModKnowledgeBase:
         self._data.setdefault("preset_id", self.preset_id)
         self._data.setdefault("deleted", [])  # 墓碑：被删除的 topic（防旧文件继承复活）
         self._migrate()
+        self._load_semantic()
         self._rebuild_index()
+
+    def _load_semantic(self) -> None:
+        """加载向量缓存（语义通道用）。缺 numpy / 缓存不存在都静默跳过。"""
+        if not self.semantic_enabled:
+            self._sem = None
+            return
+        sem = SemanticIndex()
+        if sem.load(self.vec_path):
+            sem.prune(self._searchable())
+        self._sem = sem
 
     def reload(self) -> None:
         """从磁盘重新读取（外部改动后刷新内存）。"""
@@ -438,6 +837,36 @@ class ModKnowledgeBase:
             # 索引不可用 → 退化到 legacy（宁可慢一点，也不能查不出来）
         return self._rank_legacy(query)
 
+    def _rrf_fuse(self, lexical: list[str], semantic: list[str]) -> list[str]:
+        """RRF（倒数排名融合）合并词法排名与语义排名。
+
+        RRF 只看名次、不看分数，所以天然免疫「两通道分数尺度不同」的问题
+        （BM25 无上界、余弦 0~1）。侧信道处理：语义通道命中但词法一个词都没
+        命中的条目（正是口语改写的典型情形）不会被丢掉 —— 只要它在语义池
+        里（pool 上限内），就会以自己名次对应的 1/(k+rank) 参与融合。
+
+        同分时的次序：词法名次优先（可解释性更好——字面命中的条目更容易被
+        人理解和验证），其次模板优先，最后按词法排名兜底。
+        """
+        fused: dict[str, float] = {}
+        vrank: dict[str, int] = {}
+        for r, t in enumerate(lexical, 1):
+            fused[t] = fused.get(t, 0.0) + 1.0 / (RRF_K + r)
+            vrank.setdefault(t, r)
+        for r, t in enumerate(semantic, 1):
+            fused[t] = fused.get(t, 0.0) + 1.0 / (RRF_K + r)
+            vrank.setdefault(t, len(lexical) + r)     # 只在语义通道出现的排到后面
+        entries = self._data["entries"]
+        return sorted(
+            fused,
+            key=lambda k: (
+                fused[k],
+                entries.get(k, {}).get("kind") == "template",
+                -vrank.get(k, 10 ** 9),
+            ),
+            reverse=True,
+        )
+
     def _rank_legacy(self, query: str) -> list[str]:
         """旧版打分：中文按单字、英文/数字按整段，统计命中 token 数。"""
         tokens = _tokenize_raw(query)
@@ -462,17 +891,60 @@ class ModKnowledgeBase:
         )
         return exact + partial
 
-    def search(self, query: str, limit: int = 10) -> list[dict]:
-        """检索知识条目（引擎由 search_engine 决定：bm25 / legacy）。
+    def _rank_candidates(self, query: str, query_vec=None) -> list[str]:
+        """召回排序：词法排名（BM25/legacy），语义通道就绪时与 RRF 融合。
 
-        举一反三：直接命中优先；命中不足时自动补召查询中涉及模组的
-        template 模板条目（可泛化套用到同类物品），并附带少量同模组实例。
-        返回 [{topic, content, status, mod, kind}]。
+        返回**完整有序**的 topic 列表（不截断到 limit、不含模板补召）——
+        普通检索取前 limit 条；精排检索取前 RERANK_POOL 条当候选池。
         """
         q = query.strip().lower()
         if not q:
             return []
         ranked = self._rank(q)
+        if self.semantic_ready() and query_vec is not None:
+            ranked = self._rrf_fuse(ranked, self._sem.rank(query_vec))
+        return ranked
+
+    def _template_fill(self, query: str, out: list[dict], seen: set, limit: int) -> None:
+        """模板补召：query 含模组且结果不足时，追加该模组 template（可泛化）+ 少量实例。
+
+        原地修改 out / seen（普通检索与精排检索共用，保证两条路径口径一致）。
+        """
+        if len(out) >= limit:
+            return
+        qmod = self._detect_mod(query, "")
+        if qmod == "general":
+            return
+        for topic, e in self._searchable().items():
+            if topic in seen:
+                continue
+            if e.get("mod") != qmod:
+                continue
+            # template 优先补（≤2），instance 少量补（≤2）
+            if e.get("kind") == "template":
+                if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "template") >= 2:
+                    continue
+            else:
+                if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "instance") >= 2:
+                    continue
+            seen.add(topic)
+            out.append(self._entry_view(topic))
+            if len(out) >= limit:
+                break
+
+    def search(self, query: str, limit: int = 10, query_vec=None) -> list[dict]:
+        """检索知识条目（引擎由 search_engine 决定：bm25 / legacy）。
+
+        举一反三：直接命中优先；命中不足时自动补召查询中涉及模组的
+        template 模板条目（可泛化套用到同类物品），并附带少量同模组实例。
+        v0.21.41：语义通道开着且传入了 query_vec 时，与词法排名做 RRF 融合。
+        v0.21.42：召回与补召分别抽到 _rank_candidates / _template_fill（与精排共用）。
+        返回 [{topic, content, status, mod, kind}]。
+        """
+        q = query.strip().lower()
+        if not q:
+            return []
+        ranked = self._rank_candidates(q, query_vec)
         out, seen = [], set()
         for topic in ranked:
             if topic in seen:
@@ -481,26 +953,7 @@ class ModKnowledgeBase:
             out.append(self._entry_view(topic))
             if len(out) >= limit:
                 break
-        # 模板补召：query 含模组且结果不足时，追加该模组 template（可泛化）+ 少量实例
-        if len(out) < limit:
-            qmod = self._detect_mod(query, "")
-            if qmod != "general":
-                for topic, e in self._searchable().items():
-                    if topic in seen:
-                        continue
-                    if e.get("mod") != qmod:
-                        continue
-                    # template 优先补（≤2），instance 少量补（≤2）
-                    if e.get("kind") == "template":
-                        if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "template") >= 2:
-                            continue
-                    else:
-                        if sum(1 for x in out if x.get("mod") == qmod and x.get("kind") == "instance") >= 2:
-                            continue
-                    seen.add(topic)
-                    out.append(self._entry_view(topic))
-                    if len(out) >= limit:
-                        break
+        self._template_fill(query, out, seen, limit)
         return out
 
     # ================= 沉淀 =================
@@ -744,6 +1197,7 @@ class ModKnowledgeBase:
             "instance": sum(1 for e in entries.values() if e.get("kind") != "template"),
             "file": str(self.file_path),
             "state": self.state.as_dict(),
+            "semantic": self.semantic_stats(),
         }
 
     def clear(self) -> dict:
@@ -799,7 +1253,9 @@ class KnowledgePresetManager:
     REG_NAME = "kb_presets.json"
 
     def __init__(self, data_dir: str, server_id: str, server_dir: str = "",
-                 search_engine: str = DEFAULT_SEARCH_ENGINE):
+                 search_engine: str = DEFAULT_SEARCH_ENGINE,
+                 semantic_enabled: bool = False,
+                 rerank_enabled: bool = False):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.server_id = server_id or "unknown"
@@ -811,6 +1267,12 @@ class KnowledgePresetManager:
         self.search_engine = (
             search_engine if search_engine in SEARCH_ENGINES else DEFAULT_SEARCH_ENGINE
         )
+        # v0.21.41：语义通道开关（默认关），随预设实例下发
+        self.semantic_enabled = bool(semantic_enabled)
+        self.embed_fn = None                     # async 嵌入调用，由插件注入
+        # v0.21.42：重排序精排开关（默认关），随预设实例下发
+        self.rerank_enabled = bool(rerank_enabled)
+        self.rerank_fn = None                    # async 重排序调用，由插件注入
         self.reg_path = self.data_dir / self.REG_NAME
         self.reg: dict = self._load_registry()
         self.kb: ModKnowledgeBase | None = None
@@ -822,6 +1284,22 @@ class KnowledgePresetManager:
         if self.kb is not None:
             self.kb.set_search_engine(self.search_engine)
         return self.search_engine
+
+    def set_semantic_enabled(self, on: bool) -> bool:
+        """开关语义通道并即时生效（当前内存 KB 直接换，无需重建实例）。"""
+        self.semantic_enabled = bool(on)
+        if self.kb is not None:
+            self.kb.embed_fn = self.embed_fn
+            self.kb.set_semantic_enabled(self.semantic_enabled)
+        return self.semantic_enabled
+
+    def set_rerank_enabled(self, on: bool) -> bool:
+        """开关重排序精排并即时生效（当前内存 KB 直接换，无需重建实例）。"""
+        self.rerank_enabled = bool(on)
+        if self.kb is not None:
+            self.kb.rerank_fn = self.rerank_fn
+            self.kb.set_rerank_enabled(self.rerank_enabled)
+        return self.rerank_enabled
 
     # ---------------- 注册表 ----------------
 
@@ -1010,7 +1488,11 @@ class KnowledgePresetManager:
             fingerprint=(p.get("fingerprint") or None),
             on_first_write=self.bind_active_if_needed,
             search_engine=self.search_engine,
+            semantic_enabled=self.semantic_enabled,
+            rerank_enabled=self.rerank_enabled,
         )
+        kb.embed_fn = self.embed_fn
+        kb.rerank_fn = self.rerank_fn
         if old_state is not None:
             kb.state = old_state
         self.kb = kb
