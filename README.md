@@ -20,7 +20,7 @@
 | 页面 | 内容 |
 |---|---|
 | [界面效果](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md) | 六个功能页 + 设置页各分组的实机截图（深浅两套主题） |
-| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、79 项配置逐项说明与默认值 |
+| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、83 项配置逐项说明与默认值 |
 | [使用指南](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
 | [常见问题](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/faq.md) | 安装与使用中容易踩到的坑 |
 
@@ -43,7 +43,7 @@
 | 服务器事件播报 | 玩家 进入/离开/聊天/死亡/成就/指令 六类事件推送到指定会话，可逐类开关 |
 | 聊天桥接 | 游戏内聊天 ↔ 群聊双向转发（可加符号、区分大小写、留空则转发全部） |
 | 多 Agent 工作流 | 复杂整合包任务走 `分类 → 模板判断 → 前瞻建库 → 实现 → 纠错` 流水线，工具 `mc_workflow` 一键路由 |
-| 知识库 | 沉淀「物品 ID / NBT 写法 / 满配方案」等经验；按服务端指纹分预设，换服不串库。内置 BM25 检索（中文二元切分，按字序匹配、套话自动降权），旧版检索保留为可选 |
+| 知识库 | 沉淀「物品 ID / NBT 写法 / 满配方案」等经验；按服务端指纹分预设，换服不串库。内置 BM25 检索（中文二元切分，按字序匹配、套话自动降权），旧版检索保留为可选；可选叠加两条增强通道 —— **语义向量**（换种说法也能查到，需 Embedding 模型）与 **重排序精排**（召回候选池再交给 Rerank 模型排一次，需 Rerank 模型），均默认关闭、缺模型时安静退化。装了多个模型时可在设置页**手动指定**用哪一个，留空则自动取第一个 |
 | 外部平台指令组 | `mcs` 指令组：绑定 / 解绑 / 查询 / 喊话 / 状态 / 踢人 / 封禁 / 解封 |
 | 权限策略 | 命令工具支持**白名单**（默认，非管理员完全禁用**口头命令工具**）/ **黑名单** 两种策略，危险命令始终仅管理员 |
 | 可视化设置 | 原生配置页 + 插件 WebUI（十个分组、深浅两套主题、顶部吸顶保存条） |
@@ -150,6 +150,9 @@ python tests\test_server_identity.py      # 服务端指纹（mods/ 与 plugins/
 python tests\test_fingerprint_notice.py   # 指纹不匹配弹窗轮次记账
 python tests\test_kb_entry_edit.py        # 知识条目编辑 / 改名语义
 python tests\test_kb_search_engine.py     # 检索引擎双轨制（BM25 / 旧版）
+python tests\test_kb_semantic_search.py   # 语义增强检索（RRF 融合 / 相似度门槛）
+python tests\test_kb_rerank.py            # 重排序精排（候选池 / 兜底 / 配置键贯通）
+python tests\test_kb_model_pick.py       # 指定嵌入 / 重排序模型（三条挑选路径 / 失效回落 / 展示名）
 python tests\test_settings_save_resync.py # 保存设置即重算指纹
 python tests\ui_theme_check.py            # UI 实跑（Playwright + Edge，会截图）
 python tests\make_docs_images.py          # 重拍 docs/ 文档配图（界面改动后跑）
