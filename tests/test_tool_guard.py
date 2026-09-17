@@ -140,7 +140,8 @@ class FakeSelf:
 
 # 把插件类里真实的闸门方法绑到替身上（不实例化 Star，但逻辑一模一样）
 for _name in ("_latch", "_latch_enabled", "_latch_key", "_latch_hit", "_deny",
-              "_admin_gate", "_safe_command", "_inject_permission_hint"):
+              "_admin_gate", "_safe_command", "_inject_permission_hint",
+              "_append_user_hint"):
     _fn = getattr(main.McControlPlugin, _name, None)
     if _fn is not None:
         setattr(FakeSelf, _name, _fn)
@@ -197,33 +198,62 @@ check("关闭闩锁 → 两次都是终局拦截（不短路）",
       o1.startswith(tg.MARK_DENY) and o2.startswith(tg.MARK_DENY))
 
 # ===================== E. 权限前置提醒 =====================
-print("\n=========== D. 权限前置提醒（注入系统提示词） ===========")
+print("\n=========== D. 权限前置提醒（挂到用户消息的额外内容块） ===========")
+
+SYSTEM_PROMPT = "你是一个 Minecraft 服务器助手。"
 
 
 class FakeReq:
+    """ProviderRequest 的最小替身。
+
+    v0.22.1 整改：提示**不再写进 system_prompt**（含请求者 ID 的动态内容会废掉
+    前缀缓存），改挂到 extra_user_content_parts —— 与 AstrBot 自身系统提醒同一注入点。
+    """
+
     def __init__(self):
-        self.system_prompt = "你是一个 Minecraft 服务器助手。"
+        self.system_prompt = SYSTEM_PROMPT
+        self.extra_user_content_parts: list = []
+
+    @property
+    def hint_text(self) -> str:
+        out = []
+        for part in self.extra_user_content_parts:
+            out.append(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", ""))
+        return "\n\n".join(out)
 
 
 h_s = FakeSelf()
 ev = FakeEvent("10001")
 req = FakeReq()
 asyncio.run(P._inject_permission_hint(h_s, ev, req))
-check("非管理员 → 注入前置提醒", "权限前置提醒" in req.system_prompt)
-check("提醒里点名不可用的工具", "mc_give_item" in req.system_prompt)
-check("提醒里给出替代方式", "mcs 喊话" in req.system_prompt)
+check("非管理员 → 注入前置提醒", "权限前置提醒" in req.hint_text)
+check("提醒里点名不可用的工具", "mc_give_item" in req.hint_text)
+check("提醒里给出替代方式", "mcs 喊话" in req.hint_text)
+check("提示挂在用户消息内容块上（不是系统提示词）",
+      len(req.extra_user_content_parts) == 1
+      and isinstance(req.extra_user_content_parts[0], dict)
+      and req.extra_user_content_parts[0].get("type") == "text")
+check("system_prompt 一字未动（动态改写会破坏前缀缓存）",
+      req.system_prompt == SYSTEM_PROMPT)
 req2 = FakeReq()
 asyncio.run(P._inject_permission_hint(h_s, ev, req2))
 check("同一事件只注入一次（多轮工具循环不重复膨胀）",
-      "权限前置提醒" not in req2.system_prompt)
+      "权限前置提醒" not in req2.hint_text and not req2.extra_user_content_parts)
 req3 = FakeReq()
 asyncio.run(P._inject_permission_hint(h_s, FakeEvent("9001"), req3))
-check("管理员不注入", "权限前置提醒" not in req3.system_prompt)
+check("管理员不注入", "权限前置提醒" not in req3.hint_text
+      and not req3.extra_user_content_parts)
 off2 = FakeSelf()
 off2.config["permission"]["permission_hint_injection"] = False
 req4 = FakeReq()
 asyncio.run(P._inject_permission_hint(off2, FakeEvent("10001"), req4))
-check("前置提醒关闭后不注入", "权限前置提醒" not in req4.system_prompt)
+check("前置提醒关闭后不注入", "权限前置提醒" not in req4.hint_text
+      and not req4.extra_user_content_parts)
+req5 = FakeReq()
+del req5.extra_user_content_parts  # 老版本 AstrBot 没这个字段
+asyncio.run(P._inject_permission_hint(h_s, FakeEvent("10002"), req5))
+check("老版本无 extra_user_content_parts → 宁可不提醒，也不改写 system_prompt",
+      req5.system_prompt == SYSTEM_PROMPT)
 
 # ===================== F. 装饰器覆盖检查 =====================
 print("\n=========== E. 命令类工具 tolerant 装饰器覆盖 ===========")

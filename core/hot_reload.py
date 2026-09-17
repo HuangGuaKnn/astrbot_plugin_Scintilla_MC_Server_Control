@@ -38,11 +38,12 @@ AstrBot 才行」：
 from __future__ import annotations
 
 import importlib
-import logging
 import os
 import shutil
 import sys
 from typing import Any
+
+from astrbot.api import logger  # 规范要求：日志器必须来自 astrbot.api（不用标准库 logging）
 
 __all__ = [
     "deep_clean",
@@ -56,8 +57,6 @@ __all__ = [
 _PATCH_FLAG = "_astrbot_mc_hot_reload_patch"
 _ORIG_ATTR = "_astrbot_mc_original_reload"
 _IMPL_ATTR = "_astrbot_mc_deep_clean_impl"
-
-_log = logging.getLogger("astrbot")
 
 _IS_WINDOWS = os.name == "nt"
 
@@ -230,7 +229,7 @@ def install_reload_patch() -> bool:
     try:
         from astrbot.core.star.star_manager import PluginManager
     except Exception as exc:
-        _log.warning("[热重载] 取不到 PluginManager，补丁未安装：%s", exc)
+        logger.warning("[热重载] 取不到 PluginManager，补丁未安装：%s", exc)
         return False
 
     # 每次插件加载都刷新实现，保证补丁调用的是最新版 deep_clean
@@ -238,7 +237,7 @@ def install_reload_patch() -> bool:
 
     current = getattr(PluginManager, "reload", None)
     if current is None:
-        _log.warning("[热重载] PluginManager.reload 不存在，补丁未安装。")
+        logger.warning("[热重载] PluginManager.reload 不存在，补丁未安装。")
         return False
     if getattr(current, _PATCH_FLAG, False):
         return False
@@ -251,20 +250,20 @@ def install_reload_patch() -> bool:
             if impl is not None:
                 summary = impl(self, specified_plugin_name)
                 if summary["modules"] or summary["pycache"]:
-                    _log.info(
+                    logger.info(
                         "[热重载] 预清理完成：%d 个模块缓存、%d 个 __pycache__（目标：%s）",
                         summary["modules"],
                         summary["pycache"],
                         specified_plugin_name or "全部插件",
                     )
         except Exception as exc:
-            _log.warning("[热重载] 深度清理失败，已回退原生流程：%s", exc)
+            logger.warning("[热重载] 深度清理失败，已回退原生流程：%s", exc)
         original = getattr(PluginManager, _ORIG_ATTR)
         return await original(self, specified_plugin_name)
 
     setattr(reload_with_deep_clean, _PATCH_FLAG, True)
     setattr(PluginManager, "reload", reload_with_deep_clean)
-    _log.info("[热重载] 已给 PluginManager.reload 挂上「重载即生效」补丁。")
+    logger.info("[热重载] 已给 PluginManager.reload 挂上「重载即生效」补丁。")
     return True
 
 
@@ -281,7 +280,7 @@ def uninstall_reload_patch() -> bool:
     if original is None:
         return False
     setattr(PluginManager, "reload", original)
-    _log.info("[热重载] 补丁已卸载，恢复原生 reload。")
+    logger.info("[热重载] 补丁已卸载，恢复原生 reload。")
     return True
 
 
