@@ -28,6 +28,7 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
+from .rcon import RconTimeoutError
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
@@ -137,6 +138,9 @@ class MCWorkflow:
                 out = await rcon.command(cmd)
                 results.append(f"{cmd} → {str(out).strip()[:120]}")
                 ok_count += 1
+            except RconTimeoutError as e:
+                # v0.22.2：结果未知 —— 不计入成功，也绝不自动重发（防重复副作用）
+                results.append(f"{cmd} → 结果未知（未收到响应）: {e}")
             except Exception as e:
                 results.append(f"{cmd} → 执行异常: {e}")
         summary = f"已执行 {ok_count}/{len(commands)} 条命令"
@@ -482,6 +486,12 @@ class MCWorkflow:
                 if ok and fb and player:
                     # 命令成功且给了反馈文案 → 游戏内署名提示
                     await self.plugin._send_feedback(rcon, fb)
+            except RconTimeoutError as e:
+                # v0.22.2：结果未知单列（ok=False 但标注 unknown，避免被当成"失败可重试"）
+                reports.append({
+                    "command": cmd, "ok": False, "unknown": True,
+                    "output": f"结果未知（未收到响应）: {e}",
+                })
             except Exception as e:
                 reports.append({"command": cmd, "ok": False, "output": str(e)[:300]})
         return reports
