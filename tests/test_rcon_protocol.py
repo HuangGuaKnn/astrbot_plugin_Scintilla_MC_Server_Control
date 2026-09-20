@@ -73,7 +73,9 @@ async def fake_server(r, w) -> None:
                 w.write(pkt(i, 0, "split"))
             elif s == "empty":  # 合法空响应
                 w.write(pkt(i, 0, ""))
-            elif s == "silent":  # 永不回复
+            elif s == "silent":  # 服务端完全无响应（连结束哨兵也不回，模拟卡死）
+                await asyncio.sleep(5)
+            elif s == "swallow":  # 只不回答这条命令本身，哨兵照回（= 该命令确无输出）
                 pass
             elif s == "stray":  # 发一个「别人的」请求 id，模拟残留包
                 w.write(pkt(i + 777, 0, "LEFTOVER"))

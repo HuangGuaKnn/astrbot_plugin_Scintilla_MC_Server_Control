@@ -264,14 +264,14 @@ class McControlWebApi:
         "agent_max_correct_rounds": (0, 10),
         "permission_latch_ttl": (10, 3600),
     }
-    FLOAT_RANGES = {"rcon_timeout": (0.1, 300.0)}
+    FLOAT_RANGES = {"rcon_timeout": (0.1, 300.0), "rcon_idle_probe": (0.05, 5.0)}
     LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets")
     # 会话 → 事件组列表（v0.17.0：每个会话单独配置播报内容）
     DICT_SETTING_KEYS = ("notify_target_events",)
     # 会话目标类列表：允许「私聊:123456789 / 群聊:987654321」简写，落盘前统一规范化
     SESSION_TARGET_KEYS = ("notify_targets", "chat_bridge_targets")
     STR_SETTING_KEYS = (
-        "rcon_host", "rcon_password", "server_dir", "chat_bridge_prefix",
+        "rcon_host", "rcon_end_mode", "rcon_probe_command", "rcon_password", "server_dir", "chat_bridge_prefix",
         "chat_bridge_format", "ban_default_reason", "feedback_name",
         "llm_provider_id", "agent_classifier_provider_id",
         "agent_judge_provider_id", "agent_engineer_provider_id",
@@ -450,7 +450,8 @@ class McControlWebApi:
                 effects.append("管理员列表已刷新")
             except Exception:
                 pass
-        if {"rcon_host", "rcon_port", "rcon_password", "rcon_timeout"} & changed:
+        if {"rcon_host", "rcon_port", "rcon_password", "rcon_timeout",
+                "rcon_end_mode", "rcon_probe_command", "rcon_idle_probe"} & changed:
             try:
                 self.plugin._rcon = None
                 effects.append("RCON 连接已重置（下次调用自动重建）")
@@ -804,6 +805,7 @@ class McControlWebApi:
                 "rcon_port": self._cfg("rcon_port", 25575),
                 "rcon_configured": bool(self._cfg("rcon_password", "")),
                 "rcon_timeout": self._cfg("rcon_timeout", 5.0),
+                "rcon_end_mode": self._cfg("rcon_end_mode", "sentinel"),
                 "server_dir": str(self._cfg("server_dir", "") or ""),
                 # v0.21.15：概览页据此把本地文件类模块标成「异地模式禁用」
                 "remote_rcon_mode": bool(self._cfg("remote_rcon_mode", False)),
