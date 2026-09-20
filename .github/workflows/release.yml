@@ -4,6 +4,10 @@ name: release
 #   git tag -a v0.21.39 -m "..." && git push origin v0.21.39
 # 附件用 git archive 生成（跟随 .gitattributes 的 export-ignore，不含 tests/），
 # 文件名与历史 Release 保持一致，旧下载链接继续有效。
+#
+# 预发布：把 CHANGELOG 里对应小节的标题写成 `## [vX.Y.Z] - YYYY-MM-DD（预发布）`，
+# 本流程会自动把这个 Release 标成 pre-release（不会占据「Latest」正式版位置）；
+# 不加「（预发布）」则是正式版。
 on:
   push:
     tags: ["v*"]
@@ -44,17 +48,29 @@ jobs:
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then rm -f notes.md; echo "CHANGELOG 里没有对应小节，改用自动生成"; fi
           wc -l notes.md 2>/dev/null || true
+      - name: 判定是否预发布（CHANGELOG 小节标题含「预发布」→ pre-release）
+        run: |
+          set -e
+          title="$(grep -m1 -F "## [${GITHUB_REF_NAME}]" CHANGELOG.md || true)"
+          echo "CHANGELOG 小节标题：${title:-（没找到，按正式版处理）}"
+          if printf '%s' "$title" | grep -q "预发布"; then
+            echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV"
+            echo "→ 本次按【预发布】发布"
+          else
+            echo "PRERELEASE=" >> "$GITHUB_ENV"
+            echo "→ 本次按【正式版】发布"
+          fi
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f notes.md ]; then
-            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            gh release create "$GITHUB_REF_NAME" "$ZIP" $PRERELEASE \
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --notes-file notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            gh release create "$GITHUB_REF_NAME" "$ZIP" $PRERELEASE \
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes

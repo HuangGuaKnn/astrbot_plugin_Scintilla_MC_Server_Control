@@ -123,25 +123,79 @@ def effective_level(command: str) -> tuple[str, int, bool]:
     line = normalize_command(command)
     if not line:
         return "", 0, False
-    name = base_name(line)
+    # 统一剥掉 execute 包装（支持多层嵌套），再取命令名
+    inner = unwrap_command(line)
+    name = base_name(inner)
     if name == "execute":
-        tokens = line.split()
-        for idx, tok in enumerate(tokens):
-            if tok == "run" and idx + 1 < len(tokens):
-                return effective_level(" ".join(tokens[idx + 1:]))
         return "execute", COMMAND_LEVELS["execute"], False
     if name in COMMAND_LEVELS:
         return name, COMMAND_LEVELS[name], False
     return name, DEFAULT_LEVEL, True
 
 
+def strip_namespace(token: str) -> str:
+    """去掉命名空间前缀：``minecraft:gamemode`` → ``gamemode``。"""
+    return token.split(":", 1)[1] if ":" in token else token
+
+
+def unwrap_command(line: str) -> str:
+    """剥掉 ``execute [条件…] run`` 包装（支持多层嵌套 / 命名空间），返回最内层真实命令。
+
+    没有 ``run`` 关键字（如只写条件不执行的 ``execute as @a``）时原样返回。
+    """
+    text = normalize_command(line)
+    seen = 0
+    while seen < 16:  # 防御畸形输入造成的死循环
+        seen += 1
+        tokens = text.split()
+        if not tokens or strip_namespace(tokens[0]).lower() != "execute":
+            return text
+        for idx, tok in enumerate(tokens):
+            if tok.lower() == "run" and idx + 1 < len(tokens):
+                text = " ".join(tokens[idx + 1:])
+                break
+        else:
+            return text
+    return text
+
+
+def canonical_text(line: str) -> str:
+    """把命令归一化成「可做策略匹配」的文本。
+
+    流程：剥 execute 包装 → 逐 token 去命名空间 → 压缩空白 → 转小写 → 去尾分号。
+    于是 ``minecraft:gamemode spectator @a``、``/execute run gamemode spectator @a``
+    与 ``gamemode spectator @a`` 会得到同一个匹配文本。
+    """
+    text = unwrap_command(line)
+    tokens = [strip_namespace(tok) for tok in text.split()]
+    return " ".join(tokens).lower().rstrip(";")
+
+
+def match_danger_rule(line: str) -> str | None:
+    """返回命中的危险规则原文（未命中返回 ``None``）。
+
+    规则按「命令名 + 参数」**整词**匹配，因此 ``gamemode spectator`` 这类带参数的
+    规则也能拦住 ``execute run gamemode spectator @a``。
+    """
+    text = canonical_text(line)
+    if not text:
+        return None
+    tokens = text.split(" ")
+    for prefix in DANGER_PREFIXES:
+        need = prefix.lower().split(" ")
+        if tokens[: len(need)] == need:
+            return prefix
+    return None
+
+
 def is_danger_command(command: str) -> bool:
-    """黑名单策略的黑名单判定：命令名或前缀命中内置危险命令。"""
-    line = normalize_command(command).lower()
-    name, _level, _unknown = effective_level(line)
-    if name in DANGER_PREFIXES:
-        return True
-    return any(line == p or line.startswith(p + " ") for p in DANGER_PREFIXES)
+    """黑名单策略的黑名单判定：规范化后的命令名 / 前缀命中内置危险命令。
+
+    先统一解包（execute 包装）与命名空间处理，再做匹配，因此
+    ``minecraft:gamemode spectator @a``、``execute run gamemode spectator @a``
+    与 ``gamemode spectator @a`` 判定完全一致。
+    """
+    return match_danger_rule(command) is not None
 
 
 def is_whitelist_policy(policy: str | None) -> bool:
