@@ -39,6 +39,24 @@
         "hint": "单条命令的最长等待时间，0.1 ~ 300",
         "type": "float",
         "default": 5
+      },
+      "rcon_end_mode": {
+        "description": "响应结束判定方式",
+        "hint": "sentinel（默认，推荐）= 结束哨兵：发完命令后紧跟一条无害探测命令，用它的响应当可靠结束边界，慢分包/半包停顿都不会误判；idle = 静默窗口降级模式，只靠「多久没有新包」猜结束，兼容性更好但长分包响应可能被截断。除非服务端完全不回应探测命令，否则不要改成 idle。",
+        "type": "string",
+        "default": "sentinel"
+      },
+      "rcon_probe_command": {
+        "description": "结束哨兵用的探测命令",
+        "hint": "留空（默认）即用空命令——服务端照样会回一个响应，且没有任何副作用。若你的服务端对空命令报错刷屏，可填一条绝对安全的只读命令（例如 list）。",
+        "type": "string",
+        "default": ""
+      },
+      "rcon_idle_probe": {
+        "description": "静默窗口（秒，仅 idle 降级模式生效）",
+        "hint": "收到响应包后再等这么久没有新包才认为读完。0.05 ~ 5。网络延迟大 / 服务端分包间隔长就调大；sentinel 模式下本项不生效。",
+        "type": "float",
+        "default": 0.5
       }
     }
   },

@@ -1297,6 +1297,12 @@ class McControlPlugin(Star):
                 port=int(self._cfg("rcon_port", 25575)),
                 password=str(self._cfg("rcon_password", "") or ""),
                 timeout=float(self._cfg("rcon_timeout", 5.0)),
+                # v0.22.3：默认用「结束哨兵」判定响应收完（可靠边界），
+                # 只有显式配置 idle 才退回静默窗口降级模式。
+                end_mode=str(self._cfg("rcon_end_mode", "sentinel") or "sentinel"),
+                probe_command=str(self._cfg("rcon_probe_command", "") or ""),
+                idle_probe=float(self._cfg("rcon_idle_probe", 0.5) or 0.5),
+                logger=self.logger,
             )
         return self._rcon
 
