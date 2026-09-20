@@ -263,6 +263,16 @@ class MCWorkflow:
                 continue
 
             exec_reports = await self._exec_commands(commands, player, online_players)
+            if any(r.get("unknown") for r in exec_reports):
+                # v0.22.3：结果未知 → 立即熔断。不再进下一轮实现、也不交给纠错 Agent，
+                # 因为 give / summon / effect 这类命令重发就是重复副作用。
+                return (
+                    "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
+                    "为避免重复副作用，插件不会自动重试、也不交给纠错 Agent 重发；"
+                    "请先用 状态 / 在线列表 等查询命令确认后再手动发起。\n"
+                    + self._fmt_results([r for r in exec_reports if r.get("unknown")]),
+                    False,
+                )
             all_ok = all(r["ok"] for r in exec_reports)
             failures = self._fmt_results(exec_reports)
             if all_ok and out.get("success"):
@@ -306,6 +316,15 @@ class MCWorkflow:
                     failures = f"实现器未给出命令（纠错后第{rnd}轮）"
                     continue
                 exec_reports = await self._exec_commands(commands, player, online_players)
+                if any(r.get("unknown") for r in exec_reports):
+                    # 纠错循环同样熔断：绝不让纠错 Agent 把「结果未知」当普通失败重发
+                    return (
+                        "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
+                        "为避免重复副作用，插件不会自动重试、也不交给纠错 Agent 重发；"
+                        "请先用 状态 / 在线列表 等查询命令确认后再手动发起。\n"
+                        + self._fmt_results([r for r in exec_reports if r.get("unknown")]),
+                        False,
+                    )
                 failures = self._fmt_results(exec_reports)
                 if all(r["ok"] for r in exec_reports) and out.get("success"):
                     return self._success_text(out, commands, exec_reports), True
@@ -460,21 +479,23 @@ class MCWorkflow:
         if online_players is None:
             online_players = await self._online_players()
         online_low = {n.lower(): n for n in online_players}
-        reports = []
-        for c in commands:
+        reports: list[dict] = []
+        for idx, c in enumerate(commands):
             cmd = str(c.get("command", "")).strip()
             if cmd.startswith("/"):
                 cmd = cmd[1:]  # 防呆：去掉多余的斜杠
             fb = str(c.get("feedback", "")).strip()
             if not cmd:
-                reports.append({"command": "(空)", "ok": False, "output": "命令为空"})
+                reports.append({
+                    "command": "(空)", "ok": False, "status": "failed", "output": "命令为空",
+                })
                 continue
             # 目标玩家存在性校验：give/item replace 等针对实体的命令
             target = self._command_target(cmd)
             if target and not target.startswith("@") and online_low:
                 if target.lower() not in online_low:
                     reports.append({
-                        "command": cmd, "ok": False,
+                        "command": cmd, "ok": False, "status": "failed",
                         "output": f"目标玩家「{target}」不在线或不存在（当前在线：{', '.join(online_players) or '无'}）。请使用真实游戏名。",
                     })
                     continue
@@ -482,18 +503,35 @@ class MCWorkflow:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()
                 ok = self._is_success_out(out_s)
-                reports.append({"command": cmd, "ok": ok, "output": out_s[:300]})
+                reports.append({
+                    "command": cmd, "ok": ok,
+                    "status": "success" if ok else "failed",
+                    "output": out_s[:300],
+                })
                 if ok and fb and player:
                     # 命令成功且给了反馈文案 → 游戏内署名提示
                     await self.plugin._send_feedback(rcon, fb)
             except RconTimeoutError as e:
-                # v0.22.2：结果未知单列（ok=False 但标注 unknown，避免被当成"失败可重试"）
+                # v0.22.2：结果未知单列（ok=False 但标注 unknown，别当成"失败可重试"）
+                # v0.22.3：三态化（status="unknown"）+ **立刻停止后续命令**。
+                # 命令可能已经在服务器上生效了，剩下的命令一条都不许再发，
+                # 更不许上层把它当普通失败去重试 —— give / summon / effect / item
+                # 这类非幂等命令重发就是重复副作用。
                 reports.append({
-                    "command": cmd, "ok": False, "unknown": True,
+                    "command": cmd, "ok": False, "unknown": True, "status": "unknown",
                     "output": f"结果未知（未收到响应）: {e}",
                 })
+                for rest in commands[idx + 1:]:
+                    rc = str(rest.get("command", "")).strip().lstrip("/")
+                    reports.append({
+                        "command": rc or "(空)", "ok": False, "status": "skipped",
+                        "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
+                    })
+                break
             except Exception as e:
-                reports.append({"command": cmd, "ok": False, "output": str(e)[:300]})
+                reports.append({
+                    "command": cmd, "ok": False, "status": "failed", "output": str(e)[:300],
+                })
         return reports
 
     @staticmethod
@@ -530,10 +568,12 @@ class MCWorkflow:
 
     @staticmethod
     def _fmt_results(reports: list[dict]) -> str:
-        return "\n".join(
-            f"[{'OK' if r['ok'] else 'FAIL'}] {r['command']} → {r['output']}"
-            for r in reports
-        )
+        _tag = {"success": "OK", "failed": "FAIL", "unknown": "未知", "skipped": "未发送"}
+        lines = []
+        for r in reports:
+            status = r.get("status") or ("success" if r.get("ok") else "failed")
+            lines.append(f"[{_tag.get(status, 'FAIL')}] {r['command']} → {r['output']}")
+        return "\n".join(lines)
 
     @staticmethod
     def _fmt_entries(entries: list[dict], title: str) -> str:

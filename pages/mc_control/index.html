@@ -819,6 +819,19 @@ try{
       <input type="password" id="cfg_rcon_password" placeholder="••••••••">
       <label class="f">RCON 超时（秒）</label>
       <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
+      <label class="f">响应结束判定方式</label>
+      <select id="cfg_rcon_end_mode">
+        <option value="sentinel">sentinel —— 结束哨兵（推荐：可靠结束边界）</option>
+        <option value="idle">idle —— 静默窗口（降级：兼容优先）</option>
+      </select>
+      <div class="hint">默认 <b>sentinel</b>：发包后紧跟一条无害探测命令，用它的响应当「上一条已经发完」的边界 ——
+        慢分包、半包停顿都不会被误判成「读完了」。只有服务端完全不回应探测命令时，才改成 idle。</div>
+      <div class="frow" style="margin-top:12px">
+        <div style="flex:2"><label class="f" style="margin-top:0">结束哨兵探测命令</label><input type="text" id="cfg_rcon_probe_command" placeholder="留空 = 空命令（无副作用）"></div>
+        <div style="flex:1;max-width:150px"><label class="f" style="margin-top:0">静默窗口（秒）</label><input type="number" id="cfg_rcon_idle_probe" placeholder="0.5" step="0.05"></div>
+      </div>
+      <div class="hint">探测命令留空即空命令：服务端照样回一个响应，且本身没有任何副作用。静默窗口只在 idle 模式生效；
+        连续多次拿不到哨兵时插件会自动降级为 idle 并写日志提醒，不会静默假装读完了。</div>
     </div>
     <div class="card">
       <h3><span class="dot" style="background:var(--amber)"></span>权限与安全</h3>
@@ -2024,6 +2037,9 @@ const CFG_FIELDS = [
   ["cfg_rcon_port","rcon_port","n"],
   ["cfg_rcon_password","rcon_password","s"],
   ["cfg_rcon_timeout","rcon_timeout","n"],
+  ["cfg_rcon_end_mode","rcon_end_mode","s"],
+  ["cfg_rcon_probe_command","rcon_probe_command","s"],
+  ["cfg_rcon_idle_probe","rcon_idle_probe","n"],
   ["cfg_admin_ids","admin_ids","l"],
   ["cfg_danger_policy","danger_command_policy","s"],
   ["cfg_perm_hint","permission_hint_injection","b",true],
