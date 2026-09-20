@@ -47,7 +47,7 @@ from .core.log_watcher import (
     EVENT_WHISPER,
     LogWatcher,
 )
-from .core.rcon import AsyncRcon, RconError
+from .core.rcon import AsyncRcon, RconError, RconTimeoutError
 from .core.server_dir_check import format_check, inspect_server_dir
 from .core.java_commands import check_command as check_command_policy
 from .core.tool_guard import (
@@ -1624,7 +1624,15 @@ class McControlPlugin(Star):
                 tip = feedback.strip() if feedback and feedback.strip() else f"命令执行成功：{command}"
                 await self._send_feedback(rcon, tip)
                 return f"命令执行成功：{command}\n服务器返回：{out}"
-            return f"命令已执行：{command}"
+            # v0.22.2：空返回 = 服务器给出了「合法的空响应」（已执行但无输出），
+            # 与「压根没收到响应」是两件事；后者由 RconTimeoutError 兜住，绝不宣称成功。
+            return f"命令已执行（服务器未返回输出）：{command}"
+        except RconTimeoutError as e:
+            return (
+                f"命令结果未知：{command}\n"
+                f"{e}\n服务器可能已执行、也可能没有执行；为避免重复副作用，"
+                "本次不会自动重发，请先用查询类命令（状态 / 在线列表）确认结果。"
+            )
         except RconError as e:
             return f"命令执行失败：{e}"
 
@@ -1748,7 +1756,13 @@ class McControlPlugin(Star):
                 tip = feedback.strip() if feedback and feedback.strip() else f"已给 {player} 发放 {item}×{count}"
                 await self._send_feedback(rcon, tip)
                 return f"已给 {player} 发放 {item}×{count}\n服务器返回：{out}"
-            return f"已给 {player} 发放 {item}×{count}"
+            return f"已给 {player} 发放 {item}×{count}（服务器未返回输出）"
+        except RconTimeoutError as e:
+            return (
+                f"发放结果未知：give {player} {item} {count}\n"
+                f"{e}\n物品可能已经发出，也可能没有发出；为避免重复发放，"
+                "本次不会自动重发，请先用查询命令确认背包后再决定。"
+            )
         except RconError as e:
             return f"发放失败：{e}"
 
@@ -2658,6 +2672,8 @@ class McControlPlugin(Star):
                 await self._send_feedback(rcon, f"已将 {player} 踢出服务器")
                 return f"已踢出 {player}\n服务器返回：{out}"
             return f"已踢出 {player}"
+        except RconTimeoutError as e:
+            return f"踢出结果未知：{player}｜{e}（请用 状态/在线列表 确认后决定是否重发）"
         except RconError as e:
             return f"操作失败：{e}"
 
@@ -2685,6 +2701,8 @@ class McControlPlugin(Star):
                 await self._send_feedback(rcon, f"已将 {player} 封禁")
                 return f"已封禁 {player}\n服务器返回：{out}"
             return f"已封禁 {player}"
+        except RconTimeoutError as e:
+            return f"封禁结果未知：{player}｜{e}（请用 封禁列表 确认后再决定是否重发）"
         except RconError as e:
             return f"操作失败：{e}"
 
