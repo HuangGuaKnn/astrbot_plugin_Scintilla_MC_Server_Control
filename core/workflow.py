@@ -28,22 +28,21 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
-from .java_commands import effective_level
+from .command_result import (
+    CommandResult,
+    classify_command_output,
+    format_results,
+    is_non_idempotent_command,
+    looks_like_complex_task,
+)
 from .rcon import RconTimeoutError
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
 KB_RESULT_LIMIT = 6           # 知识库检索条数
 
-#: 非幂等命令：重复执行会产生**额外**副作用（给两份物品、召唤两只实体……）。
-#: 因此它们「已执行但服务器没给输出」时，既不能当成功、也不能当失败交给 Agent 重试。
-NON_IDEMPOTENT_COMMANDS = frozenset({
-    # 核验点名的清单
-    "give", "item", "summon", "effect", "xp", "experience", "fill",
-    "setblock", "clone", "function", "random", "spreadplayers",
-    # 同类：重复执行会叠加 / 新增副作用
-    "enchant", "damage", "loot", "place", "advancement", "recipe",
-})
+# v0.22.6：非幂等命令清单已迁到 core/command_result.py（唯一实现），此处仅转发引用。
+# 不要再在本文件里维护第二份 —— 两份清单迟早会分叉，而分叉的代价是重复副作用。
 
 
 class MCWorkflow:
@@ -88,6 +87,11 @@ class MCWorkflow:
             return "[MC工作流] 请求内容为空，请描述要执行的任务。"
 
         umo = event.unified_msg_origin
+        # ---- v0.22.6（批次 2）：注入服务端版本上下文 ----
+        # 必须**在分类器之前**注入：分类器是第一个 LLM 调用，且 simple 路径的
+        # 命令就是它生成的 —— 事故里 1.21 组件语法正是分类器写出来的。
+        self._refresh_version_context()
+
         # ---- Agent#1 分类（同步，快速）----
         cls = await self.agent.classify(request, umo=umo)
         if not cls:
@@ -103,12 +107,24 @@ class MCWorkflow:
             return f"[MC工作流·终止] {decided['reason']}"
         player = decided["player"]
 
+        # ---- v0.22.6 确定性路由守门 ----
+        # 不能只依赖分类器 prompt：agent_prompts.py 里「原版物品 = simple」与
+        # 「复杂 NBT 结构（附魔…）= complex」两条规则在「附魔原版剑」上**重叠**，
+        # 实测 LLM 选了 simple —— 而 simple 恰恰是防护最弱的一条路径。
+        # 命中复杂特征时**强制转 complex**；绝不「先跑一次 simple 再转」。
+        if ctype == "simple" and looks_like_complex_task(request, cls.get("commands")):
+            self._log(request=request, player=player, status="running",
+                      detail="分类器判定 simple，但命中复杂 NBT 特征，已强制转 complex",
+                      kind="complex")
+            ctype = "complex"
+
         if ctype == "simple":
             # 简单路径：同步执行，秒回
-            result = await self._run_simple(cls, request, player, event)
-            self._log(request=request, player=player, status="done",
+            result, wf_status = await self._run_simple(cls, request, player, event)
+            self._log(request=request, player=player, status=wf_status,
                       detail=f"simple：{result}", kind="simple")
-            return f"[MC工作流·完成] {result}"
+            tag = {"done": "完成", "unknown": "结果未知"}.get(wf_status, "失败")
+            return f"[MC工作流·{tag}] {result}"
 
         # 复杂路径：后台流水线 + 完成通知
         self._log(request=request, player=player, status="running",
@@ -120,21 +136,55 @@ class MCWorkflow:
         task.add_done_callback(self._tasks.discard)
         return f"[MC工作流·已开始] 复杂任务已进入后台流水线：{request.strip()[:60]}，完成后将自动通知。"
 
+    # =============== 版本上下文（v0.22.6 批次 2） ===============
+
+    def _refresh_version_context(self) -> None:
+        """把当前服务端版本能力注入 Agent（失败不得影响主流程）。
+
+        版本来源优先级：手动声明 > 文件探测 > 未知（见 core/version_caps.py）。
+        探测失败**不是**异常路径：会注入「版本未知 → 禁止构造带数据命令」的
+        显式降级指令，而不是默默让 LLM 猜。
+        """
+        try:
+            text = self.plugin._version_context_text()
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("版本上下文注入失败（按未注入处理）: %s", e)
+            text = ""
+        try:
+            self.agent.set_version_context(text)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("版本上下文写入 Agent 失败: %s", e)
+
     # =============== 简单路径 ===============
 
     async def _run_simple(
         self, cls: dict, request: str, player: str, event: AstrMessageEvent
-    ) -> str:
-        """simple：执行分类器给出的建议命令。"""
+    ) -> tuple[str, str]:
+        """simple：执行分类器给出的建议命令。返回 ``(回执正文, 工作流状态)``。
+
+        v0.22.6：**不得**再以「``rcon.command()`` 没抛异常」当作成功。
+        服务器回一句报错文本，在 RCON 层面同样算「收到了响应」—— 旧实现因此把
+
+            Expected whitespace to end one argument, but found trailing data
+
+        计成 1/1 成功；而成功分支 ``if ok_count == len(commands): return summary``
+        又把明细整段丢弃，服务器原文就此消失，回执写「已执行 1/1 条命令」，
+        游戏里什么都没有。
+
+        现在每条命令都过 :func:`classify_command_output`：
+        明细**无论成败都回传**，并给出整体状态供上层写工作流日志（不再固定 ``done``）。
+        """
         commands = cls.get("commands") or []
         if not commands:
-            return f"任务「{request.strip()[:40]}」无需执行命令（已由分类器判定为简单查询类）。"
+            return (
+                f"任务「{request.strip()[:40]}」无需执行命令（已由分类器判定为简单查询类）。",
+                "done",
+            )
         # v0.9.0：把命令中的玩家目标替换为决策后的玩家名（绑定兜底/@选择器除外）
         commands = self._apply_player_to_commands(commands, player)
 
         rcon = await self.plugin._get_rcon()
-        results = []
-        ok_count = 0
+        reports: list[CommandResult] = []
         for cmd in commands:
             cmd = str(cmd).strip()
             if cmd.startswith("/"):
@@ -143,21 +193,72 @@ class MCWorkflow:
                 continue
             denied = await self.plugin._safe_command(event, cmd)
             if denied:
-                results.append(f"命令「{cmd}」被拒绝：{denied}")
+                reports.append(CommandResult(
+                    command=cmd, status="failed",
+                    reason=f"被权限闸门拒绝：{denied}",
+                ))
                 continue
             try:
                 out = await rcon.command(cmd)
-                results.append(f"{cmd} → {str(out).strip()[:120]}")
-                ok_count += 1
+                reports.append(classify_command_output(
+                    cmd,
+                    str(out),
+                    # 两个维度分别取事实，缺一不可（见 core/command_result.py docstring）
+                    boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
+                    response_received=bool(
+                        getattr(rcon, "last_response_received", False)
+                    ),
+                ))
             except RconTimeoutError as e:
                 # v0.22.2：结果未知 —— 不计入成功，也绝不自动重发（防重复副作用）
-                results.append(f"{cmd} → 结果未知（未收到响应）: {e}")
+                reports.append(CommandResult(
+                    command=cmd, status="unknown",
+                    reason=f"未收到响应（结果未知，不会自动重发）：{e}",
+                ))
             except Exception as e:
-                results.append(f"{cmd} → 执行异常: {e}")
-        summary = f"已执行 {ok_count}/{len(commands)} 条命令"
-        if ok_count == len(commands):
-            return summary
-        return f"{summary}；明细：{'；'.join(results[:5])}"
+                reports.append(CommandResult(
+                    command=cmd, status="unknown",
+                    reason=f"执行异常（结果未知）：{e}",
+                ))
+
+        ok = sum(1 for r in reports if r.ok)
+        dispatched = sum(1 for r in reports if r.status == "dispatched_unconfirmed")
+        syntax = sum(1 for r in reports if r.status == "syntax_error")
+        unknown = sum(1 for r in reports if r.status == "unknown")
+        failed = sum(1 for r in reports if r.status == "failed")
+
+        # 工作流日志状态：不再无条件写 done
+        if reports and all(r.ok for r in reports):
+            wf_status = "done"
+        elif unknown:
+            wf_status = "unknown"
+        else:
+            wf_status = "failed"
+
+        head = f"已成功 {ok}/{len(reports)} 条命令"
+        for n, label in (
+            (dispatched, "已发送但边界未确认"),
+            (syntax, "语法错误（未执行）"),
+            (failed, "失败"),
+            (unknown, "结果未知"),
+        ):
+            if n:
+                head += f"；{n} 条{label}"
+
+        # 明细**永远**回传 —— 旧实现在「全部成功」时把它整段丢弃，错误文本就此消失
+        detail = format_results(reports)
+        nl = chr(10)   # 不写反斜杠 n 转义：避免被编辑工具还原成真实换行
+        text = f"{head}{nl}{nl}{detail}" if detail else head
+
+        if syntax and ok == 0 and not (failed or unknown or dispatched):
+            # 全是语法错误：按修订单 §六「第一批不自动重试」——
+            # 如实上报服务器原文，**绝不**宣称成功，也不原样重发。
+            text += (
+                nl + nl
+                + "检测到服务器命令语法错误，本次**未自动重发**。"
+                "已保留服务器返回原文，建议转入复杂工作流修正。"
+            )
+        return text, wf_status
 
     # =============== 复杂路径（后台） ===============
 
@@ -513,14 +614,27 @@ class MCWorkflow:
             try:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()
-                if not out_s and self._is_non_idempotent(cmd):
-                    # v0.22.4：哨兵确认过的「合法空响应」只说明服务器答了这一条，
-                    # 并不能说明这条副作用已经落定。对 give / summon / effect 这类
-                    # 非幂等命令，若当成普通失败交给 Agent 重试，就是重复副作用 ——
-                    # 因此单列 unknown、并同样立刻停止后续命令。
+                # v0.22.6：判定收口到 core/command_result.py（全仓唯一实现）。
+                # 三个维度分别取事实：结果 / 有没有收到响应 / 边界是否可靠。
+                # 旧实现此处用 `if not out_s and self._is_non_idempotent(cmd)`
+                # 只兜住「空响应」一种情况，非空但报错的输出仍被判成成功。
+                res = classify_command_output(
+                    cmd, out_s,
+                    boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
+                    response_received=bool(getattr(rcon, "last_response_received", False)),
+                )
+                # v0.22.6：熔断（并把本条标 unknown）的判据是**「重发是否有危险」**，
+                # 而不是「status 是否等于 unknown」。
+                # 静默 / 幂等命令拿到空响应时同样不知道到没到，但**重发无害** ——
+                # 按普通失败处理即可，绝不扩大熔断范围（v0.22.3 既有口径：
+                # 「普通命令拿到空响应仍按失败口径，不额外扩大熔断范围」）。
+                # 反例：批次第一条是 tellraw 广播时若误熔断，后续发物品会被无声吞掉。
+                if res.status == "unknown" and is_non_idempotent_command(cmd):
+                    # 非幂等命令（give / summon / effect …）重发就是重复副作用 ——
+                    # 单列 unknown 并**立刻停止后续命令**。
                     reports.append({
                         "command": cmd, "ok": False, "unknown": True, "status": "unknown",
-                        "output": "已收到合法空响应（服务器未返回输出），但非幂等命令的效果无法确认",
+                        "output": res.reason,
                     })
                     for rest in commands[idx + 1:]:
                         rc = str(rest.get("command", "")).strip().lstrip("/")
@@ -529,14 +643,20 @@ class MCWorkflow:
                             "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
                         })
                     break
-                ok = self._is_success_out(out_s)
+                ok = res.status == "success"
+                status = res.status
+                if status == "unknown":
+                    # 非幂等命令已在上面熔断返回；能走到这里说明本条重发无副作用，
+                    # 按普通失败口径上报（原因文本仍如实写明「无法确认送达」）。
+                    status = "failed"
                 reports.append({
-                    "command": cmd, "ok": ok,
-                    "status": "success" if ok else "failed",
-                    "output": out_s[:300],
+                    "command": cmd, "ok": ok, "unknown": False,
+                    "status": status,
+                    "output": (out_s or res.reason)[:300],
                 })
                 if ok and fb and player:
-                    # 命令成功且给了反馈文案 → 游戏内署名提示
+                    # 命令**确认成功**且给了反馈文案 → 游戏内署名提示。
+                    # 未确认成功一律不发：报喜不报忧的提示本身就是假回执。
                     await self.plugin._send_feedback(rcon, fb)
             except RconTimeoutError as e:
                 # v0.22.2：结果未知单列（ok=False 但标注 unknown，别当成"失败可重试"）
@@ -580,36 +700,15 @@ class MCWorkflow:
         return ""
 
     @staticmethod
-    def _is_non_idempotent(cmd: str) -> bool:
-        """判断命令是否「重复执行会产生额外副作用」。
-
-        · 已知非幂等命令（give / summon / effect …）→ True；
-        · 解析不出结构的复杂 execute → True（判不准就按最保守处理）；
-        · 模组 / 未知命令 → True（服务器语义不明，宁可要求人工确认）。
-        """
-        try:
-            name, _level, unknown = effective_level(cmd)
-        except Exception:  # noqa: BLE001
-            return True
-        return unknown or name in NON_IDEMPOTENT_COMMANDS
-
-    @staticmethod
-    def _is_success_out(out_s: str) -> bool:
-        """判断 RCON 返回是否代表命令成功（识别常见失败文本，防误报成功）。"""
-        if not out_s:
-            return False
-        _fail = (
-            "unknown", "unrecogn", "error", "failed", "no entity", "not found",
-            "cannot", "unable", "invalid", "exception", "usage:", "expected",
-            "不存在", "找不到", "无效", "失败", "错误", "未知", "无法", "没有找到",
-            "未找到", "no such", "bad ", "denied", "unable to parse",
-        )
-        low = out_s.lower()
-        return not any(h in low for h in _fail)
-
-    @staticmethod
     def _fmt_results(reports: list[dict]) -> str:
-        _tag = {"success": "OK", "failed": "FAIL", "unknown": "未知", "skipped": "未发送"}
+        _tag = {
+            "success": "OK",
+            "dispatched_unconfirmed": "已发送·未确认",
+            "failed": "FAIL",
+            "syntax_error": "语法错误",
+            "unknown": "未知",
+            "skipped": "未发送",
+        }
         lines = []
         for r in reports:
             status = r.get("status") or ("success" if r.get("ok") else "failed")
@@ -634,5 +733,15 @@ class MCWorkflow:
         out: dict, commands: list[dict], exec_reports: list[dict]
     ) -> str:
         n_ok = sum(1 for r in exec_reports if r["ok"])
+        n_unconf = sum(
+            1 for r in exec_reports if r.get("status") == "dispatched_unconfirmed"
+        )
         summary = str(out.get("reasoning", "")).strip()[:80]
-        return f"任务执行成功（{n_ok}/{len(commands)} 条命令生效）。{summary}"
+        head = f"任务执行成功（{n_ok}/{len(commands)} 条命令生效）"
+        if n_unconf:
+            # 消息发出去了但边界不可靠 —— 不许含糊带过，必须让主人看得见
+            head += (
+                f"；另有 {n_unconf} 条已发送但响应边界未确认"
+                "（不保证响应完整，如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+            )
+        return f"{head}。{summary}"

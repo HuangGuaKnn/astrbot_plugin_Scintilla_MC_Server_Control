@@ -16,6 +16,23 @@
         "type": "string",
         "default": ""
       },
+      "server_version_override": {
+        "description": "手动声明服务端版本（留空 = 自动探测）",
+        "hint": "例：1.20.1。**异地 RCON 模式下探测必然失败**，此时必须在此手填，否则所有附魔 / NBT / 物品组件请求会被拒绝（插件会明确告知原因）。优先级：手动声明 > 文件探测 > 未知。这里填的是你**明确知道的事实**，不是猜测。",
+        "type": "string",
+        "default": ""
+      },
+      "item_syntax_override": {
+        "description": "物品语法世代（auto = 按版本自动判定）",
+        "hint": "auto：按探测/声明的版本自动选（1.20.5 及以上用物品组件 []，以下用 NBT {}）。legacy_nbt：强制 NBT 写法。components：强制物品组件写法。**仅当自动判定与你的服务端不符时**才手动指定 —— 选错会生成解析失败的命令。",
+        "type": "string",
+        "default": "auto",
+        "options": [
+          "auto",
+          "legacy_nbt",
+          "components"
+        ]
+      },
       "rcon_host": {
         "description": "RCON 主机地址",
         "hint": "服务器与本机同机时填 127.0.0.1",
