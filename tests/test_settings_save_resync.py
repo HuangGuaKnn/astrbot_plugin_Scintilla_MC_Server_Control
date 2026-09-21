@@ -75,6 +75,7 @@ def make_plugin(server_dir: str, data_dir: Path):
     plug._dictionary = None
     plug._watcher = None
     plug._rcon = None
+    plug._rcon_lock = asyncio.Lock()   # v0.22.5：reset 与 _get_rcon 共用这把锁（漏了会 AttributeError）
     plug._admins = set()
     plug.logger = logging.getLogger("test")
     return plug
@@ -119,6 +120,10 @@ def main() -> int:
         wa.request = FakeRequest({"settings": {"rcon_host": "127.0.0.1"}})
         r = body(asyncio.run(api.save_settings()))
         print("[2] 只改 rcon_host:", r.get("notice"))
+        if "连接重置失败" in str(r.get("notice")):
+            failed.append(f"RCON 重建静默出错：{r.get('notice')}")
+        if "RCON 连接已重置" not in str(r.get("notice")):
+            failed.append(f"保存 rcon_host 后未走带锁重建：{r.get('notice')}")
         if plug._dictionary is not dict_before:
             failed.append("无关设置变更也不必要地重建了词典")
 

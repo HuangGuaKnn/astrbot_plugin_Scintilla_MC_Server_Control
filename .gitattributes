@@ -8,3 +8,6 @@
 
 # 发布包（git archive / Release 附件）里不带测试目录
 /tests/ export-ignore
+
+# 内部核验/交接文档：留在仓库备查，但不进发布包
+/docs/VERIFY_*.md export-ignore

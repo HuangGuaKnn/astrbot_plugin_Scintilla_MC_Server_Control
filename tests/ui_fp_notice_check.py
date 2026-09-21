@@ -107,10 +107,18 @@ def kb_presets() -> dict:
     }
 
 
+# v0.22.5（复审 P2）：运行态 mock —— 用例可任意切换「配置的方式 / 实际方式 / 最近一次边界」
+RT = {"end_mode": "sentinel", "configured": "sentinel", "degraded": False,
+      "probe_misses": 0, "connected": True, "boundary_confirmed": None,
+      "idle_unconfirmed": 0, "idle_probe": 0.5}
+
+
 def overview() -> dict:
     n = notice()
     return {
         "ok": True, "version": "v0.21.8",
+        # 运行态挂在 config 下（页面读 r.config.rcon_runtime）
+        "config": {"rcon_runtime": dict(RT)},
         "rcon": {"ok": True, "host": "127.0.0.1", "port": 25575},
         "dictionary": {"enabled": True, "mods": 185, "items": 11894},
         "knowledge": {
@@ -137,6 +145,12 @@ def handle_post(path: str, body: dict) -> dict:
             "applied": {"server_dir": st.get("server_dir"), "notify_target_events": []},
             "ignored": [],
         }
+    if path == "rcon/reset":
+        # v0.22.5：重建后回到配置的方式（sentinel），边界状态回到「暂无结果」
+        RT.update({"end_mode": RT["configured"], "degraded": False,
+                   "probe_misses": 0, "boundary_confirmed": None})
+        return {"ok": True, "message": "RCON 连接已重建（按当前配置：%s）" % RT["configured"],
+                "runtime": dict(RT)}
     if path != "kb/presets/notice":
         return {"ok": False, "error": "mock: 未实现 " + path}
     action = (body or {}).get("action", "ack")
@@ -310,6 +324,78 @@ def main() -> int:
               not page.eval_on_selector("#fp_weak", "el => getComputedStyle(el).display !== 'none'"))
         check("内容正常时「内容来源」显示 mods/ 摘要",
               "mods/" in page.inner_text("#fp_m_content"), page.inner_text("#fp_m_content"))
+
+        print("[8] v0.22.5 复审 P2：运行态三状态互不替代（绝不能拿「没自动降级」当「响应可靠」）")
+        if modal_visible(page):
+            page.click("#fp_ok")
+            page.wait_for_timeout(300)
+        page.click('text=设置')
+        page.wait_for_timeout(600)
+        line = lambda: page.inner_text("#rcon_runtime_line")
+
+        # ① 用户**亲手**把 rcon_end_mode 配成 idle：degraded=false，但完整性照样不保证
+        RT.update({"end_mode": "idle", "configured": "idle", "degraded": False,
+                   "boundary_confirmed": False, "idle_unconfirmed": 3, "probe_misses": 0})
+        page.reload()
+        page.click('text=设置')
+        page.wait_for_timeout(900)
+        t = line()
+        check("显式配置 idle：不得显示「✓ 边界可靠」（复审 P2 核心）",
+              "边界可靠" not in t, t[:200])
+        check("夹具生效：运行态确实渲染到了设置页（mock 挂在 config.rcon_runtime）",
+              t.strip() != "", repr(t[:120]))
+        check("显式配置 idle：如实写出「响应完整性未保证」", "完整性未保证" in t, t[:200])
+        check("显式配置 idle：标出这是静默窗口模式", "静默窗口" in t, t[:200])
+        check("显式配置 idle：同时给出「最近一次响应可能不完整」",
+              "最近一次" in t and "不完整" in t, t[:200])
+        check("显式配置 idle：累计未确认次数可见", "3" in t and "未确认" in t, t[:200])
+
+        # ② 自动降级（配置 sentinel、跑成 idle）→ 额外一层警示 + 提供重建出口
+        RT.update({"end_mode": "idle", "configured": "sentinel", "degraded": True,
+                   "probe_misses": 3, "boundary_confirmed": False, "idle_unconfirmed": 1})
+        page.reload()
+        page.click('text=设置')
+        page.wait_for_timeout(900)
+        t = line()
+        check("自动降级：显示「已自动降级」", "已自动降级" in t, t[:200])
+        check("自动降级：当前运行与配置分开显示（idle vs sentinel）",
+              "idle" in t and "sentinel" in t, t[:200])
+        check("自动降级：给出「重建 RCON 连接」这条恢复路径", "重建" in t, t[:200])
+
+        # ③ 健康态：sentinel 且最近一次确认过 → 只显示哨兵可靠，且不得出现「响应可能不完整」
+        RT.update({"end_mode": "sentinel", "configured": "sentinel", "degraded": False,
+                   "probe_misses": 0, "boundary_confirmed": True, "idle_unconfirmed": 0})
+        page.reload()
+        page.click('text=设置')
+        page.wait_for_timeout(900)
+        t = line()
+        check("健康态：显示结束哨兵可靠", "结束哨兵" in t and "边界未确认" not in t, t[:200])
+        check("健康态：不出现「响应可能不完整」这种误报", "可能不完整" not in t, t[:200])
+
+        # ④ 还没跑过任何命令（boundary_confirmed=null）→ 说「暂无结果」，不冒充可靠
+        RT.update({"end_mode": "sentinel", "configured": "sentinel", "degraded": False,
+                   "probe_misses": 0, "boundary_confirmed": None, "idle_unconfirmed": 0})
+        page.reload()
+        page.click('text=设置')
+        page.wait_for_timeout(900)
+        t = line()
+        check("暂无结果：明说「尚未执行过命令」，不默认成可靠边界",
+              "尚未执行过命令" in t and "可靠" not in t.replace("结束哨兵", ""), t[:200])
+
+        # ⑤ 重建按钮：把运行态拉回配置的方式（自动降级场景的恢复动作）
+        RT.update({"end_mode": "idle", "configured": "sentinel", "degraded": True,
+                   "probe_misses": 3, "boundary_confirmed": False, "idle_unconfirmed": 1})
+        page.reload()
+        page.click('text=设置')
+        page.wait_for_timeout(900)
+        page.click("#btn_rcon_reset")
+        page.wait_for_timeout(800)
+        check("点「重建连接」后前端切回 sentinel 且不再有降级警示",
+              "已自动降级" not in line() and "sentinel" in line(), line()[:200])
+        check("重建后边界状态回到「尚未执行过命令」（不沿用重建前的 False）",
+              "尚未执行过命令" in line(), line()[:200])
+        check("mock 收到了 rcon/reset", any("rcon/reset" in c for c in state["calls"]),
+              str(state["calls"])[-200:])
 
         browser.close()
 

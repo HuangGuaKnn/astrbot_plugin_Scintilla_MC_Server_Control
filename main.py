@@ -267,6 +267,11 @@ class McControlPlugin(Star):
         )
         self._migrate_config_layout()
         self._rcon: AsyncRcon | None = None
+        #: v0.22.5：RCON 实例的建连/重建互斥锁。reset 与 _get_rcon 共用一把锁，
+        #: 避免「刚把旧实例摘掉、新连接还没建好」的空窗，也避免并发重建重复建连。
+        #: （锁对象在无事件循环时创建是安全的：Python 3.10+ 起 asyncio.Lock 不再绑定
+        #:   创建时的循环，会在首次 await 时才取当前循环。）
+        self._rcon_lock = asyncio.Lock()
         self._watcher: LogWatcher | None = None
         self._dictionary: ItemDictionary | None = None
         self._knowledge: ModKnowledgeBase | None = None
@@ -421,6 +426,7 @@ class McControlPlugin(Star):
             self._watcher = None
         if self._rcon:
             try:
+                self._rcon.retire()
                 await self._rcon.close()
             except Exception:
                 pass
@@ -1290,21 +1296,56 @@ class McControlPlugin(Star):
             return f"服务器目录结构校验未通过：{(chk.get('errors') or [''])[0]}"
         return ""
 
+    def _build_rcon(self) -> AsyncRcon:
+        """按当前配置构造一个 RCON 实例（同步、不持锁、不建连）。
+
+        v0.22.5：抽出这个纯构造器，供 ``_get_rcon()`` 与 ``reset_rcon()`` 共用。
+        此前 ``reset_rcon()`` 在持 ``_rcon_lock`` 的情况下又 ``await self._get_rcon()``，
+        而后者要抢同一把**非重入**锁 —— 直接死锁：设置页一保存，整个插件就再也不回话。
+        """
+        return AsyncRcon(
+            host=str(self._cfg("rcon_host", "127.0.0.1")),
+            port=int(self._cfg("rcon_port", 25575)),
+            password=str(self._cfg("rcon_password", "") or ""),
+            timeout=float(self._cfg("rcon_timeout", 5.0)),
+            # v0.22.3：默认用「结束哨兵」判定响应收完（可靠边界），
+            # 只有显式配置 idle 才退回静默窗口降级模式。
+            end_mode=str(self._cfg("rcon_end_mode", "sentinel") or "sentinel"),
+            probe_command=str(self._cfg("rcon_probe_command", "") or ""),
+            idle_probe=float(self._cfg("rcon_idle_probe", 0.5) or 0.5),
+            logger=self.logger,
+        )
+
     async def _get_rcon(self) -> AsyncRcon:
-        if self._rcon is None:
-            self._rcon = AsyncRcon(
-                host=str(self._cfg("rcon_host", "127.0.0.1")),
-                port=int(self._cfg("rcon_port", 25575)),
-                password=str(self._cfg("rcon_password", "") or ""),
-                timeout=float(self._cfg("rcon_timeout", 5.0)),
-                # v0.22.3：默认用「结束哨兵」判定响应收完（可靠边界），
-                # 只有显式配置 idle 才退回静默窗口降级模式。
-                end_mode=str(self._cfg("rcon_end_mode", "sentinel") or "sentinel"),
-                probe_command=str(self._cfg("rcon_probe_command", "") or ""),
-                idle_probe=float(self._cfg("rcon_idle_probe", 0.5) or 0.5),
-                logger=self.logger,
-            )
-        return self._rcon
+        async with self._rcon_lock:
+            if self._rcon is None:
+                self._rcon = self._build_rcon()
+            return self._rcon
+
+    async def reset_rcon(self) -> AsyncRcon:
+        """丢弃旧 RCON 实例、按当前配置重建一个（v0.22.5 核验 P2）。
+
+        与 ``_get_rcon()`` 共用 ``_rcon_lock``，因此不存在「旧实例已摘、新实例未建」
+        的空窗，也不会与并发调用重复建连。旧实例**显式** ``retire()``：
+          · 若它正握在途命令，就让它跑完那条命令再自关（不粗暴掐断成「结果未知」）；
+          · 空闲实例则会丢弃底层 socket，而不是被无声遗弃、连着 StreamWriter 一起泄漏。
+
+        注意：这里**不能**再 ``await self._get_rcon()`` —— 锁不可重入，会自锁死。
+        """
+        async with self._rcon_lock:
+            old = self._rcon
+            self._rcon = None
+            if old is not None:
+                old.retire()
+                try:
+                    # 只有「没有在途命令」时才由 reset 自己收尾（关掉底层连接）；
+                    # 若它正握着命令，就让那条命令跑完、由 command() 的 finally 回收。
+                    if not old.in_flight:
+                        await old.close()
+                except Exception as e:  # noqa: BLE001
+                    self.logger.warning(f"重建 RCON 时关闭旧连接失败（已忽略）: {e}")
+            self._rcon = self._build_rcon()
+            return self._rcon
 
     # ================= 权限护栏（v0.21.0「拦截即终局」） =================
 

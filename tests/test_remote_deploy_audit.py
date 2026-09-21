@@ -57,6 +57,7 @@ def make_plugin(cfg: dict, data_dir: Path):
     plug._knowledge = None
     plug._dictionary = None
     plug._rcon = None
+    plug._rcon_lock = asyncio.Lock()   # v0.22.5：_get_rcon/reset_rcon 共用（漏了会 AttributeError）
     plug.logger = logging.getLogger("audit")
     return plug
 

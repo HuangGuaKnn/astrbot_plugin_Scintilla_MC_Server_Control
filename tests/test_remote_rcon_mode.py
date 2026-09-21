@@ -81,6 +81,7 @@ def make_plugin(cfg: dict, data_dir: Path):
     plug._knowledge = None
     plug._dictionary = None
     plug._rcon = None
+    plug._rcon_lock = asyncio.Lock()   # v0.22.5：reset 与 _get_rcon 共用这把锁
     plug._watcher = None
     plug._dir_check_cache = None
     plug._admins = set()
