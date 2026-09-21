@@ -7,6 +7,103 @@
 > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
 > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
 
+## [v0.22.6] - 2026-09-21（预发布）
+
+> 一句话：修掉「命令明明失败却报成功」的**假成功**链路，并让**服务端版本**第一次真正进入 Agent 提示词 —— 此前 LLM 只能凭记忆猜版本，猜错就是把 1.21 的物品组件语法发给 1.20.1 服务端。
+
+> 本版为**预发布（pre-release）**：修复先落地观察一段时间，确认线上稳定再转正式版
+> —— 尚未在 Vanilla / Paper / Fabric / Forge 真实服务端做矩阵测试。
+> 求稳请继续用 v0.22.1。
+
+### 修复
+
+#### 一、假成功链路（v0.22.5 线上事故的根因）
+
+事故现场：要「附魔锋利5的下界合金剑」，分类器生成了
+
+```
+give HuangGuaKnn netherite_sword[enchantments={levels:{...}}] 1
+```
+
+发给 **1.20.1** 服务端，服务端回 `Expected whitespace to end one argument, but found trailing data` ——
+而回执写「已执行 1/1 条命令」，游戏里什么都没有。三层同时失守：**分类器判错**、
+**执行层只要不抛异常就算成功**、**回执丢弃明细**。
+
+- **「什么算成功」收口成唯一实现** —— 新增 `core/command_result.py`，所有执行型入口共用；
+  旧的 `workflow.py::_is_success_out()`（只看输出里有没有 `error` 字样）退役。
+- **三个维度互不替代** —— `status`（这条命令结果是什么）／`response_received`（有没有收到属于**本命令**的响应）／
+  `boundary_confirmed`（响应是否读到可靠结束边界）各自独立。
+  `response_received=True` + `boundary_confirmed=False` 是**合法组合**：idle 降级模式下服务端确实答了这一条，只是不保证内容完整。
+- **错误用黑名单、成功用「非空且无错误标记」** —— 严格白名单语义更干净，但会和既有**熔断**叠加出事：
+  某条判 `unknown` 会让后续命令全部 `skipped`，而模组命令的反馈文本千奇百怪，
+  「发枪 + 发弹药 + 反馈」这类多命令任务第一条误判就吞掉后面全部。
+  显式成功标记（`Gave` 等）只用于把置信度从 `inferred` 抬到 `explicit`；
+  日后要收紧为严格白名单，把 `STRICT_SUCCESS_MATCHING` 置 `True` 即可，调用方不用动。
+- **幂等白名单（判据是幂等，不是静默）** —— 空响应不能一律当成功，也不能一律当失败：
+  - **静默集合**（成功时本就不回文本）：`tellraw` / `say` / `title` / `actionbar` / `tm` / `teammsg` → 空响应即 `success`；
+  - **幂等集合**（有回显，但重复执行无额外副作用）：`time` / `weather` / `gamerule` / `difficulty` / `gamemode` → 空响应也可当成功；
+  - **非幂等集合**（重复执行会**叠加副作用**）：`give` / `summon` / `effect` / `xp` / `item` / `fill` / `clone` / `function` / `setblock` → 空响应**永远不能**当成功，判 `unknown`。
+  - 若不先查白名单，`tellraw` 成功返回空串会被判 failed —— **连 `_send_feedback` 自身都走失败分支**（反馈发不出去的自噬）。
+- **两类 `Unknown` 必须拆开**（只差几个词，语义相反）
+  - `Unknown or incomplete command, see below for error` → **语法/参数写错**，命令本身存在 → `syntax_error`（可重试）；
+  - `Unknown command. Type "/help" for help.` → **该命令在此服务端不存在**（模组没装 / 版本不支持）→ `failed`（重试徒劳）。
+  - 归错就会对「模组命令不存在」白白重试一轮、再报一次同样的错，浪费一次 LLM 调用还污染纠错器记录。
+- **判定顺序：成功判定必须早于 unknown 兜底** —— 若「无法判断」被实现成「没命中任何错误模式」，
+  成功文本会先被吞成 `unknown`，成功分支永远不可达。现在的顺序是
+  RCON 异常 → 空响应（按命令类型 + 边界） → 命令不存在 → 语法错误 → 其他明确失败 → **明确成功** → 兜底 unknown。
+- **idle 模式下广播不得倒退成「失败」** —— idle 模式下 `boundary_confirmed` 恒为 `False`，
+  照字面实现会让广播 / 喊话 / 全屏喊话从「成功」集体变成「结果未知」，属于功能倒退。
+  现在对消息类命令单独一态 `dispatched_unconfirmed`，措辞为
+  「已发送（响应边界未确认；如需保证完整性请把 `rcon_end_mode` 设回 `sentinel`）」—— **绝不显示「失败」**。
+- **明细永不丢弃** —— `_run_simple` 的成功分支不再吞掉命令输出，失败 / 未知时逐条回执（含服务端原文），
+  用户能看到到底是哪一条、错在哪。
+- **铺到全部 11 个用户可见入口** —— `mc_execute_command` / `mc_broadcast` / `mc_give_item` /
+  `mcs_say` / `mcs_title` / `mcs_kick` / `mcs_ban` / `mcs_unban` / `mc_kick` / `mc_ban` / `_send_feedback`。
+
+#### 二、复杂任务路由守门（分类失误不再致命）
+
+- **根因**：分类器 prompt 里「原版物品判 simple」与「带物品数据判 complex」两条规则**互相重叠**，
+  实测把「附魔下界合金剑」判成了 simple —— 而 simple 路径**没有输出校验、没有纠错、没有到账核验**。
+- **prompt 收紧**：明确 simple 只收**裸**原版物品（无附魔 / NBT / 组件 / 自定义名称 / 属性修饰符），
+  规则冲突时**一律以 complex 为准**，并在规则里直写「把带数据的物品交给 simple 路径必然出错」。
+- **确定性兜底 `looks_like_complex_task()`**：就算分类器再判错，只要请求或命令里出现
+  附魔 / 属性 / 自定义名称 / NBT / 组件 / 满配 等特征，**强制执行**走有校验的复杂路径。
+- **`[` 不再单独作特征** —— `[` 是选择器语法，`kill @e[type=item]`、`tp @p[tag=foo]`、`gamemode creative @a[team=red]`
+  全会被误判进复杂流水线（白跑一整套 Agent、白烧 token）；而真正出事的 `netherite_sword[enchantments={…}]` **本来就含 `{`**。
+  去掉裸 `[`、只留 `{`，捕获能力不减、噪音大降。
+
+#### 三、服务端版本上下文（Agent 第一次「看得见」版本）
+
+- **根因**：`detect_server_version()` 一直存在，但**只喂给了 WebUI** —— Agent 侧完全拿不到，
+  LLM 只能凭记忆猜语法世代。猜错就是把 1.21 的组件语法发给 1.20.1 服务端（＝上面那场事故）。
+- **新增 `core/version_caps.py`**，算出并缓存「语法世代」与「附魔 ID 口径」，在**分类器之前**注入 Agent 提示词：
+  - 语法世代以 **1.20.5 为分水岭**（`{…}` NBT → `[…]` 组件），并处理快照 / 预发布号；
+  - 附魔 ID 版本化（如 1.21+ 的 `sweeping_edge` vs 1.20 的 `sweeping`）；
+  - **不猜**：版本探测不到（异地 RCON 模式必然失败）就**如实降级**并拒绝附魔 / NBT / 组件类请求，而不是默认成某个版本硬编。
+- **优先级：手动声明 > 文件探测 > 未知** —— 新增配置 `server_version_override`（手动声明服务端版本）
+  与 `item_syntax_override`（手动指定物品语法世代），异地模式下这是唯一出口。
+- **WebUI 与 Agent 看同一份数据** —— 服务端状态接口新增 `version_caps`，手动声明生效时把显示版本标注为
+  「（手动声明）」；否则会出现「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
+  版本未知时页面直说：「附魔 / NBT / 物品组件类请求会被拒绝」。
+
+### 新增
+
+- 配置项 `server_version_override`：手动声明服务端版本（异地 RCON 模式必备）。
+- 配置项 `item_syntax_override`：手动指定物品语法世代（覆盖探测结果）。
+- `core/command_result.py`：统一命令结果判定（三态 + 幂等白名单 + 两类 Unknown 拆分）。
+- `core/version_caps.py`：版本能力表（语法世代 / 附魔 ID / 未知降级）。
+- 命令结果新状态 `dispatched_unconfirmed`：「已发送·边界未确认」，与「失败」「结果未知」三者互不冒充。
+
+### 测试
+
+- `tests/test_command_result.py`（新增）—— 三态结果判定 / 命令不存在与语法错误拆分 / 复杂 NBT 路由守门。
+  对照测试含：`tellraw @a {"text":"hi"}` + 空输出 → `success`（**不是** failed）；
+  `give Steve diamond 1` + 空输出 → `unknown`；删掉幂等白名单 → 广播用例必须变红。
+- `tests/test_simple_workflow_result.py`（新增）—— simple 与复杂两条路径均不再假成功 / 明细永不丢弃 / 分类 prompt 不再自相矛盾。
+- `tests/test_version_capabilities.py`（新增，42 项）—— 版本能力表能算出正确的语法世代与附魔 ID，版本未知时如实降级且留有出口。
+- `tests/test_complex_routing.py`（新增，30 项，含端到端转轨）—— 分类失误不再致命：带数据的请求必被拦进有校验的复杂路径，且版本上下文先于分类器注入。
+- 全仓 **31 支断言脚本**（22 个 `test_*.py` + 9 个 `ui_*.py`）使用 AstrBot 自带解释器执行，退出码全为 0。
+
 ## [v0.22.5] - 2026-09-21（预发布）
 
 > 一句话：修掉「设置页一保存 RCON 配置就**整台插件再也不回话**」的自锁死 —— `reset_rcon()` 持锁后又去抢同一把非重入锁；顺带堵住退役实例的**连接泄漏**，并把运行态展示改成**三状态互不替代**的诚实口径。

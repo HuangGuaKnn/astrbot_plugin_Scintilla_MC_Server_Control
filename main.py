@@ -30,6 +30,11 @@ try:
 except ImportError:  # 可选依赖：仅「mcs 状态」的进程指标（内存/CPU/时长）需要
     psutil = None
 
+from .core.command_result import (
+    STATUS_LABEL,
+    CommandResult,
+    classify_command_output,
+)
 from .core.item_dictionary import ItemDictionary
 from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase
 from .core.mod_fingerprint import compute_server_identity
@@ -49,6 +54,11 @@ from .core.log_watcher import (
 )
 from .core.rcon import AsyncRcon, RconError, RconTimeoutError
 from .core.server_dir_check import format_check, inspect_server_dir
+from .core.version_caps import (
+    build_version_context,
+    describe_capabilities,
+    resolve_version_info,
+)
 from .core.java_commands import check_command as check_command_policy
 from .core.tool_guard import (
     ALTERNATIVES,
@@ -1561,6 +1571,56 @@ class McControlPlugin(Star):
 
     # ================= 玩家解析（v0.9.0 决策AI玩家守门） =================
 
+    # ================= 统一命令结果判定（v0.22.6） =================
+    #
+    # 背景：v0.22.5 线上实测暴露「复杂 NBT 假成功」——服务器回
+    #     Expected whitespace to end one argument, but found trailing data
+    # 而执行入口只要 rcon.command() 不抛异常就报「命令执行成功」。
+    # 根因是「什么算成功」没有收口：全仓 30 处 rcon.command() 各判各的。
+    #
+    # 从现在起，**所有用户可见的执行入口**都必须走 _exec_checked()，
+    # 不要再直接 rcon.command() 之后用 `if out:` 判成功 ——
+    # 服务器「正常地回一句报错」在 RCON 层面同样算收到了响应。
+
+    async def _exec_checked(self, rcon, command: str) -> CommandResult:
+        """执行一条命令并按统一规则判定结果（唯一入口）。"""
+        try:
+            out = await rcon.command(command)
+        except RconTimeoutError as e:
+            # 结果未知：命令可能已执行、也可能没有 —— 不计成功，也绝不自动重发
+            return CommandResult(
+                command=command, status="unknown",
+                reason=f"未收到响应（结果未知，不会自动重发）：{e}",
+            )
+        except RconError as e:
+            return CommandResult(command=command, status="failed", reason=str(e))
+        return classify_command_output(
+            command,
+            str(out),
+            # 两个维度分别取事实，缺一不可（见 core/command_result.py docstring）
+            boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
+            response_received=bool(getattr(rcon, "last_response_received", False)),
+        )
+
+    def _render_result(self, r: CommandResult, ok_text: str, fail_prefix: str) -> str:
+        """把判定结果渲染成用户可见回执（统一措辞）。
+
+        · success                → ok_text
+        · dispatched_unconfirmed → ok_text + 边界未确认说明（**不报失败**，
+                                   也不报「结果未知」：消息确实发出去了）
+        · 其它                   → fail_prefix + 服务器原文
+        """
+        if r.status == "success":
+            return ok_text
+        if r.status == "dispatched_unconfirmed":
+            return (
+                f"{ok_text}（注意：响应边界未确认 —— 服务器已收到本命令，"
+                "但无法保证响应完整；如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+            )
+        label = STATUS_LABEL.get(r.status, r.status)
+        detail = r.output or r.reason or "（服务器未给出可读反馈）"
+        return f"{fail_prefix}（{label}）：{detail}"
+
     async def _online_players(self) -> list[str]:
         """RCON list 获取当前真实在线玩家名列表。失败返回空列表。"""
         try:
@@ -1662,23 +1722,33 @@ class McControlPlugin(Star):
             return denied
         try:
             rcon = await self._get_rcon()
-            out = await rcon.command(command)
+            r = await self._exec_checked(rcon, command)
             self.logger.info(
-                "[审计] 请求者=%s 命令=%s 结果=%r",
-                self._sender_id(event), command, out,
+                "[审计] 请求者=%s 命令=%s 状态=%s 结果=%r",
+                self._sender_id(event), command, r.status, r.output,
             )
-            if out:
+            if r.status == "success":
                 tip = feedback.strip() if feedback and feedback.strip() else f"命令执行成功：{command}"
                 await self._send_feedback(rcon, tip)
-                return f"命令执行成功：{command}\n服务器返回：{out}"
-            # v0.22.2：空返回 = 服务器给出了「合法的空响应」（已执行但无输出），
-            # 与「压根没收到响应」是两件事；后者由 RconTimeoutError 兜住，绝不宣称成功。
-            return f"命令已执行（服务器未返回输出）：{command}"
-        except RconTimeoutError as e:
+                return f"命令执行成功：{command}\n服务器返回：{r.output or '（无输出）'}"
+            if r.status == "dispatched_unconfirmed":
+                # 命令确实发出去了，只是响应边界未确认 —— 不报失败、也不报「结果未知」
+                return (
+                    f"命令已发送：{command}\n"
+                    "（服务器已收到本命令，但响应边界未确认；"
+                    "如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+                )
+            if r.status == "unknown":
+                return (
+                    f"命令结果未知：{command}\n"
+                    f"{r.reason}\n服务器可能已执行、也可能没有执行；为避免重复副作用，"
+                    "本次不会自动重发，请先用查询类命令（状态 / 在线列表）确认结果。"
+                )
+            # syntax_error / failed：把服务器原文如实回传，绝不包装成「成功」
+            label = STATUS_LABEL.get(r.status, r.status)
             return (
-                f"命令结果未知：{command}\n"
-                f"{e}\n服务器可能已执行、也可能没有执行；为避免重复副作用，"
-                "本次不会自动重发，请先用查询类命令（状态 / 在线列表）确认结果。"
+                f"命令执行失败（{label}）：{command}\n"
+                f"服务器返回：{r.output or r.reason}"
             )
         except RconError as e:
             return f"命令执行失败：{e}"
@@ -1747,8 +1817,8 @@ class McControlPlugin(Star):
             denied = await self._safe_command(event, cmd, tool="mc_broadcast")
             if denied:
                 return denied
-            await rcon.command(cmd)
-            return f"已在服务器内广播：{message}"
+            r = await self._exec_checked(rcon, cmd)
+            return self._render_result(r, f"已在服务器内广播：{message}", "广播失败")
         except RconError as e:
             return f"广播失败：{e}"
 
@@ -1798,17 +1868,28 @@ class McControlPlugin(Star):
         cmd = f"give {player} {item} {count}"
         try:
             rcon = await self._get_rcon()
-            out = await rcon.command(cmd)
-            if out:
-                tip = feedback.strip() if feedback and feedback.strip() else f"已给 {player} 发放 {item}×{count}"
+            r = await self._exec_checked(rcon, cmd)
+            ok_text = f"已给 {player} 发放 {item}×{count}"
+            if r.status == "success":
+                tip = feedback.strip() if feedback and feedback.strip() else ok_text
                 await self._send_feedback(rcon, tip)
-                return f"已给 {player} 发放 {item}×{count}\n服务器返回：{out}"
-            return f"已给 {player} 发放 {item}×{count}（服务器未返回输出）"
-        except RconTimeoutError as e:
+                return f"{ok_text}\n服务器返回：{r.output or '（无输出）'}"
+            if r.status == "dispatched_unconfirmed":
+                return (
+                    f"{ok_text}（注意：响应边界未确认 —— 服务器已收到本命令，"
+                    "但无法保证响应完整；物品是否落定请用 /clear 计数法确认）"
+                )
+            if r.status == "unknown":
+                return (
+                    f"发放结果未知：{cmd}\n"
+                    f"{r.reason}\n物品可能已经发出，也可能没有发出；为避免重复发放，"
+                    "本次不会自动重发，请先用查询命令确认背包后再决定。"
+                )
+            # 非幂等命令：syntax_error / failed 一律如实上报，**不自动重发**
+            label = STATUS_LABEL.get(r.status, r.status)
             return (
-                f"发放结果未知：give {player} {item} {count}\n"
-                f"{e}\n物品可能已经发出，也可能没有发出；为避免重复发放，"
-                "本次不会自动重发，请先用查询命令确认背包后再决定。"
+                f"发放失败（{label}）：{cmd}\n"
+                f"服务器返回：{r.output or r.reason}"
             )
         except RconError as e:
             return f"发放失败：{e}"
@@ -1941,11 +2022,14 @@ class McControlPlugin(Star):
             payload = self._colored_payload(
                 f"[群聊→{nickname}] {text}", "color_say", "gradient_colors_say", "white"
             )
-            await rcon.command(f"tellraw @a {payload}")
+            r = await self._exec_checked(rcon, f"tellraw @a {payload}")
             self.logger.info(
-                "[审计] 请求者=%s 喊话=%s", self._sender_id(event), text
+                "[审计] 请求者=%s 喊话=%s 状态=%s",
+                self._sender_id(event), text, r.status,
             )
-            yield event.plain_result(f"已在服务器内喊话：{text}")
+            yield event.plain_result(
+                self._render_result(r, f"已在服务器内喊话：{text}", "喊话失败")
+            )
         except RconError as e:
             yield event.plain_result(f"喊话失败：{e}")
         return
@@ -1968,9 +2052,14 @@ class McControlPlugin(Star):
             payload = self._colored_payload(
                 text, "color_title", "gradient_colors_title", "gold"
             )
-            await rcon.command(f"title @a title {payload}")
-            self.logger.info("[审计] 请求者=%s 全屏喊话=%s", self._sender_id(event), text)
-            yield event.plain_result(f"已向全服发送全屏喊话：{text}")
+            r = await self._exec_checked(rcon, f"title @a title {payload}")
+            self.logger.info(
+                "[审计] 请求者=%s 全屏喊话=%s 状态=%s",
+                self._sender_id(event), text, r.status,
+            )
+            yield event.plain_result(
+                self._render_result(r, f"已向全服发送全屏喊话：{text}", "操作失败")
+            )
         except RconError as e:
             yield event.plain_result(f"操作失败：{e}")
         return
@@ -2045,16 +2134,18 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"kick {player} {reason}".strip() if reason else f"kick {player}"
-            out = await rcon.command(cmd)
+            r = await self._exec_checked(rcon, cmd)
             self.logger.info(
-                "[审计] 请求者=%s 踢人=%s 理由=%s",
-                self._sender_id(event), player, reason,
+                "[审计] 请求者=%s 踢人=%s 理由=%s 状态=%s",
+                self._sender_id(event), player, reason, r.status,
             )
-            if out:
+            if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 踢出服务器")
-                yield event.plain_result(f"已踢出 {player}：{out}")
-            else:
-                yield event.plain_result(f"已踢出 {player}")
+            # 旧实现「if out: 报成功 / else: 也报成功」——服务器回 Player not found
+            # 照样显示「已踢出」，这条路径现在如实判负。
+            yield event.plain_result(
+                self._render_result(r, f"已踢出 {player}", "踢出失败")
+            )
         except RconError as e:
             yield event.plain_result(f"操作失败：{e}")
         return
@@ -2080,16 +2171,16 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"ban {player} {reason}".strip()
-            out = await rcon.command(cmd)
+            r = await self._exec_checked(rcon, cmd)
             self.logger.info(
-                "[审计] 请求者=%s 封禁=%s 理由=%s",
-                self._sender_id(event), player, reason,
+                "[审计] 请求者=%s 封禁=%s 理由=%s 状态=%s",
+                self._sender_id(event), player, reason, r.status,
             )
-            if out:
+            if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 封禁")
-                yield event.plain_result(f"已封禁 {player}：{out}")
-            else:
-                yield event.plain_result(f"已封禁 {player}")
+            yield event.plain_result(
+                self._render_result(r, f"已封禁 {player}", "封禁失败")
+            )
         except RconError as e:
             yield event.plain_result(f"操作失败：{e}")
         return
@@ -2109,15 +2200,16 @@ class McControlPlugin(Star):
             return
         try:
             rcon = await self._get_rcon()
-            out = await rcon.command(f"pardon {player}")
+            r = await self._exec_checked(rcon, f"pardon {player}")
             self.logger.info(
-                "[审计] 请求者=%s 解封=%s", self._sender_id(event), player,
+                "[审计] 请求者=%s 解封=%s 状态=%s",
+                self._sender_id(event), player, r.status,
             )
-            if out:
+            if r.status == "success":
                 await self._send_feedback(rcon, f"已解封 {player}")
-                yield event.plain_result(f"已解封 {player}：{out}")
-            else:
-                yield event.plain_result(f"已解封 {player}")
+            yield event.plain_result(
+                self._render_result(r, f"已解封 {player}", "解封失败")
+            )
         except RconError as e:
             yield event.plain_result(f"操作失败：{e}")
         return
@@ -2535,6 +2627,40 @@ class McControlPlugin(Star):
             pass
         return ""
 
+    # =============== v0.22.6（批次 2）版本能力上下文 ===============
+
+    def _resolve_version_info(self):
+        """解析服务端版本事实。优先级：**手动声明 > 文件探测 > 未知**（补丁 3）。
+
+        为什么必须有手动声明这一层：异地 RCON 模式（remote_rcon_mode=true）
+        读不到服务端文件，探测**必然**失败。若没有出口，所有附魔 / NBT 请求
+        会被一律拒绝且**无法解除** —— 那是功能性倒退。
+        手动声明是**用户显式提供的事实**，不违反「不得猜测」约束。
+        """
+        override = str(self._cfg("server_version_override", "") or "").strip()
+        detected = ""
+        if not override:
+            # 声明了就不再探测：省一次文件 IO，也避免两处结论打架
+            try:
+                detected = self.detect_server_version()
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning("服务端版本探测失败: %s", e)
+        return resolve_version_info(override, detected)
+
+    def _version_context_text(self) -> str:
+        """产出注入 Agent 提示词的「版本约束片段」。
+
+        探测失败时返回的是**显式降级指令**（禁止构造带数据命令 + 告诉用户去哪填），
+        而不是空串 —— 空串等于让 LLM 凭记忆猜版本，正是本次事故的根因。
+        """
+        info = self._resolve_version_info()
+        return build_version_context(info, self._cfg("item_syntax_override", "auto"))
+
+    def _version_capabilities(self) -> dict:
+        """给 WebUI / 概览用的版本能力快照（不含提示词正文）。"""
+        info = self._resolve_version_info()
+        return describe_capabilities(info, self._cfg("item_syntax_override", "auto"))
+
     @staticmethod
     def _format_uptime(seconds: float) -> str:
         """把秒数格式化为「X天X小时X分」。"""
@@ -2714,13 +2840,12 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"kick {player} {reason}".strip() if reason else f"kick {player}"
-            out = await rcon.command(cmd)
-            if out:
+            r = await self._exec_checked(rcon, cmd)
+            if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 踢出服务器")
-                return f"已踢出 {player}\n服务器返回：{out}"
-            return f"已踢出 {player}"
-        except RconTimeoutError as e:
-            return f"踢出结果未知：{player}｜{e}（请用 状态/在线列表 确认后决定是否重发）"
+            if r.status == "unknown":
+                return f"踢出结果未知：{player}｜{r.reason}（请用 状态/在线列表 确认后决定是否重发）"
+            return self._render_result(r, f"已踢出 {player}", "踢出失败")
         except RconError as e:
             return f"操作失败：{e}"
 
@@ -2743,13 +2868,12 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"ban {player} {reason}".strip() if reason else f"ban {player}"
-            out = await rcon.command(cmd)
-            if out:
+            r = await self._exec_checked(rcon, cmd)
+            if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 封禁")
-                return f"已封禁 {player}\n服务器返回：{out}"
-            return f"已封禁 {player}"
-        except RconTimeoutError as e:
-            return f"封禁结果未知：{player}｜{e}（请用 封禁列表 确认后再决定是否重发）"
+            if r.status == "unknown":
+                return f"封禁结果未知：{player}｜{r.reason}（请用 封禁列表 确认后再决定是否重发）"
+            return self._render_result(r, f"已封禁 {player}", "封禁失败")
         except RconError as e:
             return f"操作失败：{e}"
 

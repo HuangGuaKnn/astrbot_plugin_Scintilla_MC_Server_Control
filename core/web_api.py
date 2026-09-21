@@ -927,6 +927,22 @@ class McControlWebApi:
                 info["version"] = ver or "未检测到（请检查 server_dir 配置）"
             except Exception as e:
                 info["version"] = f"检测失败：{e}"
+            # v0.22.6（批次 2）：把 Agent **实际使用**的版本事实一并返回。
+            # 必须与注入提示词的是同一份数据，否则会出现
+            # 「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
+            try:
+                caps = plugin._version_capabilities()
+                info["version_caps"] = caps
+                if caps.get("source") == "override" and caps.get("raw"):
+                    # 手动声明优先于文件探测 —— UI 要跟 Agent 看到的一致
+                    info["version"] = f"{caps['raw']}（手动声明）"
+                elif not caps.get("known"):
+                    info["version_hint"] = (
+                        "版本未知：附魔 / NBT / 物品组件类请求会被拒绝。"
+                        "异地 RCON 模式下探测必然失败，请在「连接 → 手动声明服务端版本」里填写。"
+                    )
+            except Exception as e:  # noqa: BLE001
+                info["version_caps_error"] = str(e)
             return json_response({"ok": True, **info})
         except Exception as e:
             return json_response({"ok": False, "error": str(e)})

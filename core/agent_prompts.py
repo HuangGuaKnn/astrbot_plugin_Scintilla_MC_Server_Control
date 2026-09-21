@@ -10,14 +10,19 @@
 CLASSIFIER_SYSTEM = """你是一个 Minecraft 服务器指令任务的分类器。你的职责是判断用户请求属于哪一类，并给出建议。
 
 分类标准：
-- "simple"：仅用原版 Minecraft 命令即可完成的任务。例如：发原版物品（diamond_sword/diamond/oak_log 等无模组前缀的 ID）、调整时间天气（time/weather）、传送/召唤原版实体、给予原版效果、踢人封禁、普通查询等。不需要查阅模组知识库，不需要复杂 NBT。
-- "complex"：涉及整合包模组内容的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、工业模组数值计算、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。
+- "simple"：仅用原版 Minecraft 命令即可完成、**且物品不携带任何数据**的任务。例如：发**裸**原版物品（diamond_sword/diamond/oak_log 等无模组前缀、无附魔、无自定义名称的 ID）、调整时间天气（time/weather）、传送/召唤原版实体、给予原版效果、踢人封禁、普通查询等。不需要查阅模组知识库，不需要任何 NBT/组件。
+- "complex"：涉及整合包模组内容，**或**需要构造物品数据（NBT / 组件 / 附魔 / 属性 / 自定义名称）的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、工业模组数值计算、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。
 
 判断规则：
 1. 只要请求中出现模组 ID 前缀、或需要模组知识才能构造的任务，一律判为 complex。
-2. 原版物品（diamond、iron_sword、oak_log、diamond_sword 等）判为 simple。
+2. **裸**原版物品（diamond、iron_sword、oak_log、diamond_sword 等，且**不带任何附魔 / NBT / 组件 / 自定义名称 / 属性修饰符**）判为 simple。
 3. 拿不准时判为 complex（宁可多走一步知识库，不要出错）。
 4. 一次性多条请求（如"给每人发钻石剑并广播"）按最复杂的那个分类。
+5. **规则 2 与规则 1/3 冲突时，一律以 complex 为准。**
+   典型冲突：「发一把附魔锋利5的下界合金剑」—— 物品本身是原版的（看似命中规则 2），但要求写入附魔数据（命中规则 1）→ **必须判 complex**。
+   规则 2 的「原版物品」**只适用于裸物品**：一旦请求里出现 附魔 / 属性 / 自定义名称 / 耐久 / 经验修补 / NBT / 组件 / 满配 等任一字样，就是 complex。
+   ⚠️ simple 路径**没有输出校验、没有纠错、没有到账核验**；把带数据的物品交给它，必然出错（v0.22.5 线上事故的根因）。
+6. 请求里若出现服务端版本（如「1.20.1」）或玩家名，请在 reason 中原样带上，供后续 Agent 选择正确语法与目标。
 
 【玩家目标判定（重要，用于决策AI玩家守门）】
 - requires_player：任务是否针对玩家实体执行（give/kick/ban/tp/kill/enchant 等涉及具体玩家的操作）。改时间天气、广播、查状态、召唤实体等不针对玩家的任务为 false。
@@ -130,7 +135,7 @@ AGENT_SPECS = {
         "name": "Agent#1 决策分类器",
         "short": "分类器",
         "cfg_key": "agent_prompt_classifier",
-        "desc": "判断任务属于 simple（原版命令）/ complex（模组任务），并做玩家守门判定（requires_player / target / player_name）",
+        "desc": "判断任务属于 simple（**裸**原版命令）/ complex（模组任务**或**带物品数据的任务），并做玩家守门判定（requires_player / target / player_name）",
         "io": "输出严格 JSON · 单轮调用",
         "default": CLASSIFIER_SYSTEM,
     },

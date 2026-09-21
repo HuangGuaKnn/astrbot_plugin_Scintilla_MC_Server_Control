@@ -39,6 +39,11 @@ class AgentLLM:
         # 日志器：优先用插件传入的 AstrBot 插件 logger（带 plugin_tag 前缀），
         # 否则用 astrbot.api 的全局 logger —— 两条路都是 astrbot.api 的日志器。
         self._logger = _DEFAULT_LOGGER if logger is None else logger
+        # v0.22.6（批次 2）：服务端版本约束片段，由 workflow 在每次任务开始前注入。
+        # **代码决定语法世代，LLM 只填 ID 与数值** —— 见 core/version_caps.py。
+        # 这里用「每次调用前前置」而不是拼进提示词正文，是为了让主人在
+        # WebUI 里自定义的提示词照常生效（注入的是独立一层，不是正文的一部分）。
+        self.version_context = ""
 
     def _fallback_cfg(self, key: str, default=None):
         """兜底配置读取：兼容 v0.14.0 的分组配置与旧版平铺配置。"""
@@ -110,6 +115,20 @@ class AgentLLM:
             self._logger.warning("获取可用 Provider 失败: %s", e)
         return None
 
+    def set_version_context(self, text: str) -> None:
+        """注入/清空服务端版本约束片段（空字符串 = 不注入）。"""
+        self.version_context = str(text or "").strip()
+
+    def _effective_system(self, system_prompt: str) -> str:
+        """把版本约束片段前置到 system prompt。
+
+        前置而非后置：这段是**硬约束**，不能被长提示词正文冲淡。
+        空片段时逐字节返回原文（不影响既有行为与测试）。
+        """
+        if not self.version_context:
+            return system_prompt
+        return f"{self.version_context}\n\n{system_prompt}"
+
     # =============== 核心调用 ===============
 
     async def chat(
@@ -132,7 +151,7 @@ class AgentLLM:
         kwargs: dict[str, Any] = {
             "chat_provider_id": provider_id,
             "prompt": user_prompt,
-            "system_prompt": system_prompt,
+            "system_prompt": self._effective_system(system_prompt),
             "temperature": temperature,
         }
         if max_tokens:
