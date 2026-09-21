@@ -41,6 +41,15 @@ MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
 KB_RESULT_LIMIT = 6           # 知识库检索条数
 
+#: v0.22.8（核验 P1）：**结果不确定**的判定状态 —— 命令可能已经在服务器上生效了。
+#:
+#: 出现其中任何一种，工作流就必须停下来问人：既不进下一轮实现（实现器会重新生成同一条
+#: 命令并再发一次），也不交给纠错 Agent「换个写法重发」。
+#:
+#: 不在本集合里的失败口径（``failed`` / ``syntax_error``）含义是**确定没生效**，
+#: 重发不会产生第二份后果 —— 那才是允许自动重试的场合。
+UNCERTAIN_STATUSES = frozenset({"unknown", "inferred_success", "dispatched_unconfirmed"})
+
 # v0.22.6：非幂等命令清单已迁到 core/command_result.py（唯一实现），此处仅转发引用。
 # 不要再在本文件里维护第二份 —— 两份清单迟早会分叉，而分叉的代价是重复副作用。
 
@@ -380,16 +389,12 @@ class MCWorkflow:
                 continue
 
             exec_reports = await self._exec_commands(commands, player, online_players)
-            if any(r.get("unknown") for r in exec_reports):
-                # v0.22.3：结果未知 → 立即熔断。不再进下一轮实现、也不交给纠错 Agent，
-                # 因为 give / summon / effect 这类命令重发就是重复副作用。
-                return (
-                    "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
-                    "为避免重复副作用，插件不会自动重试、也不交给纠错 Agent 重发；"
-                    "请先用 状态 / 在线列表 等查询命令确认后再手动发起。\n"
-                    + self._fmt_results([r for r in exec_reports if r.get("unknown")]),
-                    False,
-                )
+            # v0.22.8：熔断判据收口到 _halt_on_uncertain（全文件唯一实现）——
+            # 结果不确定（unknown / inferred_success / dispatched_unconfirmed）一律停手：
+            # 既不进下一轮实现，也不交给纠错 Agent 重发。
+            halt = self._halt_on_uncertain(exec_reports)
+            if halt:
+                return halt
             all_ok = all(r["ok"] for r in exec_reports)
             failures = self._fmt_results(exec_reports)
             if all_ok and out.get("success"):
@@ -433,15 +438,10 @@ class MCWorkflow:
                     failures = f"实现器未给出命令（纠错后第{rnd}轮）"
                     continue
                 exec_reports = await self._exec_commands(commands, player, online_players)
-                if any(r.get("unknown") for r in exec_reports):
-                    # 纠错循环同样熔断：绝不让纠错 Agent 把「结果未知」当普通失败重发
-                    return (
-                        "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
-                        "为避免重复副作用，插件不会自动重试、也不交给纠错 Agent 重发；"
-                        "请先用 状态 / 在线列表 等查询命令确认后再手动发起。\n"
-                        + self._fmt_results([r for r in exec_reports if r.get("unknown")]),
-                        False,
-                    )
+                # 纠错循环同样熔断：绝不让纠错 Agent 把「结果未确认」当普通失败重发
+                halt = self._halt_on_uncertain(exec_reports)
+                if halt:
+                    return halt
                 failures = self._fmt_results(exec_reports)
                 if all(r["ok"] for r in exec_reports) and out.get("success"):
                     return self._success_text(out, commands, exec_reports), True
@@ -705,6 +705,42 @@ class MCWorkflow:
         return ""
 
     @staticmethod
+    def _status_of(report: dict) -> str:
+        """取一条执行报告的判定状态（缺 ``status`` 时按 ``ok`` 回推，与 _fmt_results 同口径）。"""
+        return report.get("status") or ("success" if report.get("ok") else "failed")
+
+    def _halt_on_uncertain(self, exec_reports: list[dict]) -> tuple[str, bool] | None:
+        """本轮出现「结果不确定」的命令 → 返回 ``(暂停回执, False)``；否则返回 ``None``。
+
+        v0.22.8（核验 P1）：**判据只有这一处** —— 实现器循环与纠错循环共用它。
+        此前两处各写一段「结果未知就熔断」，而 ``inferred_success`` 两边都没管到：
+        它 ``ok=False``，于是 ``all_ok`` 为假 → 工作流判定本轮没做完 → 实现器重新生成
+        命令再发一次。对未被 ``NON_IDEMPOTENT_COMMANDS`` 覆盖的模组命令，这就是重复副作用。
+
+        现在的口径只有一句话：**「是否生效」不确定，就不许自动重试。**
+        ``failed`` / ``syntax_error`` 不拦 —— 它们意味着「确定没生效」，重发安全。
+
+        注意 ``CommandResult.accepted`` 与这里**无关**：``accepted`` 管的是
+        「同批次后续命令要不要继续发」，它不构成任何自动重试的依据。
+        """
+        uncertain = [r for r in exec_reports if self._status_of(r) in UNCERTAIN_STATUSES]
+        if not uncertain:
+            return None
+        kinds = {self._status_of(r) for r in uncertain}
+        if "unknown" in kinds:
+            lead = "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
+        else:
+            lead = ("工作流已暂停：有命令已下发，但服务器没有返回可识别的成功反馈"
+                    "（结果未确认）。")
+        return (
+            lead
+            + "为避免重复副作用，本次不会自动重试、也不交给纠错 Agent 重发；"
+            + "请先用 状态 / 在线列表 等查询命令确认后再手动发起。\n"
+            + self._fmt_results(exec_reports),
+            False,
+        )
+
+    @staticmethod
     def _fmt_results(reports: list[dict]) -> str:
         _tag = {
             "success": "OK",
@@ -718,7 +754,11 @@ class MCWorkflow:
         lines = []
         for r in reports:
             status = r.get("status") or ("success" if r.get("ok") else "failed")
-            lines.append(f"[{_tag.get(status, 'FAIL')}] {r['command']} → {r['output']}")
+            # v0.22.8：output 缺失不该让整条回执崩掉（回执是熔断时的唯一出口）
+            lines.append(
+                f"[{_tag.get(status, 'FAIL')}] {r.get('command', '(空)')}"
+                f" → {r.get('output', '')}"
+            )
         return "\n".join(lines)
 
     @staticmethod
