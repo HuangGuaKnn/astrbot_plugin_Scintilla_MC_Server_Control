@@ -58,10 +58,24 @@ def add_sys_paths() -> None:
 
 
 def require_app() -> Path:
-    """需要 AstrBot 运行时的用例用：拿不到就抛带说明的错误。"""
+    """需要 AstrBot 运行时的用例用：拿不到就抛带说明的错误。
+
+    重要：本函数必须在**模块加载阶段**调用，不能在已经跑起来的 asyncio 里调用。
+    AstrBot 的包初始化一旦落在事件循环里就会假死（实测：进程活着、一个字节不输出）。
+    这里主动拦住这种情况，避免下次又得到「测试莫名其妙挂住」。
+    """
     if APP_DIR is None:
         raise RuntimeError(
             "找不到 AstrBot 运行目录：请设置环境变量 ASTRBOT_APP_DIR，"
             "或用 AstrBot 自带解释器（<AstrBot>/backend/python/python.exe）运行本测试。"
         )
-    return APP_DIR
+    try:
+        import asyncio  # noqa: PLC0415
+
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return APP_DIR
+    raise RuntimeError(
+        "require_app()/import astrbot 不能在事件循环内调用（会假死）。"
+        "请把 import 提到模块顶部，只在 asyncio.run(...) 之前完成。"
+    )

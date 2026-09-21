@@ -15,6 +15,7 @@ from pathlib import Path
 from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
+from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
 
 PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
@@ -454,10 +455,11 @@ class McControlWebApi:
         if {"rcon_host", "rcon_port", "rcon_password", "rcon_timeout",
                 "rcon_end_mode", "rcon_probe_command", "rcon_idle_probe"} & changed:
             try:
-                self.plugin._rcon = None
+                # v0.22.5：走带锁的 reset_rcon（旧实例显式退役并关闭，避免 socket 泄漏）
+                await self.plugin.reset_rcon()
                 effects.append("RCON 连接已重置（下次调用自动重建）")
-            except Exception:
-                pass
+            except Exception as e:
+                effects.append(f"RCON 连接重置失败：{e}")
         if {"enable_event_listener", "server_dir"} & changed:
             try:
                 msg = await self.plugin._restart_event_listener()
@@ -835,7 +837,9 @@ class McControlWebApi:
         rcon = getattr(self.plugin, "_rcon", None)
         if rcon is None:
             return {"end_mode": configured, "configured": configured,
-                    "degraded": False, "probe_misses": 0, "connected": False}
+                    "degraded": False, "probe_misses": 0, "connected": False,
+                    "boundary_confirmed": None, "idle_unconfirmed": 0,
+                    "idle_probe": IDLE_PROBE}
         mode = "idle" if str(getattr(rcon, "end_mode", configured)) == "idle" else "sentinel"
         return {
             "end_mode": mode,
@@ -843,12 +847,20 @@ class McControlWebApi:
             "degraded": mode != configured,
             "probe_misses": int(getattr(rcon, "_probe_misses", 0) or 0),
             "connected": bool(getattr(rcon, "connected", False)),
+            # v0.22.5（复审 P2 整改）：三态透传，**不能**把「暂无结果」默认成 True，
+            # 否则页面在一条命令都没跑过时也会显示「边界可靠」。
+            "boundary_confirmed": getattr(rcon, "last_boundary_confirmed", None),
+            "idle_unconfirmed": int(getattr(rcon, "_idle_unconfirmed_count", 0) or 0),
+            # 页面要如实写出「静默窗口多少秒」才谈得上「响应完整性未保证」有多严重
+            "idle_probe": float(getattr(rcon, "idle_probe", IDLE_PROBE) or IDLE_PROBE),
         }
 
     async def reset_rcon(self):
         """重建 RCON 连接：丢掉已自动降级的实例，按配置重新开始（回到 sentinel）。"""
         try:
-            self.plugin._rcon = None
+            # v0.22.5（核验 P2）：交给插件的带锁重建 —— 旧实例显式退役并关闭，
+            # 不会在有在途命令 / 连点按钮 / 自动降级叠加时泄漏旧连接。
+            await self.plugin.reset_rcon()
             runtime = self._rcon_runtime()
             return json_response({
                 "ok": True,
