@@ -832,6 +832,10 @@ try{
       </div>
       <div class="hint">探测命令留空即空命令：服务端照样回一个响应，且本身没有任何副作用。静默窗口只在 idle 模式生效；
         连续多次拿不到哨兵时插件会自动降级为 idle 并写日志提醒，不会静默假装读完了。</div>
+      <div class="hint" id="rcon_runtime_line" style="margin-top:8px"></div>
+      <div class="btnrow" style="margin-top:6px">
+        <button class="btn ghost sm" type="button" id="btn_rcon_reset">↻ 重建 RCON 连接（回到配置方式）</button>
+      </div>
     </div>
     <div class="card">
       <h3><span class="dot" style="background:var(--amber)"></span>权限与安全</h3>
@@ -1297,11 +1301,42 @@ window.jumpToTextColor = jumpToTextColor;
   if(el) el.onclick = jumpToTextColor;
 });
 
+// ============ RCON 结束边界 · 运行态（v0.22.4） ============
+// 自动降级（sentinel → idle）会削弱「长响应完整收齐」的保证，所以必须**看得见、可恢复**：
+// 设置页常驻一行运行态，并提供「重建连接」把它拉回配置的方式。
+function renderRconRuntime(rt){
+  const el = $("rcon_runtime_line");
+  if(!el) return;
+  if(!rt){ el.innerHTML = ""; return; }
+  const name = m => m === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）";
+  if(rt.degraded){
+    el.innerHTML = `<span class="badge amb">⚠ 已自动降级</span> 当前运行：<b>${name(rt.end_mode)}</b>`
+      + ` · 配置：${name(rt.configured)}`
+      + (rt.probe_misses ? ` · 连续无法确认响应边界 ${rt.probe_misses} 次` : "")
+      + `<br>降级期间「响应是否读完」靠静默窗口猜，服务端分包间隔偏大时长响应可能被截断。`
+      + `排查完点下方「重建 RCON 连接」即可回到配置的方式。`;
+  } else {
+    el.innerHTML = `<span class="badge ok">✓ 边界可靠</span> 当前运行：<b>${name(rt.end_mode)}</b>`
+      + (rt.connected ? " · 已连接" : " · 尚未建立连接（下次调用自动连）");
+  }
+}
+async function resetRcon(){
+  const el = $("rcon_runtime_line");
+  const r = await callPost("rcon/reset").catch(()=>({ok:false,error:"请求失败"}));
+  if(r && r.ok){
+    renderRconRuntime(r.runtime);
+    if(el) el.insertAdjacentHTML("beforeend", ` <span class="muted">✓ ${esc(r.message||"已重建")}</span>`);
+  } else if(el){
+    el.insertAdjacentHTML("beforeend", ` <span style="color:var(--warn)">✗ ${esc((r&&r.error)||"重建失败")}</span>`);
+  }
+}
+
 // ============ 概览 ============
 async function loadOverview(){
   const r = await callGet("overview").catch(()=>({ok:false}));
   if(!r || !r.ok){ connDot(false,"连接失败"); $("ov_plugin").innerHTML=`<span class="badge bad">无法获取概览${r&&r.error?"："+esc(r.error):""}</span>`; return; }
   OV = r;
+  renderRconRuntime(r.config && r.config.rcon_runtime);
   // v0.21.14：metadata / PLUGIN_INFO 里带不带 "v" 前缀都不怕，页面前缀不会叠成 "vv0.21.14"
   const pvRaw = String((r.plugin&&r.plugin.version)||"");
   const pv = pvRaw.replace(/^v/i,"");
@@ -2721,6 +2756,8 @@ async function loadSettings(){
   WF_SAVED = { wf: !!$("cfg_wf_enabled").checked, tool: !!$("cfg_wf_tool").checked };
   bindPolicyUI();
   bindTerminalUI();
+  const rcr = $("btn_rcon_reset");
+  if(rcr) rcr.onclick = resetRcon;
   ["cfg_wf_enabled","cfg_wf_tool"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderWfTip;
   });

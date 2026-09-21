@@ -13,8 +13,11 @@ RCON 协议（Source RCON Protocol）帧结构：
       的标记，所以「静默多久算读完」永远只是猜测 —— 首包后 220ms 才到次包、
       或次包只先到了半截，都会被猜错。v0.22.3 默认改用 **结束哨兵（sentinel）**：
       发完真实命令后紧跟一条无害探测命令；服务端按序处理命令、TCP 按序送达，
-      于是「收到探测命令的第一帧」等价于「上一条命令的响应已全部到达」，
+      于是「命令响应之后又收到探测命令的第一帧」等价于「上一条命令的响应已全部到达」，
       这是协议层可证的边界，与网络延迟、分包间隔、半包停顿都无关。
+      **顺序是硬要求**：只有先收到本次命令的响应包（payload 可以为空），哨兵才算边界；
+      若哨兵抢在命令响应之前到达，说明服务端不保证按序回应 —— 此时报「结果未知」并
+      废弃连接，绝不把它当成「合法空响应」（否则迟到包会留给下一次调用，静默串台）。
       若某些服务端完全不回应探测命令，可把 ``rcon_end_mode`` 设为 ``idle``
       退回静默窗口（**降级策略，只覆盖常见情况**）；插件在连续多次拿不到哨兵时
       也会自动降级并打日志，绝不静默假装读完了。
@@ -242,13 +245,15 @@ class AsyncRcon:
         deadline = time.monotonic() + budget
         chunks: list[str] = []
         probe_seen = False
+        command_seen = False
 
         while True:
             remain = deadline - time.monotonic()
             if remain <= 0:
                 break
             if probe_id is not None:
-                # 哨兵模式：唯一的可靠结束边界就是哨兵本身，因此一直等到总预算耗尽
+                # 哨兵模式：唯一的可靠结束边界是「命令响应 → 哨兵响应」都按序到达，
+                # 因此一直等到总预算耗尽（不做静默猜测）
                 wait = remain
             else:
                 # 降级模式：一个包都没来时用剩余总预算等，已经收到包就短探一次分片
@@ -267,26 +272,41 @@ class AsyncRcon:
                 self._close_socket()
                 raise RconError(f"RCON 读取失败: {e}") from e
 
+            if resp_id == req_id:
+                # 服务端已经处理到本次命令 —— 这是「顺序正确」的证据。
+                # 注意：非 PACKET_RESPONSE 类型也照样算证据（服务端确实回了这一条）。
+                command_seen = True
+                if resp_type == PACKET_RESPONSE:
+                    chunks.append(payload)
+                    if len(chunks) > MAX_PACKETS:
+                        self._close_socket()
+                        raise RconError(
+                            f"RCON 响应包数超过上限 {MAX_PACKETS}，无法确认响应完整，连接已废弃"
+                        )
+                continue
+
             if probe_id is not None and resp_id == probe_id:
+                if not command_seen:
+                    # v0.22.4（核验 P1）：哨兵先于命令响应到达 = 服务端没有按序回应。
+                    # 此时**既不能**把它当「合法空响应」（命令可能已执行也可能没执行），
+                    # **也不能**把迟到的命令响应留在连接里让下一次调用去踩。
+                    self._close_socket()
+                    self._count_probe_miss("结束哨兵先于命令响应到达（响应乱序）")
+                    raise RconPartialResponseError(
+                        "RCON 响应顺序异常：结束哨兵先于命令响应到达，"
+                        "无法确认命令是否已执行，结果未知（已废弃连接）"
+                    )
                 probe_seen = True
                 break
-            if resp_id != req_id:
-                # 连接上残留着别的请求的数据：绝不串台，废弃连接
-                self._close_socket()
-                raise RconError(
-                    f"RCON 响应错乱：收到不匹配的请求 id（期望 {req_id}，实收 {resp_id}），已重置连接"
-                )
-            if resp_type != PACKET_RESPONSE:
-                continue
-            chunks.append(payload)
-            if len(chunks) > MAX_PACKETS:
-                self._close_socket()
-                raise RconError(
-                    f"RCON 响应包数超过上限 {MAX_PACKETS}，无法确认响应完整，连接已废弃"
-                )
+
+            # 其它请求 id：连接上残留着别的请求的数据，绝不串台，废弃连接
+            self._close_socket()
+            raise RconError(
+                f"RCON 响应错乱：收到不匹配的请求 id（期望 {req_id}，实收 {resp_id}），已重置连接"
+            )
 
         if probe_seen:
-            # 拿到可靠结束边界：响应一定收全了（哪怕一个包都没有 = 合法空响应）
+            # 「命令响应（可为空 payload）→ 哨兵」都到齐了，这才是可靠结束边界
             self._probe_misses = 0
             return "".join(chunks).strip("\x00").strip()
 
@@ -298,26 +318,31 @@ class AsyncRcon:
             # 哨兵模式：拿到部分输出却没等到结束边界 → 绝不静默当成功返回
             partial = "".join(chunks)
             self._close_socket()
-            self._count_probe_miss()
+            self._count_probe_miss(f"只收到 {len(chunks)} 个响应包、未等到结束哨兵")
             raise RconPartialResponseError(
                 f"RCON 响应未收全（{budget:g} 秒内没有等到结束哨兵，"
                 f"只收到 {len(chunks)} 个包），结果未知",
                 partial=partial,
             )
 
-        # 一个包都没收到：命令是否已执行无法判断，别复用这条连接
+        # 一个包都没收到：命令是否已执行无法判断，别复用这条连接。
+        # （这里**不算**哨兵失败：服务器整体失联与「哨兵机制是否被支持」无关，
+        #   不该因为它就把完整性保证降级掉。）
         self._close_socket()
-        self._count_probe_miss()
         raise RconTimeoutError(
             f"RCON 服务器 {budget:g} 秒内没有响应，执行结果未知"
         )
 
-    def _count_probe_miss(self) -> None:
-        """哨兵连续拿不到 → 自动降级为 idle 静默窗口（并留下明确日志）。
+    def _count_probe_miss(self, reason: str) -> None:
+        """连续多次无法确认响应边界 → 自动降级为 idle 静默窗口（并留下明确日志）。
 
-        「拿不到哨兵」通常意味着服务端不回应探测命令（个别非原版实现），
-        这种情况下宁可退回旧版行为也不要让每条命令都失败；降级会打日志说明
-        「多包响应的结束判断不再可靠」，便于排查。
+        只统计「有证据表明服务端在正常收发、只是边界确认不了」的情形：
+          · 收到了命令响应，却始终等不到结束哨兵（服务端不回应探测命令）；
+          · 哨兵先于命令响应到达（服务端不保证按序回应）。
+        服务器整体失联（一个包都没收到）**不计入**：那跟哨兵机制无关。
+
+        降级的代价要说清楚：静默窗口只是降级策略，服务端分包间隔大于该窗口时
+        长响应可能被截断。整改完成可在 WebUI 一键重建连接回到 sentinel。
         """
         if self.end_mode != "sentinel" or PROBE_AUTO_DEGRADE_AFTER <= 0:
             return
@@ -326,10 +351,11 @@ class AsyncRcon:
             self.end_mode = "idle"
             if self.logger is not None:
                 self.logger.warning(
-                    "RCON 连续 %d 次没有收到结束哨兵响应，已自动降级为 idle 静默窗口模式"
-                    "（%.2fs）：多包响应的结束判断不再绝对可靠。若确认本服务端不回应探测命令，"
-                    "可把 rcon_end_mode 设为 idle 消除本告警。",
+                    "RCON 连续 %d 次无法确认响应结束边界（最近一次：%s），"
+                    "已自动降级为 idle 静默窗口模式（%.2fs）：多包响应的结束判断不再绝对可靠，"
+                    "长响应可能被截断。排查完可回 WebUI 点「重建连接」恢复 sentinel。",
                     self._probe_misses,
+                    reason,
                     self.idle_probe,
                 )
 

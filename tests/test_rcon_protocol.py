@@ -75,7 +75,8 @@ async def fake_server(r, w) -> None:
                 w.write(pkt(i, 0, ""))
             elif s == "silent":  # 服务端完全无响应（连结束哨兵也不回，模拟卡死）
                 await asyncio.sleep(5)
-            elif s == "swallow":  # 只不回答这条命令本身，哨兵照回（= 该命令确无输出）
+            elif s == "swallow":  # 只不回答这条命令本身、哨兵照回（= 哨兵抢在命令响应之前）
+                # v0.22.4：这属于**响应顺序不成立**，必须报结果未知，不得当合法空响应
                 pass
             elif s == "stray":  # 发一个「别人的」请求 id，模拟残留包
                 w.write(pkt(i + 777, 0, "LEFTOVER"))
@@ -126,8 +127,20 @@ async def _run_async_cases() -> None:
     c2 = AsyncRcon(port=port, timeout=0.5)
     await c2.connect()
     empty = await c2.command("empty")
-    check("合法空响应 → 返回空字符串且不抛错", empty == "", repr(empty))
+    check("合法空响应（空响应包 + 哨兵按序到达）→ 返回空字符串且不抛错", empty == "", repr(empty))
     check("空响应后连接仍可用", c2.connected is True)
+
+    # ---- v0.22.4：哨兵先于命令响应 → 顺序不成立，必须报结果未知并废弃连接 ----
+    try:
+        got = await c2.command("swallow", timeout=0.5)
+        check("哨兵先于命令响应 → 不得静默当成合法空响应", False, f"竟然返回了 {got!r}")
+    except RconTimeoutError as e:
+        check("哨兵先于命令响应 → 抛结果未知（RconPartialResponseError）",
+              isinstance(e, rcon_mod.RconPartialResponseError), type(e).__name__)
+        check("顺序异常文案说明原因", "顺序" in str(e), str(e))
+    except Exception as e:  # noqa: BLE001
+        check("哨兵先于命令响应 → 抛结果未知", False, f"抛了别的：{e!r}")
+    check("顺序异常后连接被废弃（迟到包不留到下一次调用）", c2.connected is False)
 
     loop = asyncio.get_event_loop()
     t0 = loop.time()

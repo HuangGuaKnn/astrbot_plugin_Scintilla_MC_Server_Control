@@ -73,6 +73,12 @@ async def _read(r):
 async def _respond(i, s, mode, w) -> None:
     """按脚本模式回应。哨兵 = 空命令（插件默认 probe_command），其余为普通命令。"""
     probe = s == ""
+    if mode == "reorder" and not probe:
+        # 真·乱序：命令响应延后 50ms，哨兵立刻回 —— 客户端会先看到哨兵
+        task = asyncio.create_task(_late_reply(w, i, "REPLY:" + s))
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
+        return
     if mode == "delayed220" and s == "multi":      # 首包后 220ms 才到次包（核验复现的原始场景）
         w.write(pkt(i, 0, "FIRST"))
         await w.drain()
@@ -121,6 +127,19 @@ async def _respond(i, s, mode, w) -> None:
         return
     w.write(pkt(i, 0, "" if probe else "REPLY:" + s))
     await w.drain()
+
+
+_BG_TASKS: set = set()
+
+
+async def _late_reply(w, i, text, delay=0.05) -> None:
+    """乱序服务端用：把某条命令的响应延后发出。"""
+    await asyncio.sleep(delay)
+    try:
+        w.write(pkt(i, 0, text))
+        await w.drain()
+    except (ConnectionError, OSError):
+        pass
 
 
 def make_server(mode: str):
@@ -288,6 +307,44 @@ async def rcon_cases() -> None:
     await c.connect()
     out = await c.command("hello")
     check("显式 idle 模式：命令正常返回", out == "REPLY:hello", repr(out))
+    await c.close()
+    srv.close()
+    await srv.wait_closed()
+
+    # ---- 乱序服务端：哨兵先于命令响应到达（v0.22.4 核验 P1）----
+    class _Log:
+        def __init__(self):
+            self.records = []
+
+        def warning(self, msg, *a):
+            self.records.append(msg % a if a else msg)
+
+    log2 = _Log()
+    srv, port = await serve("reorder")
+    c = AsyncRcon(port=port, timeout=0.6, logger=log2)
+    await c.connect()
+    try:
+        got = await c.command("say hi", timeout=0.6)
+        check("哨兵先于命令响应 → 不得静默当成功", False, f"竟然返回了 {got!r}")
+    except RconTimeoutError as e:
+        check("哨兵先于命令响应 → 抛结果未知（RconPartialResponseError）",
+              isinstance(e, RconPartialResponseError), type(e).__name__)
+        check("顺序异常文案点明原因", "顺序" in str(e), str(e))
+    except Exception as e:  # noqa: BLE001
+        check("哨兵先于命令响应 → 抛结果未知", False, f"抛了别的：{e!r}")
+    check("顺序异常后连接被废弃（迟到包不留到下一次调用）", c.connected is False)
+
+    # 连续 3 次顺序异常 → 自动降级 idle 自愈（并有日志，可见可控）
+    for _ in range(2):
+        try:
+            await c.command("say hi", timeout=0.6)
+        except Exception:  # noqa: BLE001
+            pass
+    check("连续 3 次顺序异常 → 自动降级为 idle（自愈）", c.end_mode == "idle", c.end_mode)
+    check("顺序异常导致的降级会写日志说明", bool(log2.records) and "降级" in log2.records[-1],
+          repr(log2.records[-1:]))
+    out2 = await c.command("say hi", timeout=0.6)
+    check("降级后（单请求不存在乱序）命令恢复正常返回", out2 == "REPLY:say hi", repr(out2))
     await c.close()
     srv.close()
     await srv.wait_closed()
@@ -470,6 +527,32 @@ def workflow_cases() -> bool:
     fmt = MCWorkflow._fmt_results(reports)
     check("结果明细用 [未知] / [未发送] 区分（不再一律 FAIL）",
           "未知" in fmt and "未发送" in fmt, fmt)
+
+    # ---- 合法空响应 + 非幂等命令：不能当失败交给 Agent 重试（v0.22.4） ----
+    rcon5 = FakeRcon(["", ""])
+    wf5 = build(rcon5, FakeAgent([[]]), {})
+    reports5 = asyncio.run(
+        wf5._exec_commands(
+            [{"command": "give A diamond 1"}, {"command": "give B diamond 1"}], "Steve", ["A", "B"]
+        )
+    )
+    check("空响应 + 非幂等命令 → 标为结果未知（不当普通失败）",
+          reports5[0].get("status") == "unknown" and "空响应" in reports5[0].get("output", ""),
+          repr(reports5[0]))
+    check("空响应 + 非幂等命令 → 后续命令同样不再发送（避免重复副作用）",
+          rcon5.sent == ["give A diamond 1"] and reports5[1].get("status") == "skipped",
+          repr(rcon5.sent))
+
+    # 对照组：普通命令拿到空响应仍按既有口径（失败），不额外扩大熔断范围
+    rcon6 = FakeRcon(["", ""])
+    wf6 = build(rcon6, FakeAgent([[]]), {})
+    reports6 = asyncio.run(
+        wf6._exec_commands([{"command": "say hi"}, {"command": "say again"}], "Steve", ["A", "B"])
+    )
+    check("对照组：普通命令空响应仍按既有口径（failed，不误熔断）",
+          reports6[0].get("status") == "failed" and len(reports6) == 2, repr(reports6))
+    check("对照组：普通命令空响应后仍继续执行后续命令",
+          rcon6.sent == ["say hi", "say again"], repr(rcon6.sent))
 
     # ---- 纠错循环里出现未知：同样必须熔断 ----
     rcon3 = FakeRcon([RconError("执行异常"), RconTimeoutError("服务器没响应")])
