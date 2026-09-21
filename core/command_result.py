@@ -27,31 +27,52 @@ boundary_confirmed 响应是否收到**可靠结束边界**（「读完整了」
 idle 降级模式下服务端确实答了这一条，但静默窗口到期，不保证内容完整。
 此时对消息类命令应报「已发送·边界未确认」，既不是「失败」、也不是「结果未知」。
 
-为什么错误用黑名单、成功用「非空且无错误标记」
-============================================
-严格白名单（必须命中 ``Gave`` 之类才算成功）语义更干净，但会和既有**熔断**叠加出事：
-``_exec_commands`` 里某条判 ``unknown`` 会让后续命令全部 ``skipped``，
-而模组命令的反馈文本千奇百怪 —— 「发枪 + 发弹药 + 反馈」这类多命令任务，
-第一条误判就吞掉后面全部。因此：
+为什么不再用「非空且无错误标记 = 成功」
+======================================
+v0.22.6 用「非空 + 没命中错误词 → success」推断成功，v0.22.7 核验实测出两处假成功：
 
-* 错误：黑名单（``_SYNTAX_MARKERS`` / ``_FAILED_MARKERS``），命中即判负；
-* 成功：非空 + 无错误标记 → ``success``，置信度记为 ``inferred``；
-* 显式成功标记（``Gave`` 等）只用于把置信度抬到 ``explicit``。
+* ``give Steve diamond 1`` 服务端回 ``Operation aborted``（真失败）→ 判成 ``success``
+  —— 「没发现错误词」被当成了**成功的证据**，可它只是**没证据**；
+* 玩家名叫 ``Error`` 时 ``Gave 1 [Diamond] to Error``（真成功）→ 判成 ``failed``
+  —— 裸子串 ``"error"`` 命中了人名。
 
-若日后要收紧为严格白名单，把 ``STRICT_SUCCESS_MATCHING`` 置 ``True`` 即可
-（未命中显式成功标记的非空输出会判 ``unknown``），无需改动调用方。
+因此 v0.22.7 改成三档，把「没证据」和「有证据」分开：
+
+* **明确失败**：短语用子串、英文单词用**词边界**（``\berror\b``），不再误伤人名；
+* **明确成功**：原版命令有**锚定命令级成功模式**（``^gave\b`` 等，见
+  :data:`ANCHORED_SUCCESS_PATTERNS`）；命中锚定模式时**跳过**失败词扫描
+  —— 有正面证据就不该被人名里的词翻盘；
+* **没证据**：非空、无错误标记、也无成功模式 → ``inferred_success``（**不是** ``success``）
+  或 ``unknown``，取决于命令是否非幂等。
+
+``inferred_success`` 与 ``success`` 的区别是硬性的：``ok`` 为 ``False``
+（绝不对外宣称成功），但 ``accepted`` 为 ``True``（消息确实发出去了，
+不该让后续命令白白熔断）。**调用方不得把它当作 confirmed success 使用。**
+
+若日后要彻底收紧（连 ``inferred_success`` 也不要），把
+:data:`INFERRED_SUCCESS_ENABLED` 置 ``False`` 即可 —— 那类输出会全部落 ``unknown``。
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-#: 未命中显式成功标记的非空输出是否判 ``unknown``。
-#: 默认 ``False`` —— 见模块 docstring「为什么错误用黑名单」一节。
-STRICT_SUCCESS_MATCHING = False
+from .java_commands import (
+    CommandParseError,
+    strip_namespace,
+    unwrap_command,
+)
+
+#: 无成功证据的非空输出是否允许判 ``inferred_success``（默认允许）。
+#:
+#: 置 ``False`` = 最保守口径：这类输出一律 ``unknown``。代价是非幂等命令会因此
+#: **熔断**后续命令（见 ``_exec_commands``），多命令任务可能半途断掉。
+INFERRED_SUCCESS_ENABLED = True
 
 CommandStatus = Literal[
     "success",
+    "inferred_success",
     "dispatched_unconfirmed",
     "failed",
     "syntax_error",
@@ -116,35 +137,120 @@ _SYNTAX_MARKERS = (
     "unknown recipe",
     "unknown entity",
     "malformed",
-    "expected ",
     "无法解析",
     "语法错误",
 )
 
-#: 明确失败（非语法）—— 服务器拒绝执行，重试通常无意义。
-_FAILED_MARKERS = (
+#: 明确语法错误 —— **需要词边界**的标记。
+#:
+#: v0.22.7（与 P0-2 同源）：``"expected "`` 是 ``"unexpected "`` 的子串，
+#: 于是 ``An unexpected error occurred`` / ``Operation error: unexpected exception``
+#: 这类**运行期**错误会被判成 ``syntax_error``（``retryable=True``）——
+#: 等于告诉上层「重写就能安全重试」，而实际上这条命令的失败原因跟语法无关。
+#: 语法错误必须是「服务端在解析阶段就拒绝了」，所以这里一律按词边界匹配。
+_SYNTAX_WORD_RE = re.compile(
+    r"(?<![a-z])expected(?![a-z])", re.IGNORECASE
+)
+
+#: 明确失败 —— **多词短语**：按子串匹配（短语足够长，没有边界歧义）。
+_PHRASE_FAILURE_MARKERS = (
     "no entity was found",
     "no player was found",
     "player not found",
     "entity not found",
     "permission denied",
+    "not permitted",
     "no such",
     "does not exist",
     "not found",
     "you do not have",
     "unable to",
     "failed to",
-    "cannot ",
-    "can't ",
-    "denied",
-    "invalid",
-    "error",
-    "失败",
-    "不存在",
-    "找不到",
+    "operation aborted",
+    "操作被取消",
+    "没有权限",
+    "拒绝执行",
 )
 
-#: 显式成功标记 —— 只用来把置信度抬到 ``explicit``，不作为成功门槛。
+#: 明确失败 —— **英文单词**：必须按**词边界**匹配。
+#:
+#: v0.22.7（核验 P0-2）：裸子串 ``"error" in text`` 会把玩家名 / 物品名 / NBT
+#: 文本里的普通单词误伤成失败 —— 玩家叫 ``Error`` 时
+#: ``Gave 1 [Diamond] to Error`` 会被判 ``failed``（实测复现）。
+_WORD_FAILURE_MARKERS = (
+    "error", "errors", "invalid", "denied", "aborted", "refused",
+    "rejected", "cancelled", "canceled", "failure", "failed", "unable",
+    "cannot", "can't",
+)
+
+#: 明确失败 —— **中文词**：CJK 没有词边界概念（``\b`` 认的是 ASCII/Unicode
+#: 词字符与非词字符的交界，``操作失败`` 里 ``作|失`` 之间没有边界），
+#: 因此中文仍按子串匹配。
+_CJK_FAILURE_MARKERS = (
+    "失败", "不存在", "找不到", "无法", "取消", "拒绝", "错误",
+)
+
+_FAILURE_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in _WORD_FAILURE_MARKERS) + r")\b",
+    re.IGNORECASE,
+)
+
+#: **锚定**命令级成功模式：输出必须以这些文本**开头**才算命中。
+#:
+#: 原版反馈文本固定且可枚举，因此可以给白名单；模组命令的反馈不可枚举，
+#: 不能逼它命中模式表（那会把正常成功的模组命令全判成未知）。
+#: 命中锚定模式 = 拿到**正面证据** → 跳过失败词扫描，
+#: 于是 ``Gave 1 [Diamond] to Error`` 不会被人名里的 ``Error`` 翻盘。
+ANCHORED_SUCCESS_PATTERNS: dict[str, tuple[str, ...]] = {
+    "give": (r"^gave\b",),
+    "summon": (r"^summoned\b",),
+    "time": (r"^set the time\b", r"^the time is\b", r"^time is\b"),
+    "weather": (r"^changed the weather\b", r"^set the weather\b"),
+    "gamemode": (r"^set .{0,48}game mode\b",),
+    "difficulty": (r"^set difficulty\b", r"^the difficulty is\b"),
+    "gamerule": (r"^set the gamerule\b", r"^gamerule\b"),
+    "clear": (r"^cleared\b",),
+    "tp": (r"^teleported\b",),
+    "teleport": (r"^teleported\b",),
+    "effect": (r"^applied\b",),
+    "enchant": (r"^enchanted\b",),
+    "xp": (r"^gave\b",),
+    "experience": (r"^gave\b",),
+    "fill": (r"^successfully filled\b",),
+    "setblock": (r"^changed the block\b",),
+    "clone": (r"^successfully cloned\b",),
+    "kill": (r"^killed\b",),
+    "kick": (r"^kicked\b",),
+    "ban": (r"^banned\b",),
+    "pardon": (r"^unbanned\b",),
+    "banlist": (r"^there are\b", r"^banned\b"),
+    "whitelist": (r"^added\b", r"^removed\b", r"^there are\b"),
+    "op": (r"^made\b", r"^opped\b"),
+    "deop": (r"^made\b", r"^de-opped\b"),
+    "damage": (r"^applied\b",),
+    "item": (r"^replaced\b", r"^modified\b", r"^gave\b"),
+    "replaceitem": (r"^replaced\b", r"^modified\b"),
+    "loot": (r"^gave\b", r"^dropped\b"),
+    "advancement": (r"^granted\b", r"^revoked\b"),
+    "recipe": (r"^granted\b", r"^revoked\b"),
+    "scoreboard": (r"^set\b", r"^added\b", r"^removed\b", r"^changed\b"),
+    "bossbar": (r"^added\b", r"^removed\b", r"^changed\b"),
+    "tag": (r"^added\b", r"^removed\b"),
+    "forceload": (r"^added\b", r"^removed\b", r"^changed\b"),
+    "save-all": (r"^saved the game\b",),
+    "seed": (r"^seed\b",),
+    "list": (r"^there are\b",),
+    "spreadplayers": (r"^spread\b",),
+    "place": (r"^placed\b",),
+}
+
+_ANCHORED_SUCCESS_RES: dict[str, tuple[re.Pattern, ...]] = {
+    cmd: tuple(re.compile(p, re.IGNORECASE) for p in pats)
+    for cmd, pats in ANCHORED_SUCCESS_PATTERNS.items()
+}
+
+#: **非锚定**通用成功标记 —— 只用来把置信度抬到 ``explicit``。
+#: 检查顺序在失败词**之后**（只有锚定模式才在之前）。
 _SUCCESS_MARKERS = (
     "gave ",
     "set the time",
@@ -165,6 +271,7 @@ _SUCCESS_MARKERS = (
     "added ",
     "已发放",
     "已执行",
+    "已完成",
 )
 
 
@@ -198,10 +305,13 @@ class CommandResult:
     def accepted(self) -> bool:
         """是否可视为「命令已被服务端接受」（用于决定要不要熔断后续命令）。
 
-        ``dispatched_unconfirmed`` 表示消息确实发出去了，只是边界未确认 ——
-        不应因此中止同批次的后续命令。
+        ``dispatched_unconfirmed``（消息确实发出去了，只是边界未确认）与
+        ``inferred_success``（无错误标记、但没有成功证据）都不该中止同批次的后续命令。
+
+        注意 ``accepted`` **不等于** ``ok``：前者管「要不要停」，后者管「能不能
+        对外宣称成功」——``inferred_success`` 的 ``accepted=True``、``ok=False``。
         """
-        return self.status in ("success", "dispatched_unconfirmed")
+        return self.status in ("success", "inferred_success", "dispatched_unconfirmed")
 
     @property
     def is_unknown(self) -> bool:
@@ -242,24 +352,29 @@ _COMPLEX_ITEM_MARKERS = (
 def effective_command_segment(command: str) -> tuple[str, str]:
     """把命令拆成 ``(有效命令名, 其后的参数原文)``，并穿透 execute 包装。
 
-    全模块**唯一**的命令名解析器 —— 判定与路由共用，不维护第二份。
+    v0.22.7（核验 P2-6）：**解析全仓只有一处实现** —— 直接复用
+    :func:`core.java_commands.unwrap_command`（v0.22.3 专为「找第一个 run 会翻车」
+    写的按语法消费子命令的实现）。
+
+    此前本模块自己手搓了第二份 ``rfind(" run ")``，实测会把
+
+        execute as @a run tellraw @a {"text":" run "}
+
+    的「命令名」解析成 ``"}`` —— 连 tellraw 都不认识了。同一个解析问题只允许
+    有一处实现，否则两份迟早分叉，而分叉的代价是判定与权限用的是两套真相。
     """
-    cmd = (command or "").strip()
-    while cmd.startswith("/"):
-        cmd = cmd[1:].lstrip()
-
-    # 穿透 execute ... run <真命令>（可嵌套，取最后一个 run）
-    low = cmd.lower()
-    if low.startswith("execute"):
-        idx = low.rfind(" run ")
-        if idx == -1:
-            return "execute", cmd[len("execute"):].lstrip()
-        cmd = cmd[idx + 5:].lstrip()
-
-    parts = cmd.split(None, 1)
-    name = parts[0].lower() if parts else ""
-    if ":" in name:
-        name = name.split(":", 1)[1]
+    try:
+        inner = unwrap_command(command)
+    except CommandParseError:
+        # 解析不出来（execute 子命令边界判不出 / 嵌套过深）：**绝不猜**。
+        # 权限闸门 java_commands.effective_level 已对这类命令 fail-closed 直接拒绝；
+        # 这里只需保证**不给它任何静默 / 幂等 / 成功模式豁免** ——
+        # 返回一个不在任何清单里的名字即可。
+        return "execute", ""
+    parts = inner.split(None, 1)
+    if not parts or not parts[0]:
+        return "", ""
+    name = strip_namespace(parts[0].lower())
     return name, (parts[1] if len(parts) > 1 else "")
 
 
@@ -346,18 +461,45 @@ def is_syntax_error_output(output: str) -> bool:
     low = _low(output)
     if not low or is_unknown_command_output(low):
         return False
-    return any(m in low for m in _SYNTAX_MARKERS)
+    if any(m in low for m in _SYNTAX_MARKERS):
+        return True
+    return _SYNTAX_WORD_RE.search(low) is not None
 
 
 def is_explicit_failure_output(output: str) -> bool:
+    """明确失败：英文**单词**按词边界、短语与中文按子串。
+
+    v0.22.7（核验 P0-2）：不再用裸子串扫英文单词 —— 那会误伤玩家名
+    （``Gave 1 [Diamond] to Error`` 被判 failed）以及 NBT / 物品名里的普通单词。
+    """
     low = _low(output)
     if not low or is_unknown_command_output(low) or is_syntax_error_output(low):
         return False
-    return any(m in low for m in _FAILED_MARKERS)
+    if any(m in low for m in _PHRASE_FAILURE_MARKERS):
+        return True
+    if any(m in low for m in _CJK_FAILURE_MARKERS):
+        return True
+    return _FAILURE_WORD_RE.search(low) is not None
+
+
+def is_anchored_success_output(command: str, output: str) -> bool:
+    """输出是否以**该命令自己的**锚定成功模式开头（= 拿到正面证据）。
+
+    只对原版命令有效（反馈文本固定可枚举）。模组命令没有模式表，一律返回
+    ``False``，由调用方走 ``inferred_success`` / ``unknown`` 兜底 ——
+    **不能**因为模组反馈五花八门就默认放宽成成功。
+    """
+    pats = _ANCHORED_SUCCESS_RES.get(base_name(command))
+    if not pats:
+        return False
+    low = _low(output)
+    if not low:
+        return False
+    return any(p.search(low) for p in pats)
 
 
 def is_explicit_success_output(output: str) -> bool:
-    """命中显式成功标记（``Gave`` 等）。只提升置信度，不作为成功门槛。"""
+    """命中**非锚定**通用成功标记（``Gave`` 等）。只提升置信度，不作为成功门槛。"""
     low = _low(output)
     if not low:
         return False
@@ -381,14 +523,25 @@ def classify_command_output(
 ) -> CommandResult:
     """把一次 ``rcon.command()`` 的返回判成 ``CommandResult``。
 
-    判定顺序（**成功识别必须早于 unknown 兜底**）：
+    判定顺序（v0.22.7 定稿，**每一步的位置都有理由**）：
 
-    1. 空响应 → 按命令类型 + ``response_received`` + ``boundary_confirmed`` 三态判
+    1. **空响应分支**（最高优先级，且**非幂等先于** ``boundary_confirmed`` 判断）
+       —— 非幂等命令的空响应永远是 ``unknown``：``dispatched_unconfirmed`` 会让
+       ``accepted=True`` 从而**不熔断**后续命令，那会削弱 v0.22.4 建立的重复副作用
+       保护（``give`` 空响应 → 后续命令照发 = 可能重复发物品）。
     2. ``Unknown command`` → ``failed``（命令不存在，重试徒劳）
-    3. 明确解析错误 → ``syntax_error``（可安全重写重试）
-    4. 其它明确失败 → ``failed``
-    5. 非空且无错误标记 → ``success``（``inferred``；命中显式标记则 ``explicit``）
-    6. 兜底 → ``unknown``
+    3. 明确解析错误 → ``syntax_error``（命令从未执行，可安全重写）
+    4. **先取正面证据**：命中本命令的锚定成功模式（``^gave\\b`` 等）时，
+       第 5 步跳过失败词扫描 —— 否则玩家名叫 ``Error`` 会把真成功翻成失败
+    5. 其它明确失败 → ``failed``
+    6. **边界未确认**（``boundary_confirmed is False`` + 已收到响应）：
+       非幂等 → ``unknown``（继续熔断）；消息类 / 幂等 → ``dispatched_unconfirmed``。
+       **本步必须在「返回成功」之前** —— idle 截断的输出不能冒充完整成功
+    7. 明确成功（锚定证据 或 通用成功标记）→ ``success``
+    8. 非空、无错误标记、也**没有成功证据** → 消息类命令视为成功（输出即消息回显）；
+       非幂等命令 → ``unknown``（不确认副作用，宁可熔断也不谎报）；
+       其余 → ``inferred_success``（**不是** ``success``：``ok=False``）
+    9. 兜底 → ``unknown``
     """
     out_s = str(output or "").strip()
     res = CommandResult(
@@ -440,34 +593,81 @@ def classify_command_output(
         res.retryable = True
         return res
 
-    # ---- 4) 其它明确失败 ----
-    if is_explicit_failure_output(out_s):
+    # ---- 4) 先取正面证据：是否命中**本命令的**锚定成功模式 ----
+    anchor_ok = is_anchored_success_output(command, out_s)
+
+    # ---- 5) 其它明确失败 ----
+    # 已拿到锚定成功证据时**跳过**失败词扫描：``Gave 1 [Diamond] to Error``
+    # 里的 "error" 只是玩家名的一部分（v0.22.7 核验 P0-2）。
+    if not anchor_ok and is_explicit_failure_output(out_s):
         res.status = "failed"
         res.reason = "服务端明确拒绝执行"
         res.retryable = False
         return res
 
-    # ---- 5) 成功识别（必须早于 unknown 兜底） ----
+    # ---- 6) 边界未确认：不得宣称完整成功（必须早于「返回成功」） ----
+    if boundary_confirmed is False and response_received:
+        name = base_name(command)
+        if name in NON_IDEMPOTENT_COMMANDS:
+            # 非幂等命令在 idle 下拿到半截输出：不知道副作用落没落定。
+            # 报 dispatched_unconfirmed 会让 accepted=True → 后续命令继续执行，
+            # 重复副作用保护就漏了 —— 必须继续 unknown（v0.22.7 核验裁决 #2）。
+            res.status = "unknown"
+            res.reason = (
+                "非幂等命令的响应边界未确认（可能处于 idle 降级模式），"
+                "输出可能被截断，无法确认副作用是否落定"
+            )
+            return res
+        if name in SILENT_EMPTY_SUCCESS_COMMANDS or name in IDEMPOTENT_COMMANDS:
+            res.status = "dispatched_unconfirmed"
+            res.reason = "已收到本命令响应，但响应边界未确认（可能处于 idle 降级模式）"
+            return res
+        res.status = "unknown"
+        res.reason = "响应边界未确认，且命令类型未知，无法确认结果"
+        return res
+
+    # ---- 7) 明确成功 ----
+    if anchor_ok:
+        res.status = "success"
+        res.confidence = "explicit"
+        res.reason = "命中本命令的锚定成功模式"
+        return res
     if is_explicit_success_output(out_s):
         res.status = "success"
         res.confidence = "explicit"
         res.reason = "命中显式成功标记"
         return res
-    if not STRICT_SUCCESS_MATCHING:
+
+    # ---- 8) 非空、无错误标记，但**没有成功证据** ----
+    name = base_name(command)
+    if name in SILENT_EMPTY_SUCCESS_COMMANDS:
+        # 消息类命令的输出就是消息本身的回显（/say 会把广播内容回给你），
+        # 不是状态文本 —— 无错误标记即视为成功。
         res.status = "success"
         res.confidence = "inferred"
-        res.reason = "非空输出且无任何错误标记（推断成功）"
+        res.reason = "消息类命令：输出为消息回显，无错误标记即视为成功"
+        return res
+    if name in NON_IDEMPOTENT_COMMANDS:
+        # 不确认副作用 → 宁可熔断也不谎报成功（重复发物品比「结果未知」贵得多）
+        res.status = "unknown"
+        res.reason = "非幂等命令的输出未命中任何成功模式，无法确认副作用是否落定"
+        return res
+    if INFERRED_SUCCESS_ENABLED:
+        res.status = "inferred_success"
+        res.confidence = "inferred"
+        res.reason = "输出非空且无错误标记，但没有成功证据（未确认，不视为成功）"
         return res
 
-    # ---- 6) 兜底 ----
+    # ---- 9) 兜底 ----
     res.status = "unknown"
-    res.reason = "输出文本无法判定（严格模式：未命中显式成功标记）"
+    res.reason = "输出文本无法判定（严格模式：未命中任何成功证据）"
     return res
 
 
 #: 状态 → 中文短标签（回执/日志统一措辞）
 STATUS_LABEL = {
     "success": "成功",
+    "inferred_success": "已执行·未确认",
     "dispatched_unconfirmed": "已发送·边界未确认",
     "failed": "失败",
     "syntax_error": "语法错误",
@@ -484,6 +684,10 @@ def format_results(results: list[CommandResult]) -> str:
         lines.append(f"[{tag}] {r.command}")
         if r.output:
             lines.append(f"    服务器返回：{r.output}")
+            # v0.22.7：未确认 / 未知的状态必须把「为什么未确认」一并带上 ——
+            # 否则用户只看到一句服务器原文，会把它当成成功回执。
+            if r.status in ("inferred_success", "unknown") and r.reason:
+                lines.append(f"    （{r.reason}）")
         elif r.reason:
             lines.append(f"    （{r.reason}）")
     return "\n".join(lines)

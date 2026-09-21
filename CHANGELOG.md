@@ -7,6 +7,99 @@
 > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
 > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
 
+## [v0.22.7] - 2026-09-21（预发布）
+
+> 一句话：把「**没发现错误就等于成功**」这条最后的侥幸通道彻底焊死 —— 非幂等命令的空响应与边界未确认一律判未知（熔断），RCON 异常按阶段区分「没发出去」和「可能发出去了」，并把服务端版本设置真正接到 WebUI 上。
+
+> 本版为**预发布（pre-release）**：修复先落地观察一段时间，确认线上稳定再转正式版
+> —— 尚未在 Vanilla / Paper / Fabric / Forge 真实服务端做矩阵测试。
+> 求稳请继续用 v0.22.1。
+
+### 修复
+
+#### 一、非幂等命令的判定优先级（重复副作用保护）
+
+`give` / `summon` / `effect` / `item` / `fill` / `function` 这类**跑两次就有两份后果**的命令，
+在空响应与边界未确认两条路径上都必须熔断，不能被更宽松的通用分支截走：
+
+| 场景 | 旧口径 | v0.22.7 |
+| --- | --- | --- |
+| 非幂等 + 空响应 + 边界已确认 | `success` | **`unknown`**（accepted=False） |
+| 非幂等 + 空响应 + 边界未确认 | `dispatched_unconfirmed` | **`unknown`**（accepted=False） |
+| 非幂等 + 非空输出 + 边界未确认 | `dispatched_unconfirmed` | **`unknown`**（accepted=False） |
+| tellraw / say / title + 边界未确认 | `dispatched_unconfirmed` | 不变（消息类，允许） |
+| time 等幂等命令 + 边界未确认 | `dispatched_unconfirmed` | 不变（重发无副作用） |
+
+旧口径的问题不是「判错一个状态」，而是 `dispatched_unconfirmed` 带 `accepted=True` ——
+工作流会**继续执行后续命令**，等于把 v0.22.4 刚建立的重复副作用保护拆掉了。
+
+#### 二、`Operation aborted` 与错误词边界
+
+- `Operation aborted` / `Refused` / `cancelled` / `rejected` / `denied` 此前**不含任何失败词**
+  → 被判成成功。现已纳入失败短语表。
+- 英文失败词改用**词边界**匹配：玩家名叫 `Error` 时
+  `Gave 1 [Diamond] to Error` 不再被判 `failed`（实测复现过的误伤）。
+- 命令级**锚定成功模式**（`^gave\b` / `^set the time\b` …）优先于全局失败词扫描 ——
+  先看「这条命令自己的成功长什么样」，再谈失败。
+- 连带修掉同源误伤：`_SYNTAX_MARKERS` 里的 `"expected "` 是 `"unexpected "` 的子串，
+  于是 `An unexpected error occurred` 这类**运行期**错误被判成 `syntax_error`
+  （`retryable=True`，等于谎称「重写就能安全重试」）。现改为词边界匹配。
+
+#### 三、未知非空输出不再默认成功
+
+模组命令（反馈文本不可枚举）的非空输出，在没有任何成功证据时降级为
+**`inferred_success`（已执行·未确认）**，而不是 `success`：
+
+- `ok=False`，回执与工作流汇总都明写「未确认」，不对外宣称成功；
+- 非幂等命令连 `inferred_success` 都不给，直接 `unknown`；
+- 想更保守可把 `INFERRED_SUCCESS_ENABLED` 置 `False`，一律落 `unknown`。
+
+#### 四、RCON 异常分阶段
+
+`RconError` 新增 `phase`（`connect` / `send` / `read` / `protocol` / `unknown`），
+在**明确位置**构造而不是靠异常文本猜：
+
+- `connect` → 命令确实没发出去 → `failed`；
+- `send` / `read` / `protocol` → 命令**可能已经到达服务端** → `unknown`。
+
+此前 `writer.write()` 写了半截、`drain()` 抛异常也被判失败，会诱导上层重发 `give` —— 重复发物品。
+
+#### 五、execute 解析器全仓只留一份
+
+`core/command_result.py` 不再自己手搓 `rfind(" run ")`（实测会把
+`execute as @a run tellraw @a {"text":" run "}` 的命令名解析成 `"}"`），
+改为复用 `core/java_commands.unwrap_command`。同一个解析问题只允许一处实现，
+否则判定与权限迟早用上两套真相。
+
+### 新增
+
+- **WebUI 接通版本设置**（此前只有 schema 与后端，前端没有字段 —— 用户看不到也保存不了）：
+  - 「连接」分组新增 `server_version_override`（手填版本）与 `item_syntax_override`（语法世代）；
+  - 能力状态行直说结论：「Minecraft 1.20.1（来源：主人手动声明）· 物品语法：legacy_nbt（来源：手动指定）」；
+  - 版本未知时明确提示：「⚠ 当前无法确定 Minecraft 服务端版本。含 NBT、附魔、物品组件的请求不会直接执行」；
+  - 保存后立即刷新能力状态，**不需要重启插件**。
+- `server/status` 的版本能力改到 RCON 连接**之前**计算 —— RCON 掉线时也能看见 Agent 到底按哪个版本构造命令。
+- 服务器页消费 `version_hint`（此前后端只生成、前端没人显示，等于最重要的提示没到用户眼前）。
+- `tests/test_v0227_result_hardening.py`：把上述每一条裁决钉成断言（空响应优先级矩阵、
+  边界未确认矩阵、`Operation aborted`、词边界、锚定成功模式、`inferred_success` 语义、
+  RCON 阶段、单一 execute 解析器、WebUI 接线）。
+
+### 已知问题
+
+> 下列问题由本版的独立核验（GPT 复核）指出，**本版未修**，留待下一版收口。
+
+- **P1｜`inferred_success` 仍可能触发复杂工作流重试**（`core/command_result.py:655-659`、`core/command_result.py:314`、`core/workflow.py:388`、`core/workflow.py:441`）
+  - 复杂工作流以 `all_ok = all(r["ok"] for r in exec_reports)` 判断本轮是否完成，而 `inferred_success` 的
+    `ok=False`（`accepted=True` 只表示「不必熔断后续命令」）。于是「非空输出、无错误词、也无成功证据」的
+    模组命令会让工作流判定本轮未完成 → 进入下一轮实现或纠错 → 同一条命令被再次执行。
+  - 对**未被 `NON_IDEMPOTENT_COMMANDS` 覆盖的模组命令**，这仍可能造成重复副作用。
+  - **本版规避手段（无需改代码）**：把 `INFERRED_SUCCESS_ENABLED` 置 `False`，此类输出一律落 `unknown` 并熔断。
+  - 下一版方向：`inferred_success` 只允许对外显示「已执行·未确认」，不得自动重试；或在未知输出上直接判 `unknown`。
+- **WebUI 版本控件缺真实交互验证**：`server_version_override` / `item_syntax_override` 目前只有静态契约测试与后端单测，
+  尚未在真实浏览器验证「填写 `1.20.1` → 保存 → `item_syntax` 切到 `legacy_nbt`」的完整链路（计划补 Playwright 用例）。
+- **未做真实服务端矩阵测试**：仅在本机 **1.20.1 · Forge 47.4.23** 实测，Vanilla / Paper / Fabric 未覆盖 ——
+  这也是本版仍标 pre-release 的原因。
+
 ## [v0.22.6] - 2026-09-21（预发布）
 
 > 一句话：修掉「命令明明失败却报成功」的**假成功**链路，并让**服务端版本**第一次真正进入 Agent 提示词 —— 此前 LLM 只能凭记忆猜版本，猜错就是把 1.21 的物品组件语法发给 1.20.1 服务端。
