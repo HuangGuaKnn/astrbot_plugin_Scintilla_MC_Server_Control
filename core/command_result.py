@@ -47,7 +47,8 @@ v0.22.6 用「非空 + 没命中错误词 → success」推断成功，v0.22.7 �
 
 ``inferred_success`` 与 ``success`` 的区别是硬性的：``ok`` 为 ``False``
 （绝不对外宣称成功），但 ``accepted`` 为 ``True``（消息确实发出去了，
-不该让后续命令白白熔断）。**调用方不得把它当作 confirmed success 使用。**
+不该让后续命令白白熔断）。**调用方不得把它当作 confirmed success 使用，
+也不得把它当作「可以重试」的依据**（v0.22.8：重试判据只看「是否生效不确定」）。
 
 若日后要彻底收紧（连 ``inferred_success`` 也不要），把
 :data:`INFERRED_SUCCESS_ENABLED` 置 ``False`` 即可 —— 那类输出会全部落 ``unknown``。
@@ -308,8 +309,13 @@ class CommandResult:
         ``dispatched_unconfirmed``（消息确实发出去了，只是边界未确认）与
         ``inferred_success``（无错误标记、但没有成功证据）都不该中止同批次的后续命令。
 
-        注意 ``accepted`` **不等于** ``ok``：前者管「要不要停」，后者管「能不能
-        对外宣称成功」——``inferred_success`` 的 ``accepted=True``、``ok=False``。
+        注意 ``accepted`` **不等于** ``ok``：前者管「同批次后续命令要不要继续发」，
+        后者管「能不能对外宣称成功」——``inferred_success`` 的 ``accepted=True``、
+        ``ok=False``。
+
+        v0.22.8（核验 P1）：``accepted`` **不构成自动重试的依据**。工作流要不要重跑本轮，
+        由 ``core/workflow.py::_halt_on_uncertain`` 按「是否生效不确定」单独判定 ——
+        ``unknown`` / ``inferred_success`` / ``dispatched_unconfirmed`` 一律不自动重试。
         """
         return self.status in ("success", "inferred_success", "dispatched_unconfirmed")
 
