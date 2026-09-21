@@ -19,6 +19,11 @@ _backup/
 *.bak_*
 plugin_config*.json
 
+# ---- AstrBot 运行产物 / 本地一次性跑测脚本 ----
+/data/
+run_full.py
+run_ui.py
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/

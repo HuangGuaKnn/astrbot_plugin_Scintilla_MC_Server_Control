@@ -1301,24 +1301,50 @@ window.jumpToTextColor = jumpToTextColor;
   if(el) el.onclick = jumpToTextColor;
 });
 
-// ============ RCON 结束边界 · 运行态（v0.22.4） ============
-// 自动降级（sentinel → idle）会削弱「长响应完整收齐」的保证，所以必须**看得见、可恢复**：
-// 设置页常驻一行运行态，并提供「重建连接」把它拉回配置的方式。
+// ============ RCON 结束边界 · 运行态（v0.22.4 / v0.22.5） ============
+// 三个**互不替代**的状态各自独立显示，绝不能把「没有自动降级」当成「响应可靠」：
+//   ① idle 静默窗口：即使用户亲手把 rcon_end_mode 配成 idle，响应完整性也**本来就不保证**
+//      （degraded=false 时同样要显示，这是本次复审补上的 P2）
+//   ② 自动降级 degraded：配置是 sentinel，运行中被自动降级 → 额外警示
+//   ③ 最近一次边界未确认：boundary_confirmed === false（true=可靠；null=还没跑过命令）
 function renderRconRuntime(rt){
   const el = $("rcon_runtime_line");
   if(!el) return;
   if(!rt){ el.innerHTML = ""; return; }
   const name = m => m === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）";
+  const mode = rt.end_mode === "idle" ? "idle" : "sentinel";
+  const conf = rt.boundary_confirmed;
+  let html = "";
   if(rt.degraded){
-    el.innerHTML = `<span class="badge amb">⚠ 已自动降级</span> 当前运行：<b>${name(rt.end_mode)}</b>`
-      + ` · 配置：${name(rt.configured)}`
-      + (rt.probe_misses ? ` · 连续无法确认响应边界 ${rt.probe_misses} 次` : "")
-      + `<br>降级期间「响应是否读完」靠静默窗口猜，服务端分包间隔偏大时长响应可能被截断。`
-      + `排查完点下方「重建 RCON 连接」即可回到配置的方式。`;
+    html += `<span class="badge amb">⚠ 已自动降级</span> 当前运行：<b>${name(mode)}</b>`
+      + ` · 配置：${name(rt.configured)}`;
   } else {
-    el.innerHTML = `<span class="badge ok">✓ 边界可靠</span> 当前运行：<b>${name(rt.end_mode)}</b>`
+    html += `<span class="badge ${mode === "idle" ? "amb" : "ok"}">`
+      + (mode === "idle" ? "⚠ 静默窗口模式" : "✓ 结束哨兵") + `</span>`
+      + ` 当前运行：<b>${name(mode)}</b>`
       + (rt.connected ? " · 已连接" : " · 尚未建立连接（下次调用自动连）");
   }
+  if(mode === "idle"){
+    html += `<br>当前方式靠「静默窗口内没有新包」判断响应读完，<b>响应完整性未保证</b>：`
+      + `服务端分包间隔大于窗口 ${rt.idle_probe != null ? rt.idle_probe + "s" : ""} 时长响应可能被截断。`
+      + (rt.degraded
+          ? `排查完点下方「重建 RCON 连接」即可回到配置的方式。`
+          : `如需协议层可证的边界，请把「RCON 结束边界」改回 sentinel（结束哨兵）。`);
+  }
+  if(conf === false){
+    html += `<br><span class="badge amb">⚠ 最近一次响应可能不完整</span>`
+      + ` 该次输出为「边界未确认」的结果，请以服务端侧效果为准复核。`;
+  } else if(conf === null || conf === undefined){
+    html += `<br><span class="muted">尚未执行过命令，暂无边界确认结果。</span>`;
+  }
+  if(rt.idle_unconfirmed > 0){
+    html += `<br><span class="muted">累计「边界未确认」次数：${rt.idle_unconfirmed}`
+      + (mode === "idle" ? "（每次 idle 静默窗口到期都会累加）" : "") + `</span>`;
+  }
+  if(rt.probe_misses){
+    html += `<br><span class="muted">连续无法确认响应边界 ${rt.probe_misses} 次</span>`;
+  }
+  el.innerHTML = html;
 }
 async function resetRcon(){
   const el = $("rcon_runtime_line");
