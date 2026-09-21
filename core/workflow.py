@@ -28,11 +28,22 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
+from .java_commands import effective_level
 from .rcon import RconTimeoutError
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
 KB_RESULT_LIMIT = 6           # 知识库检索条数
+
+#: 非幂等命令：重复执行会产生**额外**副作用（给两份物品、召唤两只实体……）。
+#: 因此它们「已执行但服务器没给输出」时，既不能当成功、也不能当失败交给 Agent 重试。
+NON_IDEMPOTENT_COMMANDS = frozenset({
+    # 核验点名的清单
+    "give", "item", "summon", "effect", "xp", "experience", "fill",
+    "setblock", "clone", "function", "random", "spreadplayers",
+    # 同类：重复执行会叠加 / 新增副作用
+    "enchant", "damage", "loot", "place", "advancement", "recipe",
+})
 
 
 class MCWorkflow:
@@ -502,6 +513,22 @@ class MCWorkflow:
             try:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()
+                if not out_s and self._is_non_idempotent(cmd):
+                    # v0.22.4：哨兵确认过的「合法空响应」只说明服务器答了这一条，
+                    # 并不能说明这条副作用已经落定。对 give / summon / effect 这类
+                    # 非幂等命令，若当成普通失败交给 Agent 重试，就是重复副作用 ——
+                    # 因此单列 unknown、并同样立刻停止后续命令。
+                    reports.append({
+                        "command": cmd, "ok": False, "unknown": True, "status": "unknown",
+                        "output": "已收到合法空响应（服务器未返回输出），但非幂等命令的效果无法确认",
+                    })
+                    for rest in commands[idx + 1:]:
+                        rc = str(rest.get("command", "")).strip().lstrip("/")
+                        reports.append({
+                            "command": rc or "(空)", "ok": False, "status": "skipped",
+                            "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
+                        })
+                    break
                 ok = self._is_success_out(out_s)
                 reports.append({
                     "command": cmd, "ok": ok,
@@ -551,6 +578,20 @@ class MCWorkflow:
             m2 = re.match(r"^item give entity\s+(\S+)", c)
             return m2.group(1) if m2 else ""
         return ""
+
+    @staticmethod
+    def _is_non_idempotent(cmd: str) -> bool:
+        """判断命令是否「重复执行会产生额外副作用」。
+
+        · 已知非幂等命令（give / summon / effect …）→ True；
+        · 解析不出结构的复杂 execute → True（判不准就按最保守处理）；
+        · 模组 / 未知命令 → True（服务器语义不明，宁可要求人工确认）。
+        """
+        try:
+            name, _level, unknown = effective_level(cmd)
+        except Exception:  # noqa: BLE001
+            return True
+        return unknown or name in NON_IDEMPOTENT_COMMANDS
 
     @staticmethod
     def _is_success_out(out_s: str) -> bool:

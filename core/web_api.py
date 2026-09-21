@@ -82,6 +82,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/prompts/reset", self.reset_prompt, ["POST"], "恢复内置默认提示词")
         reg(f"{PAGE_PREFIX}/overview", self.get_overview, ["GET"], "概览信息")
         reg(f"{PAGE_PREFIX}/rcon/test", self.test_rcon, ["POST"], "测试RCON连接")
+        reg(f"{PAGE_PREFIX}/rcon/reset", self.reset_rcon, ["POST"], "重建RCON连接（清除自动降级）")
         reg(f"{PAGE_PREFIX}/events", self.get_events, ["GET"], "最近服务器事件")
         reg(f"{PAGE_PREFIX}/server/status", self.get_server_status, ["GET"], "服务器实时状态")
         reg(f"{PAGE_PREFIX}/server/broadcast", self.broadcast, ["POST"], "服务器广播")
@@ -806,6 +807,7 @@ class McControlWebApi:
                 "rcon_configured": bool(self._cfg("rcon_password", "")),
                 "rcon_timeout": self._cfg("rcon_timeout", 5.0),
                 "rcon_end_mode": self._cfg("rcon_end_mode", "sentinel"),
+                "rcon_runtime": self._rcon_runtime(),
                 "server_dir": str(self._cfg("server_dir", "") or ""),
                 # v0.21.15：概览页据此把本地文件类模块标成「异地模式禁用」
                 "remote_rcon_mode": bool(self._cfg("remote_rcon_mode", False)),
@@ -821,8 +823,43 @@ class McControlWebApi:
             "events": events,
         })
 
+    def _rcon_runtime(self) -> dict:
+        """RCON 运行态（v0.22.4）：当前**实际生效**的结束边界方式可能已被自动降级。
+
+        · end_mode  ：实例当下用的方式（sentinel / idle）
+        · configured：配置里写的方式（用户意图）
+        · degraded  ：两者不一致 = 已自动降级（长响应完整性保证变弱，需人工关注）
+        """
+        configured = str(self._cfg("rcon_end_mode", "sentinel") or "sentinel").strip().lower()
+        configured = "idle" if configured == "idle" else "sentinel"
+        rcon = getattr(self.plugin, "_rcon", None)
+        if rcon is None:
+            return {"end_mode": configured, "configured": configured,
+                    "degraded": False, "probe_misses": 0, "connected": False}
+        mode = "idle" if str(getattr(rcon, "end_mode", configured)) == "idle" else "sentinel"
+        return {
+            "end_mode": mode,
+            "configured": configured,
+            "degraded": mode != configured,
+            "probe_misses": int(getattr(rcon, "_probe_misses", 0) or 0),
+            "connected": bool(getattr(rcon, "connected", False)),
+        }
+
+    async def reset_rcon(self):
+        """重建 RCON 连接：丢掉已自动降级的实例，按配置重新开始（回到 sentinel）。"""
+        try:
+            self.plugin._rcon = None
+            runtime = self._rcon_runtime()
+            return json_response({
+                "ok": True,
+                "message": "RCON 连接已重建（按当前配置：%s）" % runtime["configured"],
+                "runtime": runtime,
+            })
+        except Exception as e:  # noqa: BLE001
+            return json_response({"ok": False, "error": f"重建 RCON 连接失败：{e}"})
+
     async def test_rcon(self):
-        """测试 RCON 连接，返回在线玩家信息。"""
+        """测试 RCON 连接，返回在线玩家信息 + 当前结束边界运行态。"""
         plugin = self.plugin
         try:
             rcon = await plugin._get_rcon()
@@ -834,9 +871,10 @@ class McControlWebApi:
                 "online": parsed["online"],
                 "max": parsed["max"],
                 "players": parsed["players"],
+                "runtime": self._rcon_runtime(),
             })
-        except Exception as e:
-            return json_response({"ok": False, "error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            return json_response({"ok": False, "error": str(e), "runtime": self._rcon_runtime()})
 
     async def get_events(self):
         """返回最近服务器事件列表。"""
