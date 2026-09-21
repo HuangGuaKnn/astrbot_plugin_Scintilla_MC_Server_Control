@@ -139,6 +139,12 @@ class AsyncRcon:
         #: （idle 静默窗口到期 / 超时 / 协议异常），内容可能不完整；``None`` = 本实例
         #: 还没执行过任何命令，**没有最近一次结果可谈**（不得默认成 True 冒充可靠）。
         self.last_boundary_confirmed: bool | None = None
+        #: v0.22.6：最近一次命令**是否收到过属于本命令的响应**（「发出去了」的证据）。
+        #: 与 ``last_boundary_confirmed`` 是**两个独立维度**，不能互相代替：
+        #: idle 降级模式下「收到响应但边界未确认」是合法组合 —— 此时消息类命令
+        #: 应报「已发送·边界未确认」，既不是「失败」、也不是「结果未知」。
+        #: 三态同构：``None`` = 本实例还没执行过任何命令。
+        self.last_response_received: bool | None = None
         self._idle_unconfirmed_count = 0
         #: v0.22.5：实例是否已被插件「退役」（reset 时摘下来的旧实例）。退役后仍允许
         #: 跑完手头那一条命令（不粗暴掐断在途调用），但用完立即关闭，绝不回到连接池。
@@ -278,6 +284,9 @@ class AsyncRcon:
         # 否则「上一次 sentinel 成功 → True」会被超时 / 协议异常等路径原样沿用，
         # 让 UI 显示「边界可靠」而实际最近一次执行结果未知（与事实相反）。
         self.last_boundary_confirmed = False
+        # v0.22.6：同理，「是否收到过本命令响应」也必须从「没有」起算，
+        # 否则上一次的 True 会被超时路径沿用，让空响应冒充「已送达」。
+        self.last_response_received = False
 
         req_id = self._next_id()
         probe_id: int | None = None
@@ -327,6 +336,10 @@ class AsyncRcon:
                 # 服务端已经处理到本次命令 —— 这是「顺序正确」的证据。
                 # 注意：非 PACKET_RESPONSE 类型也照样算证据（服务端确实回了这一条）。
                 command_seen = True
+                # v0.22.6：这是「命令确实送达并被服务端处理过」的唯一证据位。
+                # 与 last_boundary_confirmed 独立 —— idle 降级模式下本字段为 True
+                # 而边界为 False，此时消息类命令应报「已发送·边界未确认」。
+                self.last_response_received = True
                 if resp_type == PACKET_RESPONSE:
                     chunks.append(payload)
                     if len(chunks) > MAX_PACKETS:
