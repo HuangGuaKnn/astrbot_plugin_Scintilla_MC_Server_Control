@@ -38,13 +38,42 @@ def check(desc: str, ok: bool, detail: str = "") -> None:
           + (f"  <- {detail}" if detail and not ok else ""))
 
 
+def _ensure_core_package():
+    """把 ``core/`` 注册成一个真正的包（``core/__init__.py`` 是空的，安全）。"""
+    if "core" in sys.modules:
+        return sys.modules["core"]
+    spec = importlib.util.spec_from_file_location(
+        "core",
+        PLUGIN_DIR / "core/__init__.py",
+        submodule_search_locations=[str(PLUGIN_DIR / "core")],
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["core"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _load(name: str, rel: str):
-    spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / rel)
+    """加载插件模块；``core/`` 下的按**包内模块**加载。
+
+    v0.22.7：core 内部开始有相对导入（``command_result`` → ``java_commands``），
+    而 ``spec_from_file_location`` 的单文件加载没有父包，``from .x import y``
+    会直接 ``ImportError: attempted relative import with no known parent package``。
+    ``core/__init__.py`` 是空的，因此可以安全地把 core 注册成包再按 ``core.<模块名>``
+    加载 —— 模块名必须与包路径一致，相对导入才解析得到。
+    """
+    path = PLUGIN_DIR / rel
+    if rel.startswith("core/"):
+        _ensure_core_package()
+        mod_name = "core." + Path(rel).stem
+    else:
+        mod_name = name
+    spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
     # 必须先注册进 sys.modules 再 exec：@dataclass 会通过
     # sys.modules[cls.__module__] 反查命名空间，不注册就拿到 None →
     # AttributeError: 'NoneType' object has no attribute '__dict__'。
-    sys.modules[name] = mod
+    sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -132,11 +161,21 @@ def matrix_cases() -> None:
     r = classify("kick Nobody", "Player Nobody not found")
     check("Player not found → failed", r.status == "failed", r.status)
 
-    # ---- 模组返回的任意文本：不得误判成 unknown（否则会吞掉后续命令）----
+    # ---- 模组返回的任意文本：不得谎报成功，也不得误吞后续命令 ----
+    # v0.22.7：模组命令的反馈文本不可枚举，不能逼它命中成功模式表，
+    # 但「没发现错误」也**不是**成功的证据 —— 因此落 inferred_success：
+    # ok=False（绝不对外宣称成功）、accepted=True（不熔断后续命令）。
     r = classify("tac:reload", "Reloaded 42 gun definitions")
-    check("非空且无错误标记 → success(inferred)（不误吞多命令任务的后续命令）",
-          r.status == "success" and r.confidence == "inferred",
-          f"{r.status}/{r.confidence}")
+    check("模组未知文本 → inferred_success（不是 success，也不熔断）",
+          r.status == "inferred_success" and r.confidence == "inferred"
+          and r.ok is False and r.accepted is True,
+          f"{r.status}/{r.confidence}/ok={r.ok}")
+
+    # ---- 非幂等 + 未知文本：不确认副作用 → unknown（熔断，宁停不重）----
+    r = classify("give Steve diamond 1", "Weird modded feedback xyz")
+    check("非幂等 + 未知文本 → unknown（不确认副作用，宁可熔断）",
+          r.status == "unknown" and r.ok is False and r.accepted is False,
+          r.status)
 
     # ---- 成功识别必须早于 unknown 兜底 ----
     r = classify("give Steve diamond 1", "Gave 1 [Diamond] to Steve")
@@ -222,8 +261,32 @@ def reverse_control_cases() -> None:
     check("静默集合与幂等集合**不混用**（time 不在静默集合里）",
           "time" not in cr.SILENT_EMPTY_SUCCESS_COMMANDS
           and "time" in cr.IDEMPOTENT_COMMANDS)
-    check("STRICT_SUCCESS_MATCHING 默认关（防误吞多命令任务）",
-          cr.STRICT_SUCCESS_MATCHING is False)
+    check("v0.22.7：失败词已拆成「短语 / 英文词 / 中文词」三组（不再裸子串扫英文）",
+          hasattr(cr, "_PHRASE_FAILURE_MARKERS")
+          and hasattr(cr, "_WORD_FAILURE_MARKERS")
+          and hasattr(cr, "_CJK_FAILURE_MARKERS")
+          and not hasattr(cr, "_FAILED_MARKERS"))
+    check("v0.22.7：英文失败词走词边界（`Error404` / `MrError` 这类名字不再误伤）",
+          cr._FAILURE_WORD_RE.search("operation error occurred") is not None
+          and cr._FAILURE_WORD_RE.search("gave 1 [diamond] to Error404") is None
+          and cr._FAILURE_WORD_RE.search("gave 1 [diamond] to MrError") is None)
+    check("v0.22.7：★玩家名就叫 Error —— 真正兜住它的是**锚定成功模式**而非词边界",
+          cr.classify_command_output(
+              "give Error diamond 1", "Gave 1 [Diamond] to Error"
+          ).status == "success")
+    check("v0.22.7：Operation aborted → failed（旧口径会判 success）",
+          cr.classify_command_output(
+              "give Steve diamond 1", "Operation aborted"
+          ).status == "failed")
+    check("v0.22.7：原版命令有锚定成功模式表，模组命令不在表里",
+          "give" in cr.ANCHORED_SUCCESS_PATTERNS
+          and "tacz" not in cr.ANCHORED_SUCCESS_PATTERNS)
+    check("v0.22.7：inferred_success 已进入状态机且**不等于** success",
+          "inferred_success" in cr.CommandStatus.__args__
+          and cr.CommandResult(command="x", status="inferred_success").ok is False
+          and cr.CommandResult(command="x", status="inferred_success").accepted is True)
+    check("v0.22.7：INFERRED_SUCCESS_ENABLED 默认开（关掉则全落 unknown）",
+          cr.INFERRED_SUCCESS_ENABLED is True)
 
 
 def main() -> int:

@@ -222,6 +222,9 @@ class MCWorkflow:
                 ))
 
         ok = sum(1 for r in reports if r.ok)
+        # v0.22.7：inferred_success 单列 —— 它既不算成功（不谎报），
+        # 也不算失败（命令确实发出去了），必须让用户看见这一档。
+        inferred = sum(1 for r in reports if r.status == "inferred_success")
         dispatched = sum(1 for r in reports if r.status == "dispatched_unconfirmed")
         syntax = sum(1 for r in reports if r.status == "syntax_error")
         unknown = sum(1 for r in reports if r.status == "unknown")
@@ -230,13 +233,15 @@ class MCWorkflow:
         # 工作流日志状态：不再无条件写 done
         if reports and all(r.ok for r in reports):
             wf_status = "done"
-        elif unknown:
+        elif unknown or inferred:
+            # 未确认（inferred_success）也算「没能确认成功」，但它不是 failed
             wf_status = "unknown"
         else:
             wf_status = "failed"
 
         head = f"已成功 {ok}/{len(reports)} 条命令"
         for n, label in (
+            (inferred, "已执行但未确认"),
             (dispatched, "已发送但边界未确认"),
             (syntax, "语法错误（未执行）"),
             (failed, "失败"),
@@ -703,6 +708,7 @@ class MCWorkflow:
     def _fmt_results(reports: list[dict]) -> str:
         _tag = {
             "success": "OK",
+            "inferred_success": "已执行·未确认",
             "dispatched_unconfirmed": "已发送·未确认",
             "failed": "FAIL",
             "syntax_error": "语法错误",
@@ -736,6 +742,11 @@ class MCWorkflow:
         n_unconf = sum(
             1 for r in exec_reports if r.get("status") == "dispatched_unconfirmed"
         )
+        # v0.22.7：没拿到成功证据的那一档也要报出来 —— 它既不算生效、
+        # 也不算失败，含糊带过就等于把「未确认」伪装成「已生效」。
+        n_inferred = sum(
+            1 for r in exec_reports if r.get("status") == "inferred_success"
+        )
         summary = str(out.get("reasoning", "")).strip()[:80]
         head = f"任务执行成功（{n_ok}/{len(commands)} 条命令生效）"
         if n_unconf:
@@ -743,5 +754,10 @@ class MCWorkflow:
             head += (
                 f"；另有 {n_unconf} 条已发送但响应边界未确认"
                 "（不保证响应完整，如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+            )
+        if n_inferred:
+            head += (
+                f"；另有 {n_inferred} 条已下发但未确认（服务器未返回可识别的成功反馈，"
+                "请以游戏内实际结果为准）"
             )
         return f"{head}。{summary}"

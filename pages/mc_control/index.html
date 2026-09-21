@@ -571,6 +571,7 @@ try{
     <div class="card">
       <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
       <div id="sv_status"><span class="muted">加载中…</span></div>
+      <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
       <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
     </div>
     <div class="card">
@@ -832,6 +833,25 @@ try{
       </div>
       <div class="hint">探测命令留空即空命令：服务端照样回一个响应，且本身没有任何副作用。静默窗口只在 idle 模式生效；
         连续多次拿不到哨兵时插件会自动降级为 idle 并写日志提醒，不会静默假装读完了。</div>
+      <label class="f" style="margin-top:16px">服务端版本与物品语法</label>
+      <div class="frow" style="margin-top:2px">
+        <div style="flex:1">
+          <label class="f" style="margin-top:0">服务端版本 server_version_override</label>
+          <input type="text" id="cfg_server_version" placeholder="留空 = 自动探测，例：1.20.1">
+        </div>
+        <div style="flex:1;max-width:250px">
+          <label class="f" style="margin-top:0">物品语法世代 item_syntax_override</label>
+          <select id="cfg_item_syntax">
+            <option value="auto">auto —— 按版本自动判定</option>
+            <option value="legacy_nbt">legacy_nbt —— NBT {…}</option>
+            <option value="components">components —— 物品组件 […]</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
+      <div class="hint">优先级：<b>手动声明 &gt; 文件探测 &gt; 未知</b>。异地 RCON 模式读不到服务端文件，
+        <b>必须手填</b>，否则附魔 / NBT / 物品组件类请求会被明确拒绝 ——
+        插件不会猜一个版本硬编（猜错只会生成解析失败的命令）。</div>
       <div class="hint" id="rcon_runtime_line" style="margin-top:8px"></div>
       <div class="btnrow" style="margin-top:6px">
         <button class="btn ghost sm" type="button" id="btn_rcon_reset">↻ 重建 RCON 连接（回到配置方式）</button>
@@ -1433,6 +1453,9 @@ async function loadServer(){
   $("sv_status").innerHTML = `<span class="muted">正在查询…</span>`;
   $("sv_players").innerHTML = "";
   const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
+  // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
+  // 否则 RCON 一掉线，主人就看不见 Agent 到底按哪个版本构造命令了。
+  renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
   if(!r.ok){
     $("sv_status").innerHTML = `<span class="badge bad">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
     $("sv_players").innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
@@ -1444,6 +1467,12 @@ async function loadServer(){
     <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
     <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
     <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+  // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
+  // 等于「版本未知」这条最重要的提示根本没到主人眼前。
+  if(r.version_hint){
+    $("sv_ver_caps").insertAdjacentHTML("beforeend",
+      `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
+  }
   // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是主人没配好）
   if(RMT.on) $("sv_status").insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
@@ -2101,6 +2130,8 @@ const CFG_FIELDS = [
   ["cfg_rcon_end_mode","rcon_end_mode","s"],
   ["cfg_rcon_probe_command","rcon_probe_command","s"],
   ["cfg_rcon_idle_probe","rcon_idle_probe","n"],
+  ["cfg_server_version","server_version_override","s"],
+  ["cfg_item_syntax","item_syntax_override","s"],
   ["cfg_admin_ids","admin_ids","l"],
   ["cfg_danger_policy","danger_command_policy","s"],
   ["cfg_perm_hint","permission_hint_injection","b",true],
@@ -2185,10 +2216,47 @@ const S_DEFAULTS = {
   "cfg_bridge_format": "[MC] {player}：{message}",
   "cfg_danger_policy": "whitelist",
   "cfg_kb_engine": "bm25",
+  "cfg_item_syntax": "auto",
   "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
   "cfg_grad_title_t": "#FFAA00,#FF00FF", "cfg_grad_say_t": "#FFFFFF,#55FFFF", "cfg_grad_fb_t": "#FFAA00,#55FF55",
   "cfg_grad_fmt": "json",
 };
+
+// ============ 服务端版本能力（v0.22.7） ============
+// 设置页必须**能改**、也必须**能看见** Agent 实际在用哪个版本 ——
+// 否则会出现「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
+// 判据全部来自后端 describe_capabilities()：前端不自己推断版本。
+const SYNTAX_LABEL = {
+  "legacy_nbt": "legacy_nbt（NBT {…}）",
+  "components": "components（物品组件 […]）",
+};
+function renderVersionCaps(caps, targetId){
+  const el = $(targetId || "ver_caps_line"); if(!el) return;
+  if(!caps || typeof caps !== "object"){
+    el.innerHTML = `<span class="muted">版本能力：暂时读不到（不影响已保存的配置，稍后重试即可）。</span>`;
+    return;
+  }
+  if(!caps.known){
+    // 版本未知 = 带数据的请求会被拒绝：直说 + 给出出口，不许含糊
+    el.innerHTML = `<span style="color:var(--warn)">⚠ 当前无法确定 Minecraft 服务端版本。</span>`
+      + `含 NBT、附魔、物品组件的请求<b>不会直接执行</b>。`
+      + `请填写服务端版本，例如 <code>1.20.1</code>。`
+      + (caps.raw ? `（已填「${esc(caps.raw)}」但解析不出，请用 <code>1.20.1</code> 这种写法）` : "");
+    return;
+  }
+  const syn = SYNTAX_LABEL[caps.item_syntax] || caps.item_syntax || "-";
+  const src = (caps.item_syntax_source === "override")
+    ? "手动指定" : (caps.source_label || caps.item_syntax_source || "-");
+  el.innerHTML = `Minecraft <b>${esc(caps.raw || caps.version || "-")}</b>`
+    + `（来源：${esc(caps.source_label || caps.source || "-")}）`
+    + ` · 物品语法：<b>${esc(syn)}</b>（来源：${esc(src)}）`
+    + ` · 语法分水岭 ${esc(caps.cutover || "1.20.5")}`;
+}
+// 版本能力与 RCON 无关（后端已把它提到连服务器之前算），所以掉线也照样能读。
+async function refreshVersionCaps(){
+  const r = await callGet("server/status").catch(()=>({ok:false}));
+  renderVersionCaps(r && r.version_caps ? r.version_caps : null);
+}
 
 // ============ 命令工具 白名单 / 黑名单（v0.20.0） ============
 // 视觉上是两张模式卡（单选 + 圆点），真实取值仍走隐藏的 select#cfg_danger_policy，
@@ -2839,6 +2907,9 @@ async function loadSettings(){
     renderKbModelTips();
     loadKbModels();
   }
+  // v0.22.7：版本能力与设置页同刷 —— 保存后会回到这里，因此改完版本**不必重启插件**
+  // 就能看见新结论（「来源：手动声明」会立刻亮出来）。
+  refreshVersionCaps();
 }
 function collectSettings(){
   const s = {};

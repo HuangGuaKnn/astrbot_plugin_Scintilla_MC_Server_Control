@@ -901,9 +901,30 @@ class McControlWebApi:
     async def get_server_status(self):
         """服务器实时状态：在线玩家、游戏时间、版本。"""
         plugin = self.plugin
+        # v0.22.7：**版本能力与 RCON 无关**（读的是配置 + 服务端本地文件），
+        # 所以先算好、连不上服务器也照样返回 —— 否则主人会在 RCON 掉线时
+        # 连「Agent 到底按哪个版本构造命令」都看不见。
+        info: dict = {}
+        try:
+            caps = plugin._version_capabilities()
+            info["version_caps"] = caps
+            if caps.get("source") == "override" and caps.get("raw"):
+                # 手动声明优先于文件探测 —— UI 要跟 Agent 看到的一致
+                info["version"] = f"{caps['raw']}（手动声明）"
+            elif not caps.get("known"):
+                info["version_hint"] = (
+                    "版本未知：附魔 / NBT / 物品组件类请求会被拒绝。"
+                    "异地 RCON 模式下探测必然失败，请在「连接 → 手动声明服务端版本」里填写。"
+                )
+        except Exception as e:  # noqa: BLE001
+            info["version_caps_error"] = str(e)
+
         try:
             rcon = await plugin._get_rcon()
-            info = {}
+        except Exception as e:
+            return json_response({"ok": False, "error": str(e), **info})
+
+        try:
             try:
                 out = await rcon.command("list")
                 info["list"] = self._parse_list_output(out)
@@ -913,39 +934,25 @@ class McControlWebApi:
                 info["daytime"] = (await rcon.command("time query daytime")).strip()
             except Exception:
                 pass
-            # 版本：原版/Forge 无 version 命令，优先从服务端文件探测
-            try:
-                ver = plugin.detect_server_version()
-                if not ver:
-                    # 兜底：Paper/Spigot 等才支持 version 命令；过滤掉原版报错文本
-                    try:
-                        raw = (await rcon.command("version")).strip()
-                        if raw and "Unknown" not in raw and "incomplete" not in raw:
-                            ver = raw
-                    except Exception:
-                        pass
-                info["version"] = ver or "未检测到（请检查 server_dir 配置）"
-            except Exception as e:
-                info["version"] = f"检测失败：{e}"
-            # v0.22.6（批次 2）：把 Agent **实际使用**的版本事实一并返回。
-            # 必须与注入提示词的是同一份数据，否则会出现
-            # 「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
-            try:
-                caps = plugin._version_capabilities()
-                info["version_caps"] = caps
-                if caps.get("source") == "override" and caps.get("raw"):
-                    # 手动声明优先于文件探测 —— UI 要跟 Agent 看到的一致
-                    info["version"] = f"{caps['raw']}（手动声明）"
-                elif not caps.get("known"):
-                    info["version_hint"] = (
-                        "版本未知：附魔 / NBT / 物品组件类请求会被拒绝。"
-                        "异地 RCON 模式下探测必然失败，请在「连接 → 手动声明服务端版本」里填写。"
-                    )
-            except Exception as e:  # noqa: BLE001
-                info["version_caps_error"] = str(e)
+            # 版本原文：原版/Forge 无 version 命令，优先从服务端文件探测。
+            # 已由 version_caps 给出结论时不覆盖（那是 Agent 真正使用的事实）。
+            if "version" not in info:
+                try:
+                    ver = plugin.detect_server_version()
+                    if not ver:
+                        # 兜底：Paper/Spigot 等才支持 version 命令；过滤掉原版报错文本
+                        try:
+                            raw = (await rcon.command("version")).strip()
+                            if raw and "Unknown" not in raw and "incomplete" not in raw:
+                                ver = raw
+                        except Exception:
+                            pass
+                    info["version"] = ver or "未检测到（请检查 server_dir 配置）"
+                except Exception as e:
+                    info["version"] = f"检测失败：{e}"
             return json_response({"ok": True, **info})
         except Exception as e:
-            return json_response({"ok": False, "error": str(e)})
+            return json_response({"ok": False, "error": str(e), **info})
 
     async def broadcast(self):
         """向服务器广播消息（chat/title），或模拟任务输出（task）。"""

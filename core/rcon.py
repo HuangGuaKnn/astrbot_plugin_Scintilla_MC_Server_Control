@@ -82,7 +82,41 @@ MAX_PACKET_BYTES = 1024 * 1024
 
 
 class RconError(Exception):
-    """RCON 通信错误。"""
+    """RCON 通信错误，带**阶段**信息。
+
+    v0.22.7（核验 P1-6）：同一种 ``RconError`` 混着两种**完全相反**的语义 ——
+
+    * **命令根本没发出去**（建连 / 认证阶段失败）→ 判 ``failed`` 安全，可重试；
+    * **命令可能已经发出去了**（发送 / 读取 / 协议阶段失败）→ 判 ``failed`` 就是
+      诱导重试，而非幂等命令重试 = 重复副作用（``give`` 多发一把剑）。
+
+    阶段由 :class:`AsyncRcon` 在**明确的位置**构造异常时标注，
+    **绝不靠异常文本猜**（文本随 Python 版本、系统语言、服务器实现而变）。
+    """
+
+    #: 命令**尚未发出**：建连 / 认证 / 发送前检查失败 → 可安全判 ``failed``
+    PHASE_CONNECT = "connect"
+    #: ``write`` / ``drain`` 阶段失败：**可能已写出部分数据**，命令可能已到达 → 结果未知
+    PHASE_SEND = "send"
+    #: 命令已发出，读取响应阶段失败 → 结果未知
+    PHASE_READ = "read"
+    #: 协议层错乱（包长度 / 请求 id / 包收尾）→ 结果未知
+    PHASE_PROTOCOL = "protocol"
+    #: 未标注 → 最保守，按「命令可能已执行」处理
+    PHASE_UNKNOWN = "unknown"
+
+    def __init__(self, message: str, phase: str = "unknown"):
+        super().__init__(message)
+        self.phase = phase or "unknown"
+
+    @property
+    def command_may_have_run(self) -> bool:
+        """命令是否**可能已经执行**。
+
+        为 ``True`` 时调用方只能判「结果未知」，**不得**判「失败」——
+        判失败会诱导重试，而非幂等命令重试就是重复副作用。
+        """
+        return self.phase != self.PHASE_CONNECT
 
 
 class RconTimeoutError(RconError):
@@ -91,8 +125,8 @@ class RconTimeoutError(RconError):
     调用方**不得**把它当作执行成功，也不得自动重发非幂等命令。
     """
 
-    def __init__(self, message: str, partial: str = ""):
-        super().__init__(message)
+    def __init__(self, message: str, partial: str = "", phase: str = "read"):
+        super().__init__(message, phase=phase)
         self.partial = partial or ""
 
 
@@ -171,7 +205,10 @@ class AsyncRcon:
         """
         if self._retired:
             # v0.22.5：退役实例绝不重新建连，否则 reset 之后旧实例又悄悄占据一条新连接。
-            raise RconError("该 RCON 实例已退役（连接已重建），请改用插件当前实例")
+            raise RconError(
+                "该 RCON 实例已退役（连接已重建），请改用插件当前实例",
+                phase=RconError.PHASE_CONNECT,
+            )
         if self._connected and self._writer is not None:
             return self
 
@@ -181,7 +218,10 @@ class AsyncRcon:
                 timeout=self.timeout,
             )
         except (OSError, asyncio.TimeoutError) as e:
-            raise RconError(f"无法连接 RCON 服务器 {self.host}:{self.port}: {e}") from e
+            raise RconError(
+                f"无法连接 RCON 服务器 {self.host}:{self.port}: {e}",
+                phase=RconError.PHASE_CONNECT,
+            ) from e
 
         req_id = self._next_id()
         try:
@@ -189,16 +229,23 @@ class AsyncRcon:
             resp_id, resp_type, _ = await self._read_packet()
         except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as e:
             self._close_socket()
-            raise RconError(f"RCON 登录失败: {e}") from e
+            raise RconError(
+                f"RCON 登录失败: {e}", phase=RconError.PHASE_CONNECT
+            ) from e
+        except RconError as e:
+            # 登录阶段读包出问题（包长度 / 包收尾）：此时**一条用户命令都还没发**，
+            # 阶段仍是 connect —— 判 failed 安全，可以放心重试。
+            raise RconError(str(e), phase=RconError.PHASE_CONNECT) from e
 
         if resp_id == -1:
             self._close_socket()
-            raise RconError("RCON 认证失败：密码错误")
+            raise RconError("RCON 认证失败：密码错误", phase=RconError.PHASE_CONNECT)
         # 认证成功：服务器返回与请求一致的 request_id（类型通常为 AUTH_RESPONSE）
         if resp_id != req_id:
             self._close_socket()
             raise RconError(
-                f"RCON 登录响应异常 (id={resp_id}, type={resp_type})"
+                f"RCON 登录响应异常 (id={resp_id}, type={resp_type})",
+                phase=RconError.PHASE_CONNECT,
             )
         self._connected = True
         return self
@@ -223,14 +270,20 @@ class AsyncRcon:
         if length < 10 or length > MAX_PACKET_BYTES:
             # 长度字段非法 = 这条流已经错位：不能只报错了事，必须废弃连接
             self._close_socket()
-            raise RconError(f"RCON 数据包长度异常：{length}，连接已废弃")
+            raise RconError(
+                f"RCON 数据包长度异常：{length}，连接已废弃",
+                phase=RconError.PHASE_PROTOCOL,
+            )
         body = await asyncio.wait_for(
             self._reader.readexactly(length), timeout=self.timeout
         )
         if not body.endswith(b"\x00\x00"):
             # 不收尾的包 = 半包 / 协议错位，同样废弃连接
             self._close_socket()
-            raise RconError("RCON 数据包结尾缺少 \\x00\\x00，连接已废弃")
+            raise RconError(
+                "RCON 数据包结尾缺少 \\x00\\x00，连接已废弃",
+                phase=RconError.PHASE_PROTOCOL,
+            )
         req_id, ptype = struct.unpack("<ii", body[:8])
         payload = body[8:-2].decode("utf-8", errors="replace")
         return req_id, ptype, payload
@@ -299,7 +352,9 @@ class AsyncRcon:
                 await self._send_packet(probe_id, PACKET_COMMAND, self.probe_command)
         except (OSError, asyncio.TimeoutError) as e:
             self._close_socket()
-            raise RconError(f"RCON 发送失败: {e}") from e
+            # v0.22.7：write/drain 阶段失败 —— 数据**可能已经写出去一部分**，
+            # 命令可能已到达服务端。绝不能标 connect（那会让调用方判 failed 并重试）。
+            raise RconError(f"RCON 发送失败: {e}", phase=RconError.PHASE_SEND) from e
 
         budget = float(timeout or self.timeout)
         deadline = time.monotonic() + budget
@@ -330,7 +385,9 @@ class AsyncRcon:
                 raise
             except (asyncio.IncompleteReadError, OSError) as e:
                 self._close_socket()
-                raise RconError(f"RCON 读取失败: {e}") from e
+                raise RconError(
+                    f"RCON 读取失败: {e}", phase=RconError.PHASE_READ
+                ) from e
 
             if resp_id == req_id:
                 # 服务端已经处理到本次命令 —— 这是「顺序正确」的证据。
@@ -345,7 +402,8 @@ class AsyncRcon:
                     if len(chunks) > MAX_PACKETS:
                         self._close_socket()
                         raise RconError(
-                            f"RCON 响应包数超过上限 {MAX_PACKETS}，无法确认响应完整，连接已废弃"
+                            f"RCON 响应包数超过上限 {MAX_PACKETS}，无法确认响应完整，连接已废弃",
+                            phase=RconError.PHASE_READ,
                         )
                 continue
 
@@ -366,7 +424,8 @@ class AsyncRcon:
             # 其它请求 id：连接上残留着别的请求的数据，绝不串台，废弃连接
             self._close_socket()
             raise RconError(
-                f"RCON 响应错乱：收到不匹配的请求 id（期望 {req_id}，实收 {resp_id}），已重置连接"
+                f"RCON 响应错乱：收到不匹配的请求 id（期望 {req_id}，实收 {resp_id}），已重置连接",
+                phase=RconError.PHASE_PROTOCOL,
             )
 
         if probe_seen:

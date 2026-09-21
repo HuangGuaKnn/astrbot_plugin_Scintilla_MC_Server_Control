@@ -1593,7 +1593,23 @@ class McControlPlugin(Star):
                 reason=f"未收到响应（结果未知，不会自动重发）：{e}",
             )
         except RconError as e:
-            return CommandResult(command=command, status="failed", reason=str(e))
+            # v0.22.7（核验 P1-6）：**不能**一律判 failed。
+            # RconError 混着两种语义：connect 阶段 = 命令根本没发出去（判 failed 安全），
+            # send/read/protocol 阶段 = 命令可能已经发出去了 —— 判 failed 会诱导重试，
+            # 而非幂等命令重试就是重复副作用（give 多发一把剑）。
+            # 阶段由 core/rcon.py 在构造异常时标注，不靠异常文本猜。
+            if getattr(e, "phase", "unknown") == RconError.PHASE_CONNECT:
+                return CommandResult(
+                    command=command, status="failed",
+                    reason=f"未建立连接 / 未发送，命令未执行：{e}",
+                )
+            return CommandResult(
+                command=command, status="unknown",
+                reason=(
+                    f"RCON 通信异常（阶段：{getattr(e, 'phase', 'unknown')}），"
+                    f"命令可能已执行，结果未知（不会自动重发）：{e}"
+                ),
+            )
         return classify_command_output(
             command,
             str(out),
@@ -1616,6 +1632,15 @@ class McControlPlugin(Star):
             return (
                 f"{ok_text}（注意：响应边界未确认 —— 服务器已收到本命令，"
                 "但无法保证响应完整；如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+            )
+        if r.status == "inferred_success":
+            # 命令发出去了、服务器也没报错，但**没有成功证据** ——
+            # 既不写「成功」（那是谎报，v0.22.6 的假成功就是这么来的），
+            # 也不写「失败」（那是误导）。如实说「未确认」。
+            detail = r.output or r.reason or "（服务器未给出可读反馈）"
+            return (
+                f"⚠ 未确认：{ok_text} —— 但服务器未返回可识别的成功反馈，"
+                f"请以游戏内实际结果为准。服务器原文：{detail}"
             )
         label = STATUS_LABEL.get(r.status, r.status)
         detail = r.output or r.reason or "（服务器未给出可读反馈）"
@@ -1737,6 +1762,16 @@ class McControlPlugin(Star):
                     f"命令已发送：{command}\n"
                     "（服务器已收到本命令，但响应边界未确认；"
                     "如需绝对可靠请把 rcon_end_mode 设回 sentinel）"
+                )
+            if r.status == "inferred_success":
+                # v0.22.7：命令下发成功、服务器也没报错，但**没有成功证据** ——
+                # 既不写「执行成功」（那是谎报，v0.22.6 的假成功就是这么来的），
+                # 也不写「执行失败」（那是误导）。如实说「未确认」。
+                return (
+                    f"命令已下发但未确认：{command}\n"
+                    "服务器未返回可识别的成功反馈，无法确认是否生效，请以游戏内实际结果为准。"
+                    "不要盲目重发（非幂等命令会重复生效）。\n"
+                    f"服务器返回：{r.output or r.reason}"
                 )
             if r.status == "unknown":
                 return (
