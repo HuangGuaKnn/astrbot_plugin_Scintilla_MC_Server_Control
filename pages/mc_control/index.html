@@ -1991,7 +1991,7 @@ async function loadWorkflow(silent){
       : "mc_workflow 对 LLM 不可用（工具表仍会暴露它，模型调用时会收到导航提示后改用具体工具）。";
     banner.className = "banner show " + lvl;
     banner.innerHTML = `<span class="bi">⚠</span><span class="bx">已关闭 <b>${off}</b>：${list}<br>`
-      + `此时对满配枪械 / 复杂 NBT 这类任务，可按 <code>mc_search_knowledge</code>（查经验）`
+      + `此时对数值计算（配比/产量/耗材等）/ 满配枪械 / 复杂 NBT 这类任务，可按 <code>mc_search_knowledge</code>（查经验）`
       + `→ <code>mc_search_item</code>（查 ID）→ <code>mc_get_recipes</code>（查配方）`
       + `→ <code>mc_execute_command</code>（执行）分步完成；`
       + `如需恢复流水线，打开上方开关即可（保存即生效）。</span>`;
@@ -2702,7 +2702,7 @@ function renderWfTip(){
   let cls, html;
   if(wf && tool){
     cls = "cv-tip ok";
-    html = `✓ 复杂任务（满配枪械 / 复杂 NBT）会自动走 <b>分类→模板判断→前瞻建库→实现→纠错</b> 流水线，`
+    html = `✓ 复杂任务会自动走 <b>分类→模板判断→前瞻建库→实现→纠错</b> 流水线 —— 数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT，`
          + `后台执行、完成后自动通知；决策 AI 也会做「玩家守门」（未声明玩家时终止而非猜测）。`;
   }else if(wf){
     cls = "cv-tip warn";
@@ -2716,7 +2716,7 @@ function renderWfTip(){
          + `「玩家守门」同时失效——决策 AI 不再拦截未声明玩家的任务。`;
   }
   if(!(wf && tool)){
-    html += `<br>满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
+    html += `<br>数值计算（配比/产量/耗材等）/ 满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
   }
   if(WF_SAVED && (wf !== WF_SAVED.wf || tool !== WF_SAVED.tool)){
     html += ` <span class="pend">改动未保存 · 点「保存全部设置」生效</span>`;

@@ -27,6 +27,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.command_result import (  # 
     looks_like_complex_item_command,
     looks_like_complex_request,
     looks_like_complex_task,
+    looks_like_numeric_request,
 )
 
 # 端到端那组要 import core.workflow，而它依赖 AstrBot 运行时（astrbot.api.*）。
@@ -97,6 +98,46 @@ def combined_cases() -> None:
           looks_like_complex_task("把时间设成白天", [{"command": "time set day"}]) is False)
     check("守门**只升级不降级**：请求复杂时命令再简单也判复杂",
           looks_like_complex_task("满配 M4A1", [{"command": "say hi"}]) is True)
+
+
+# ============ 三·五、数值计算：提示词之外的确定性守门（v0.22.11） ============
+
+def numeric_routing_cases() -> None:
+    """GPT 核验「额外发现」：提示词增强 ≠ 硬路由保证。
+
+    分类器提示词里写「数值计算（配比/产量/耗材等）」，但模型仍可能返回 simple，
+    而 simple 是唯一没有输出校验 / 纠错 / 到账核验的一条路。本组验证**确定性**
+    兜底真的兜得住，同时不得把无关请求误升级（升级代价 = 白烧 token + 变慢）。
+    """
+    print("---- 三·五、数值计算：提示词之外还有确定性守门 ----")
+    # ① 主人下午实测要用的那句话
+    check("★「算一下蒸汽机需要多少铜」→ 强制复杂（下午实测句）",
+          looks_like_complex_task("算一下蒸汽机需要多少铜", []) is True)
+    check("★「数值计算」显式出现 → 复杂",
+          looks_like_complex_task("帮我做个数值计算", []) is True)
+    for txt, why in (
+        ("蒸汽机每分钟能产多少", "每分钟"),
+        ("这条产线的产量是多少", "产量"),
+        ("这个配方要多少耗材", "耗材"),
+        ("机器效率怎么算", "机器效率"),
+        ("每秒产出几个", "每秒产出"),
+        ("材料需求列一下", "材料需求"),
+    ):
+        check(f"数值特征「{why}」→ 复杂", looks_like_complex_task(txt, []) is True, txt)
+
+    # ② 误伤边界：纯查询 / 纯指令不得被升级
+    for txt in ("把时间设成白天", "服务器现在几个人在线",
+                "给 Steve 一把钻石剑", "广播一句 hi"):
+        check(f"不含数值特征「{txt}」→ 不升级", looks_like_complex_task(txt, []) is False, txt)
+    check("对照：数值特征词不拦普通「几个」用量提问（避免过度升级）",
+          looks_like_complex_request("我背包里有几个钻石") is False)
+
+    # ③ 只升级不降级 + 新函数可单独调用（便于将来一键回退）
+    check("★数值守门只升级不降级",
+          looks_like_complex_task("算一下需要多少铜", [{"command": "time set day"}]) is True)
+    check("looks_like_numeric_request 可独立调用",
+          looks_like_numeric_request("蒸汽机配比") is True
+          and looks_like_numeric_request("把时间设成白天") is False)
 
 
 # ===================== 四、端到端：dispatch 的强制转轨 =====================
@@ -251,6 +292,7 @@ def main() -> int:
     request_marker_cases()
     command_marker_cases()
     combined_cases()
+    numeric_routing_cases()
     asyncio.run(dispatch_cases())
     print("==========================================")
     if _fail:
