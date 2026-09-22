@@ -341,6 +341,15 @@ _COMPLEX_REQUEST_MARKERS = (
     "attachments", "enchant", "attribute", "modifier",
 )
 
+#: 数值计算类特征（v0.22.11 / GPT 核验「额外发现」）：配比、产量、耗材这类问题
+#: **只靠分类器提示词拦不住** —— 模型偶尔仍会判 simple，而 simple 是全插件防护
+#: 最弱的一条路（无输出校验 / 无纠错 / 无到账核验）。这里补一道**确定性**守门，
+#: 与「附魔 / NBT / 组件」等既有特征同源：命中即把 simple 升级为 complex。
+_COMPLEX_NUMERIC_MARKERS = (
+    "数值计算", "配比", "产量", "耗材", "材料需求", "需要多少",
+    "每分钟", "每秒产出", "机器效率",
+)
+
 #: 携带物品数据的命令 —— **只对这类命令**检查物品参数。
 #: 不做全局字符扫描：裸 ``[`` 是选择器语法，``kill @e[type=item]`` /
 #: ``tp @p[tag=foo]`` / ``gamemode creative @a[team=red]`` 全是正常简单命令，
@@ -396,10 +405,22 @@ def looks_like_complex_item_command(command: str) -> bool:
     return any(m in low for m in _COMPLEX_ITEM_MARKERS)
 
 
+def looks_like_numeric_request(request: str) -> bool:
+    """请求是否属于「数值计算」类（v0.22.11，**确定性**守门）。
+
+    分类器提示词写的是「数值计算（配比/产量/耗材等）」，但提示词只能让模型
+    **倾向**判 complex —— 模型一旦返回 simple，提示词毫无约束力。凡命中本清单
+    一律升级为 complex：宁可多走一趟流水线，也不让配比类问题落到 simple 路径
+    （那里没有输出校验、没有纠错、没有到账核验）。
+    """
+    low = (request or "").lower()
+    return any(m in low for m in _COMPLEX_NUMERIC_MARKERS)
+
+
 def looks_like_complex_request(request: str) -> bool:
     """用户请求文本是否命中复杂特征（第一层路由信号）。"""
     low = (request or "").lower()
-    return any(m in low for m in _COMPLEX_REQUEST_MARKERS)
+    return looks_like_numeric_request(low) or any(m in low for m in _COMPLEX_REQUEST_MARKERS)
 
 
 def looks_like_complex_task(request: str, commands: list | None = None) -> bool:
