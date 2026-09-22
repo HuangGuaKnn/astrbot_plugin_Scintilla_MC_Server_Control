@@ -1697,7 +1697,7 @@ class McControlPlugin(Star):
     ):
         """【MC任务总入口·多Agent工作流】处理 Minecraft 服务器任务，自动路由到最合适的执行路径。
 
-        复杂场景优先用本工具：模组枪械满配（如「满配M4A1」）、模组物品/方块发放、复杂 NBT 构造、模组任务链、查配方或模组机制、批量或多条混合指令。
+        复杂场景优先用本工具：数值计算（配比/产量/耗材等）、模组枪械满配（如「满配M4A1」）、模组物品/方块发放、复杂 NBT 构造、模组任务链、查配方或模组机制、批量或多条混合指令。
         简单单条指令用 mc_execute_command；查玩家 mc_list_players；广播 mc_broadcast；查物品ID mc_search_item；查配方 mc_get_recipes。
 
         Args:
@@ -1711,7 +1711,7 @@ class McControlPlugin(Star):
                 "① mc_search_knowledge 查已沉淀的模组经验（NBT 格式/配件方案）；"
                 "② mc_search_item 查准确物品 ID；③ mc_get_recipes 查合成配方；"
                 "④ mc_execute_command 下发指令（可带复杂 NBT）；⑤ mc_give_item 发放物品。"
-                "若任务确实需要多 Agent 流水线（满配枪械/复杂 NBT 推理），请提示用户到插件配置或 WebUI「自动化」页开启工作流总开关。"
+                "若任务确实需要多 Agent 流水线，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT 推理，请提示用户到插件配置或 WebUI「自动化」页开启工作流总开关。"
             )
         denied = self._admin_gate(event, tool="mc_workflow", action="多 Agent 工作流")
         if denied:
@@ -1734,7 +1734,7 @@ class McControlPlugin(Star):
     ):
         """向 Minecraft 服务器执行任意一条命令，结果会以自然语言提示展示给游戏内玩家。
 
-        仅用于简单单条指令；模组枪械满配、复杂 NBT、批量指令请用 mc_workflow。
+        仅用于简单单条指令；数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT、批量指令请用 mc_workflow。
 
         Args:
             command(string): 要执行的 Minecraft 命令（不含开头的斜杠），例如 "time set noon"、"give Steve netherite_sword 1"
@@ -1869,7 +1869,7 @@ class McControlPlugin(Star):
     ):
         """给指定玩家发放物品，结果会以自然语言提示展示给游戏内玩家。
 
-        仅用于简单原版物品；带复杂 NBT（附魔/枪械 Attachments）或批量发放请用 mc_workflow。
+        仅用于简单原版物品；数值计算（配比/产量/耗材等）、带复杂 NBT（附魔/枪械 Attachments）或批量发放请用 mc_workflow。
 
         Args:
             player(string): 可选。目标玩家名（真实游戏名或聊天昵称，会自动映射为在线真实名）。留空则用当前账号绑定的MC玩家ID（未绑定会提示）
@@ -2969,7 +2969,7 @@ class McControlPlugin(Star):
     async def mc_search_item(self, event: AstrMessageEvent, keyword: str):
         """搜索 Minecraft 服务器物品的精确 ID，支持中文名、英文名或 ID 片段。
 
-        构造 give/summon 等命令前若不确定物品 ID，先用本工具查询；复杂任务（满配枪械/复杂 NBT）优先用 mc_workflow。
+        构造 give/summon 等命令前若不确定物品 ID，先用本工具查询；复杂任务优先用 mc_workflow，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT。
 
         Args:
             keyword(string): 搜索关键词，例如 "黄铜锭"、"brass"、"create:brass_ingot"
@@ -2987,7 +2987,7 @@ class McControlPlugin(Star):
                 f"词典中未找到与「{keyword}」相关的物品。建议："
                 f"1) 尝试英文名或更短的关键词；"
                 f"2) 用网络搜索「<Mod名> <物品名> item id」获取准确 ID。"
-                f"提示：若目标是模组枪械满配、复杂 NBT 构造等复杂任务，建议改用 mc_workflow 工具走完整流水线。"
+                f"提示：若目标是数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT 构造等复杂任务，建议改用 mc_workflow 工具走完整流水线。"
             )
         lines = []
         for r in results:
@@ -3083,7 +3083,7 @@ class McControlPlugin(Star):
             return (
                 f"知识库中未找到与「{topic}」相关的沉淀知识。"
                 f"可自行推理，成功后调用 mc_save_knowledge 沉淀经验。"
-                f"提示：若该任务属于模组枪械满配、复杂 NBT 构造、批量/混合指令等复杂场景，"
+                f"提示：若该任务属于数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT 构造、批量/混合指令等复杂场景，"
                 f"建议改用 mc_workflow 工具走完整流水线，效果更佳。"
             )
         lines = []
