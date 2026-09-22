@@ -205,10 +205,11 @@ def group_fail_closed_effect() -> None:
     check("对照：status=success 仍不熔断（fail-closed 没扩大化）", r2 is None, str(r2))
 
     fmt = MCWorkflow._fmt_results([{"command": "x", "ok": True}])
-    check("★回执渲染与判据同源：缺 status 显示「未知」，不再显示 OK",
-          "[未知]" in fmt and "[OK]" not in fmt, fmt)
+    check("★回执渲染与判据同源：缺 status 显示「结果未知」，不出现成功字样",
+          "[结果未知]" in fmt and "[成功]" not in fmt, fmt)
     fmt_ok = MCWorkflow._fmt_results([{"command": "y", "ok": True, "status": "success"}])
-    check("对照：status=success 的回执仍是 [OK]", "[OK]" in fmt_ok, fmt_ok)
+    check("对照：status=success 的回执标签来自 STATUS_LABEL（v0.22.10 统一为 [成功]）",
+          "[成功]" in fmt_ok, fmt_ok)
 
 
 def group_static() -> None:
@@ -229,8 +230,8 @@ def group_static() -> None:
     check("v0.22.8 口径未破：_halt_on_uncertain 仍只 1 次实现、2 处调用",
           src.count("def _halt_on_uncertain") == 1 and
           src.count("_halt_on_uncertain(exec_reports)") >= 2)
-    check("展示标签表与判据分离（_tag 只影响措辞，不参与判定）",
-          '"success": "OK"' in src and "_status_of" in src)
+    check("★展示标签只有一份（v0.22.10：workflow 自带 _tag 已清零，统一走 STATUS_LABEL）",
+          "_tag = {" not in src and "STATUS_LABEL.get(status" in src)
 
 
 def group_norm() -> None:

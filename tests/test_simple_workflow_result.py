@@ -277,8 +277,8 @@ async def complex_cases() -> None:
         {"command": "c", "ok": False, "status": "syntax_error", "output": REAL_SYNTAX_ERR},
     ]
     fmt = MCWorkflow._fmt_results(rep)
-    check("_fmt_results：新状态有中文标签（不再一律兜底成 FAIL）",
-          "已发送·未确认" in fmt and "语法错误" in fmt, fmt[:200])
+    check("_fmt_results：新状态有中文标签（不再一律兜底成 FAIL；v0.22.10 统一走 STATUS_LABEL）",
+          "已发送·边界未确认" in fmt and "语法错误" in fmt, fmt[:200])
     txt = MCWorkflow._success_text({"reasoning": "r"}, [{"command": "x"}] * 3, rep)
     check("★_success_text：存在边界未确认条目时**必须**在回执里点明",
           "边界未确认" in txt and "1/3" in txt, txt[:220])
