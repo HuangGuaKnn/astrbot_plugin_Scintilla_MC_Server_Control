@@ -30,6 +30,7 @@ from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
 from .command_result import (
     KNOWN_STATUSES,
+    STATUS_LABEL,
     CommandResult,
     classify_command_output,
     format_results,
@@ -404,7 +405,11 @@ class MCWorkflow:
                     "跳过已确认生效的命令 %d 条（避免重复副作用）：%s", len(dups), dups
                 )
             exec_reports = await self._exec_commands(fresh, player, online_players)
-            confirmed |= self._newly_confirmed(fresh, exec_reports)
+            # v0.22.10：记账同样 fail-closed —— 报告与命令对不上就停手，不拿半截账往下跑
+            newly, contract_err = self._newly_confirmed(fresh, exec_reports)
+            if contract_err:
+                return self._contract_halt_text(contract_err), False
+            confirmed |= newly
             # v0.22.8：熔断判据收口到 _halt_on_uncertain（全文件唯一实现）——
             # 结果不确定（unknown / inferred_success / dispatched_unconfirmed）一律停手：
             # 既不进下一轮实现，也不交给纠错 Agent 重发。
@@ -467,7 +472,11 @@ class MCWorkflow:
                         len(dups), dups,
                     )
                 exec_reports = await self._exec_commands(fresh, player, online_players)
-                confirmed |= self._newly_confirmed(fresh, exec_reports)
+                # v0.22.10：纠错循环同样 fail-closed 记账
+                newly, contract_err = self._newly_confirmed(fresh, exec_reports)
+                if contract_err:
+                    return self._contract_halt_text(contract_err), False
+                confirmed |= newly
                 # 纠错循环同样熔断：绝不让纠错 Agent 把「结果未确认」当普通失败重发
                 halt = self._halt_on_uncertain(exec_reports)
                 if halt:
@@ -782,15 +791,37 @@ class MCWorkflow:
         return fresh, dups
 
     @staticmethod
-    def _newly_confirmed(commands: list[dict], exec_reports: list[dict]) -> set[str]:
-        """本轮新**确认成功**（``status == success``）的命令 —— 记账进 ``confirmed``。"""
+    def _newly_confirmed(
+        commands: list[dict], exec_reports: list[dict]
+    ) -> tuple[set[str], str | None]:
+        """本轮新**确认成功**的命令 —— 记账进 ``confirmed``（v0.22.10）。
+
+        返回 ``(已确认命令集合, 结构异常说明)``：第二个元素非空表示**这笔账不可信**，
+        调用方必须停手问人，不许拿半截账继续跑。
+
+        两条口径在本版收口：
+
+        * **判据同源**：只认 ``_status_of(r) == "success"``。
+          旧实现按 ``r.get("ok")`` 记账 —— 那是**第二套成功口径**：报告只要漏填
+          ``status`` 又带 ``ok=True``（v0.22.9 刚在熔断判据里堵掉的那种坏形状），
+          就会被记成「已生效」→ 下一轮同一条命令被当成重复而**跳过** →
+          主人要的东西少执行一次。记账和熔断必须用同一双眼睛看。
+        * **显式等长校验**：``commands`` 与 ``exec_reports`` 必须一一对应。
+          旧实现靠 ``zip()`` 隐式配对，长度不一致时它**静默截断** ——
+          多出来的命令既没记账、也没人发现。结构对不上就 fail-closed。
+        """
+        if len(commands) != len(exec_reports):
+            return set(), (
+                f"命令与执行报告数量不一致：{len(commands)} 条命令 / "
+                f"{len(exec_reports)} 份报告"
+            )
         got: set[str] = set()
         for c, r in zip(commands, exec_reports):
-            if r.get("ok"):
+            if MCWorkflow._status_of(r) == "success":
                 key = MCWorkflow._norm_cmd(c.get("command", ""))
                 if key:
                     got.add(key)
-        return got
+        return got, None
 
     @staticmethod
     def _with_confirmed_note(failures: str, confirmed: set[str]) -> str:
@@ -817,6 +848,22 @@ class MCWorkflow:
             + "\n".join(f"[已生效·未重发] {c}" for c in dups)
             + "\n请先在游戏内确认实际结果：已完成就不必再管；"
             "确实还差什么，请换一种说法重新发起（或直接说明还差哪一步）。"
+        )
+
+    @staticmethod
+    def _contract_halt_text(err: str) -> str:
+        """命令与执行报告对不上 → 停手问人（v0.22.10 / 核验取舍 6）。
+
+        这是**插件内部结构异常**，不是服务器的问题：哪几条真正发出去过无从判断。
+        继续跑只会有两种坏结果 —— 少发一条（用户要的东西没做）或重发一条
+        （重复副作用），所以既不自动重试、也不静默跳过，把事实摊开给主人看。
+        """
+        return (
+            "工作流已暂停：内部执行报告与命令数量对不上，无法判断哪几条真正发出去过。\n"
+            f"（{err}）\n"
+            "为避免重复副作用或漏发，本轮不会自动重试、也不交给纠错 Agent 重发。\n"
+            "请先在游戏内确认实际结果，再决定是否重新发起；"
+            "这属于插件缺陷，麻烦连同这条回执一起反馈给作者。"
         )
 
     def _halt_on_uncertain(self, exec_reports: list[dict]) -> tuple[str, bool] | None:
@@ -852,22 +899,26 @@ class MCWorkflow:
 
     @staticmethod
     def _fmt_results(reports: list[dict]) -> str:
-        _tag = {
-            "success": "OK",
-            "inferred_success": "已执行·未确认",
-            "dispatched_unconfirmed": "已发送·未确认",
-            "failed": "FAIL",
-            "syntax_error": "语法错误",
-            "unknown": "未知",
-            "skipped": "未发送",
-        }
+        """回执渲染（v0.22.10：展示标签统一走 ``command_result.STATUS_LABEL``）。
+
+        此前这里自带一份 ``_tag``（``OK`` / ``FAIL`` / ``未知``…），与
+        ``STATUS_LABEL``（``成功`` / ``失败`` / ``结果未知``…）是**两套措辞**：
+        同一份判定在回执里和别处显示成不同字样，主人对不上号。
+        现在全仓只留一份标签表 —— 改措辞就改 ``STATUS_LABEL``，
+        工作流回执、单命令明细、日志一起变。
+
+        兜底也写成「结果未知」：``_status_of`` 已保证状态合法，这里的兜底
+        只是防御，绝不允许退回能被读成成功的措辞。
+        """
         lines = []
         for r in reports:
             # v0.22.9：状态回推收口到 _status_of（与熔断判据同源，不再各写一份回推）
             status = MCWorkflow._status_of(r)
+            # v0.22.10：标签单一真相（STATUS_LABEL）
+            label = STATUS_LABEL.get(status, STATUS_LABEL["unknown"])
             # v0.22.8：output 缺失不该让整条回执崩掉（回执是熔断时的唯一出口）
             lines.append(
-                f"[{_tag.get(status, 'FAIL')}] {r.get('command', '(空)')}"
+                f"[{label}] {r.get('command', '(空)')}"
                 f" → {r.get('output', '')}"
             )
         return "\n".join(lines)
