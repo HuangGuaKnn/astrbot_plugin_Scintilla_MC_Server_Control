@@ -267,7 +267,7 @@ README / 文档里若有回执截图需一并核对（本次已确认 README 无
 | 提交信息 | `fix: v0.22.10（预发布）—— 回执标签统一走 STATUS_LABEL + 记账 fail-closed（显式等长校验 / 判据同源）` |
 | 标签 | **`v0.22.10`**（annotated tag，已推送） |
 | Release | **已发布为 pre-Release**：run **#12**（`release`，conclusion = `success`）<br>tag = `v0.22.10`、`prerelease = true`、`draft = false`、发布时间 `2026-09-22T03:08:56Z`<br>附件：`astrbot_plugin_Scintilla_MC_Server_Control_v0.22.10.zip`（**2,107,619 字节**） |
-| 流水线 | `release` run #12 → `success`；`tests` run #19 → `success`（02:51 那次，v0.22.9 之后）；`tests` run #20 → `in_progress`（本单文档提交触发） |
+| 流水线 | `release` run **#12**（tag `v0.22.10`，head `4b82301`）→ `success`<br>`tests` run **#19**（`97e13f0`）→ `success`；run **#20**（`4b82301`）→ `success`；run **#21**（`6e3d735`）→ `success`<br>（每次 `main` 推送都会自动触发 `tests`，本单后续文档推送亦同，最新结论以 Actions 页面为准） |
 | 插件重载 | **未重载**（等主人开服 / 拍板；本版无前端改动，重载只为生效后端） |
 | 本单自身 | 本核验单以 `docs:` 文档提交追加，**晚于**被测提交，不含被测代码（本单最终 hash 见 `git log -1 -- docs/VERIFY_v0.22.10.md`） |
 | 推送备注 | 本机经代理（`127.0.0.1:7897`）推送时 schannel 在 HTTP/2 下握手不稳，改用 `git -c http.version=HTTP/1.1 push` 后 `main` 推送成功（tag 那次首次即通） |
