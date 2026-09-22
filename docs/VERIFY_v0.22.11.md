@@ -224,12 +224,14 @@ def looks_like_complex_request(request: str) -> bool:
 
 | 项 | 值 |
 | --- | --- |
-| 是否推 main | 是（本版随核验单一起提交） |
-| 是否打 tag | `v0.22.11` |
-| 是否发 Release | 由 `release.yml` 依 CHANGELOG 标题「（预发布）」自动标 **pre-release** |
-| 插件是否重载 | **否**（等主人指令或开服时重载） |
+| 是否推 main | **已推**：代码 `009db20`、文档 `9ff4eaa` |
+| 是否打 tag | **已打** `v0.22.11`（annotated） |
+| Release | **已发** `v0.22.11`，`prerelease = true`（`release.yml` 依 CHANGELOG 标题「（预发布）」自动判定） |
+| Release 附件 | `astrbot_plugin_Scintilla_MC_Server_Control_v0.22.11.zip`（**2,120,754 字节**） |
+| 流水线 | `release` **success** ✅ / `tests` **success** ✅ |
+| 插件是否重载 | **否**（等主人开服时重载） |
 | CHANGELOG | 已新增 `## [v0.22.11] - 2026-09-22（预发布）` 小节 |
-| `metadata.yaml` | `version: v0.22.11`（CI 会校验 tag 与版本一致） |
+| `metadata.yaml` | `version: v0.22.11`（CI 已校验 tag 与版本一致） |
 
 ---
 
