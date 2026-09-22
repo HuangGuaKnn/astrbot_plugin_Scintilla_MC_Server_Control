@@ -29,6 +29,7 @@ from astrbot.core.message.message_event_result import MessageChain
 from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
 from .command_result import (
+    KNOWN_STATUSES,
     CommandResult,
     classify_command_output,
     format_results,
@@ -374,6 +375,9 @@ class MCWorkflow:
         failures = ""
         retry_hint = ""
         last_out = None
+        #: v0.22.9（P1-b）：本任务内**已确认成功**的命令（规范化文本），跨轮记账 ——
+        #: 同一任务里绝不重发，避免重复副作用。
+        confirmed: set[str] = set()
         for rnd in range(1, max_impl + 1):
             out = await self.agent.implement(
                 request, player, kb_text, failures, retry_hint, umo=umo,
@@ -388,7 +392,19 @@ class MCWorkflow:
                 failures = f"实现器未给出命令（第{rnd}轮）。reasoning: {out.get('reasoning','')}"
                 continue
 
-            exec_reports = await self._exec_commands(commands, player, online_players)
+            # v0.22.9（P1-b）：本轮不许重发**已经确认生效过**的命令 ——
+            # 触发场景：上一轮命令全部成功、但实现器自评「没做完」，
+            # 于是它重新生成同一批命令（原实现会照发 → 重复副作用）。
+            fresh, dups = self._split_confirmed(commands, confirmed)
+            if not fresh:
+                # 整批都是已生效命令 → 停手问人，一条都不重发
+                return self._confirmed_halt_text(dups), False
+            if dups:
+                self.logger.info(
+                    "跳过已确认生效的命令 %d 条（避免重复副作用）：%s", len(dups), dups
+                )
+            exec_reports = await self._exec_commands(fresh, player, online_players)
+            confirmed |= self._newly_confirmed(fresh, exec_reports)
             # v0.22.8：熔断判据收口到 _halt_on_uncertain（全文件唯一实现）——
             # 结果不确定（unknown / inferred_success / dispatched_unconfirmed）一律停手：
             # 既不进下一轮实现，也不交给纠错 Agent 重发。
@@ -398,7 +414,11 @@ class MCWorkflow:
             all_ok = all(r["ok"] for r in exec_reports)
             failures = self._fmt_results(exec_reports)
             if all_ok and out.get("success"):
-                return self._success_text(out, commands, exec_reports), True
+                return self._success_text(out, fresh, exec_reports), True
+            # v0.22.9（P1-b）：命令全成功但实现器自评未完成 —— 下一轮先把「既成事实」
+            # 明确告诉实现器（真正的守门在 _split_confirmed，这里只是省一次白跑）。
+            if confirmed:
+                failures = self._with_confirmed_note(failures, confirmed)
 
         # ---- Agent#5 纠错循环 ----
         for cnd in range(1, max_corr + 1):
@@ -437,14 +457,26 @@ class MCWorkflow:
                 if not commands:
                     failures = f"实现器未给出命令（纠错后第{rnd}轮）"
                     continue
-                exec_reports = await self._exec_commands(commands, player, online_players)
+                # v0.22.9（P1-b）：纠错循环同样不许重发已确认生效的命令
+                fresh, dups = self._split_confirmed(commands, confirmed)
+                if not fresh:
+                    return self._confirmed_halt_text(dups), False
+                if dups:
+                    self.logger.info(
+                        "跳过已确认生效的命令 %d 条（避免重复副作用）：%s",
+                        len(dups), dups,
+                    )
+                exec_reports = await self._exec_commands(fresh, player, online_players)
+                confirmed |= self._newly_confirmed(fresh, exec_reports)
                 # 纠错循环同样熔断：绝不让纠错 Agent 把「结果未确认」当普通失败重发
                 halt = self._halt_on_uncertain(exec_reports)
                 if halt:
                     return halt
                 failures = self._fmt_results(exec_reports)
                 if all(r["ok"] for r in exec_reports) and out.get("success"):
-                    return self._success_text(out, commands, exec_reports), True
+                    return self._success_text(out, fresh, exec_reports), True
+                if confirmed:
+                    failures = self._with_confirmed_note(failures, confirmed)
 
         # ---- 兜底 ----
         detail = ""
@@ -706,8 +738,86 @@ class MCWorkflow:
 
     @staticmethod
     def _status_of(report: dict) -> str:
-        """取一条执行报告的判定状态（缺 ``status`` 时按 ``ok`` 回推，与 _fmt_results 同口径）。"""
-        return report.get("status") or ("success" if report.get("ok") else "failed")
+        """取一条执行报告的判定状态 —— **缺字段 / 未知值一律 ``unknown``**（v0.22.9）。
+
+        旧实现缺 ``status`` 时按 ``ok`` 回推（``ok=True`` → ``success``）：
+        只要有一条报告漏填状态、又恰好带 ``ok=True``，它就能绕过
+        ``_halt_on_uncertain`` 的熔断 —— 那是「默认成功」，正是 v0.22.5
+        假成功事故的同一种坏默认值。
+
+        现在只认 ``core/command_result.py::KNOWN_STATUSES`` 里的状态；
+        其余（缺字段 / 拼写错误 / 将来新增状态忘了登记）一律 ``unknown``
+        → 交给熔断判据：宁可停手问人，也不默认成功。
+        """
+        status = report.get("status")
+        return status if status in KNOWN_STATUSES else "unknown"
+
+    @staticmethod
+    def _norm_cmd(cmd: Any) -> str:
+        """命令规范化（**只用于「是不是同一条命令」的比对**，不改发出去的内容）。
+
+        折叠空白、去掉前导斜杠。**保留大小写**：宁可把「大小写不同的两条」
+        当成不同命令放行，也不要把语义不同的命令误判成同一条而白停一次手。
+        """
+        return " ".join(str(cmd or "").strip().lstrip("/").split())
+
+    def _split_confirmed(
+        self, commands: list[dict], confirmed: set[str]
+    ) -> tuple[list[dict], list[str]]:
+        """把本轮命令拆成「还没发过的」与「已经确认生效过的」（v0.22.9 / P1-b）。
+
+        同一任务里重复下发一条**已确认成功**的命令没有任何好处：
+          · 非幂等（give / summon / 模组命令）→ 重复副作用；
+          · 幂等（time set day / weather clear…）→ 状态早已一致，重发等于白做。
+        所以一律不重发。返回 ``(可执行的命令, 被拦下的命令原文)``。
+        """
+        fresh: list[dict] = []
+        dups: list[str] = []
+        for c in commands:
+            key = self._norm_cmd(c.get("command", ""))
+            if key and key in confirmed:
+                dups.append(str(c.get("command", "")).strip())
+                continue
+            fresh.append(c)
+        return fresh, dups
+
+    @staticmethod
+    def _newly_confirmed(commands: list[dict], exec_reports: list[dict]) -> set[str]:
+        """本轮新**确认成功**（``status == success``）的命令 —— 记账进 ``confirmed``。"""
+        got: set[str] = set()
+        for c, r in zip(commands, exec_reports):
+            if r.get("ok"):
+                key = MCWorkflow._norm_cmd(c.get("command", ""))
+                if key:
+                    got.add(key)
+        return got
+
+    @staticmethod
+    def _with_confirmed_note(failures: str, confirmed: set[str]) -> str:
+        """给实现器的「既成事实」提示：这些命令已生效，不要再生成一遍。"""
+        note = (
+            "【已确认生效的命令（本任务内禁止重复生成）】\n"
+            + "\n".join(f"- {c}" for c in sorted(confirmed))
+            + "\n以上命令已经在服务器上生效过，重复下发就是重复副作用（例如再发一份物品）。"
+            "本轮只生成**还没做过**的部分；若确实没有可补充的，请如实说明任务已完成。"
+        )
+        return f"{failures}\n\n{note}" if failures else note
+
+    @staticmethod
+    def _confirmed_halt_text(dups: list[str]) -> str:
+        """整批命令都已确认生效 → 停手问人（v0.22.9 / P1-b）。
+
+        触发场景：上一轮命令**全部成功**，但实现器自评「没做完」，
+        于是重新生成同一批命令。此时重发就是重复副作用 ——
+        既不许自动重试，也不该悄悄跳过：必须让主人看见并裁决。
+        """
+        return (
+            "工作流已暂停：本轮实现器重新生成的命令**都已经确认生效过**"
+            f"（共 {len(dups)} 条），为避免重复副作用，插件一条都没有重发。\n"
+            + "\n".join(f"[已生效·未重发] {c}" for c in dups)
+            + "\n请先在游戏内确认实际结果：已完成就不必再管；"
+            "确实还差什么，请换一种说法重新发起（或直接说明还差哪一步）。"
+        )
 
     def _halt_on_uncertain(self, exec_reports: list[dict]) -> tuple[str, bool] | None:
         """本轮出现「结果不确定」的命令 → 返回 ``(暂停回执, False)``；否则返回 ``None``。
@@ -753,7 +863,8 @@ class MCWorkflow:
         }
         lines = []
         for r in reports:
-            status = r.get("status") or ("success" if r.get("ok") else "failed")
+            # v0.22.9：状态回推收口到 _status_of（与熔断判据同源，不再各写一份回推）
+            status = MCWorkflow._status_of(r)
             # v0.22.8：output 缺失不该让整条回执崩掉（回执是熔断时的唯一出口）
             lines.append(
                 f"[{_tag.get(status, 'FAIL')}] {r.get('command', '(空)')}"
