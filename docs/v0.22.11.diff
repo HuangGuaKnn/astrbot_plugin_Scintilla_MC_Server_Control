@@ -1,0 +1,379 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f22f98e..91ea806 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,67 @@
+ > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
+ > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
+ 
++## [v0.22.11] - 2026-09-22（预发布）
++
++> 一句话：给「数值计算」补上一道**确定性硬路由**（不再只靠分类器提示词 —— 配比/产量/耗材类请求命中特征词即强制走复杂流水线），并收口两处措辞：停手回执补上「也不会自动重试」，全插件「数值计算」统一写成「数值计算（配比/产量/耗材等）」。
++
++> 本版为**预发布（pre-release）**：仍未在 Vanilla / Paper / Fabric 真实服务端做矩阵测试。
++> 求稳请继续用 v0.22.1。
++
++### 新增
++
++#### 一、数值计算补确定性路由守门（v0.22.10 核验 · GPT「额外发现」）
++
++`core/command_result.py` 新增 `_COMPLEX_NUMERIC_MARKERS` 与
++`looks_like_numeric_request()`，并接入既有的 `looks_like_complex_request()`：
++
++```python
++_COMPLEX_NUMERIC_MARKERS = (
++    "数值计算", "配比", "产量", "耗材", "材料需求", "需要多少",
++    "每分钟", "每秒产出", "机器效率",
++)
++```
++
++**为什么必须加**：分类器提示词只能让模型**倾向**判 complex —— 模型一旦返回
++`simple`，提示词毫无约束力，而 simple 是全插件防护最弱的一条路（没有输出校验、
++没有纠错、没有到账核验）。本守门与「附魔 / NBT / 组件」等既有特征同源，
++**只做升级（simple → complex），绝不反向降级**。
++
++实测口径：`算一下蒸汽机需要多少铜`、`蒸汽机每分钟能产多少`、`这条产线的产量是多少`
++一律强制转 complex；`把时间设成白天`、`给 Steve 一把钻石剑`、`广播一句 hi`
++等不含特征词的普通请求**不受影响**（不白烧 token）。
++
++### 修复
++
++#### 二、停手回执补上「也不会自动重试」（v0.22.10 核验 · GPT 裁决 2）
++
++结构异常回执原文第 3 句只说「本次没有继续发送命令」——这是**事实陈述**，
++却少了「不会自动重试」这层**机制承诺**，用户可能误以为后台仍在悄悄重试。
++现与 `unknown / inferred_success / dispatched_unconfirmed` 的既有回执口径对齐：
++
++```text
++工作流已暂停：内部执行状态异常，无法安全确认命令对应关系。
++（命令与执行报告数量不一致：2 条命令 / 1 份报告）
++为避免重复执行或漏发，本次没有继续发送命令，也不会自动重试。
++请先在游戏内确认实际结果，再决定是否重新发起；若持续出现，请反馈此提示。
++```
++
++### 文档
++
++#### 三、「数值计算」文案统一为「数值计算（配比/产量/耗材等）」
++
++工具描述（`main.py` 6 处）、插件 WebUI（`pages/mc_control/index.html` 3 处）、
++插件帮助（`metadata.yaml`）与分类器提示词（`core/agent_prompts.py`、
++`_conf_schema.json` 默认值）统一带上括号说明，用户与 LLM 看到的是同一套口径。
++
++### 测试
++
++* 新增「三·五、数值计算：提示词之外的确定性守门」一组（15 项），
++  `tests/test_complex_routing.py` 现共 **45 项**全绿；
++* 结构异常回执新增 1 条断言（写明不会自动重试），
++  `tests/test_v02210_label_and_contract.py` 全绿；
++* 全量：`test_*.py` **26 / 26 通过**、`ui_*.py` **10 / 10 通过**、`compileall` 通过。
++
+ ## [v0.22.10] - 2026-09-22（预发布）
+ 
+ > 一句话：把「同一份判定」的两套说法收成一套 —— 回执标签统一走 `STATUS_LABEL`（不再自己一套 `OK` / `FAIL`），命令记账改成 **fail-closed**（报告与命令数量对不上就停手问人，不再靠 `zip()` 静默截断），并且**记账判据与熔断判据同源**（只认 `_status_of() == "success"`）。
+diff --git a/_conf_schema.json b/_conf_schema.json
+index 71d9fb2..693891d 100644
+--- a/_conf_schema.json
++++ b/_conf_schema.json
+@@ -608,7 +608,7 @@
+         "type": "text",
+         "editor_mode": true,
+         "editor_language": "markdown",
+-        "default": "你是一个 Minecraft 服务器指令任务的分类器。你的职责是判断用户请求属于哪一类，并给出建议。\n\n分类标准：\n- \"simple\"：仅用原版 Minecraft 命令即可完成的任务。例如：发原版物品（diamond_sword/diamond/oak_log 等无模组前缀的 ID）、调整时间天气（time/weather）、传送/召唤原版实体、给予原版效果、踢人封禁、普通查询等。不需要查阅模组知识库，不需要复杂 NBT。\n- \"complex\"：涉及整合包模组内容的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、工业模组数值计算、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。\n\n判断规则：\n1. 只要请求中出现模组 ID 前缀、或需要模组知识才能构造的任务，一律判为 complex。\n2. 原版物品（diamond、iron_sword、oak_log、diamond_sword 等）判为 simple。\n3. 拿不准时判为 complex（宁可多走一步知识库，不要出错）。\n4. 一次性多条请求（如\"给每人发钻石剑并广播\"）按最复杂的那个分类。\n\n【玩家目标判定（重要，用于决策AI玩家守门）】\n- requires_player：任务是否针对玩家实体执行（give/kick/ban/tp/kill/enchant 等涉及具体玩家的操作）。改时间天气、广播、查状态、召唤实体等不针对玩家的任务为 false。\n- target（requires_player=true 时必填）：\n  - \"self\"：请求指向当前用户自己（如「给我发一把钻石剑」「送我一把枪」）\n  - \"all\"：请求面向全体玩家（如「给所有人发一组钻石」「给每人发」）\n  - \"named\"：请求明确指名了具体玩家（如「给 Steve 发钻石剑」「给 Alex 满配」）\n  - \"none\"：不针对玩家（requires_player=false 时用）\n- player_name：target=\"named\" 时填请求中出现的玩家名原样（如 \"Steve\"、\"Alex\"，可能是昵称或真实名）；target=\"all\" 时填 \"@a\"；其余填空字符串。\n- 不要把「所有玩家/全体/每人」判成 named；「给每人发一组钻石」→ requires_player=true, target=\"all\", player_name=\"@a\"。\n\n输出要求（严格 JSON，不要输出任何多余文字）：\n{\"type\": \"simple\" 或 \"complex\", \"requires_player\": true 或 false, \"target\": \"none/self/all/named\", \"player_name\": \"指名玩家名或@a或空\", \"reason\": \"一句话判断理由\", \"commands\": [\"simple 时给出可直接执行的命令，不含开头斜杠；complex 时为空数组\"]}"
++        "default": "你是一个 Minecraft 服务器指令任务的分类器。你的职责是判断用户请求属于哪一类，并给出建议。\n\n分类标准：\n- \"simple\"：仅用原版 Minecraft 命令即可完成的任务。例如：发原版物品（diamond_sword/diamond/oak_log 等无模组前缀的 ID）、调整时间天气（time/weather）、传送/召唤原版实体、给予原版效果、踢人封禁、普通查询等。不需要查阅模组知识库，不需要复杂 NBT。\n- \"complex\"：涉及整合包模组内容的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、数值计算（配比/产量/耗材等）、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。\n\n判断规则：\n1. 只要请求中出现模组 ID 前缀、或需要模组知识才能构造的任务，一律判为 complex。\n2. 原版物品（diamond、iron_sword、oak_log、diamond_sword 等）判为 simple。\n3. 拿不准时判为 complex（宁可多走一步知识库，不要出错）。\n4. 一次性多条请求（如\"给每人发钻石剑并广播\"）按最复杂的那个分类。\n\n【玩家目标判定（重要，用于决策AI玩家守门）】\n- requires_player：任务是否针对玩家实体执行（give/kick/ban/tp/kill/enchant 等涉及具体玩家的操作）。改时间天气、广播、查状态、召唤实体等不针对玩家的任务为 false。\n- target（requires_player=true 时必填）：\n  - \"self\"：请求指向当前用户自己（如「给我发一把钻石剑」「送我一把枪」）\n  - \"all\"：请求面向全体玩家（如「给所有人发一组钻石」「给每人发」）\n  - \"named\"：请求明确指名了具体玩家（如「给 Steve 发钻石剑」「给 Alex 满配」）\n  - \"none\"：不针对玩家（requires_player=false 时用）\n- player_name：target=\"named\" 时填请求中出现的玩家名原样（如 \"Steve\"、\"Alex\"，可能是昵称或真实名）；target=\"all\" 时填 \"@a\"；其余填空字符串。\n- 不要把「所有玩家/全体/每人」判成 named；「给每人发一组钻石」→ requires_player=true, target=\"all\", player_name=\"@a\"。\n\n输出要求（严格 JSON，不要输出任何多余文字）：\n{\"type\": \"simple\" 或 \"complex\", \"requires_player\": true 或 false, \"target\": \"none/self/all/named\", \"player_name\": \"指名玩家名或@a或空\", \"reason\": \"一句话判断理由\", \"commands\": [\"simple 时给出可直接执行的命令，不含开头斜杠；complex 时为空数组\"]}"
+       },
+       "agent_prompt_judge": {
+         "description": "Agent#2 模板判断器 · 系统提示词",
+diff --git a/core/agent_prompts.py b/core/agent_prompts.py
+index 20858a0..ba8b257 100644
+--- a/core/agent_prompts.py
++++ b/core/agent_prompts.py
+@@ -11,7 +11,7 @@ CLASSIFIER_SYSTEM = """你是一个 Minecraft 服务器指令任务的分类器
+ 
+ 分类标准：
+ - "simple"：仅用原版 Minecraft 命令即可完成、**且物品不携带任何数据**的任务。例如：发**裸**原版物品（diamond_sword/diamond/oak_log 等无模组前缀、无附魔、无自定义名称的 ID）、调整时间天气（time/weather）、传送/召唤原版实体、给予原版效果、踢人封禁、普通查询等。不需要查阅模组知识库，不需要任何 NBT/组件。
+-- "complex"：涉及整合包模组内容，**或**需要构造物品数据（NBT / 组件 / 附魔 / 属性 / 自定义名称）的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、工业模组数值计算、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。
++- "complex"：涉及整合包模组内容，**或**需要构造物品数据（NBT / 组件 / 附魔 / 属性 / 自定义名称）的任务。例如：带模组 ID 前缀的物品、模组枪械满配/配件方案、模组任务/进度、数值计算（配比/产量/耗材等）、复杂 NBT 结构（附魔、枪械附件 Attachments、模组方块实体等）、多步骤操作、需要查配方/查模组机制的任务。
+ 
+ 判断规则：
+ 1. 只要请求中出现模组 ID 前缀、或需要模组知识才能构造的任务，一律判为 complex。
+diff --git a/core/command_result.py b/core/command_result.py
+index 38eff64..e44c736 100644
+--- a/core/command_result.py
++++ b/core/command_result.py
+@@ -341,6 +341,15 @@ _COMPLEX_REQUEST_MARKERS = (
+     "attachments", "enchant", "attribute", "modifier",
+ )
+ 
++#: 数值计算类特征（v0.22.11 / GPT 核验「额外发现」）：配比、产量、耗材这类问题
++#: **只靠分类器提示词拦不住** —— 模型偶尔仍会判 simple，而 simple 是全插件防护
++#: 最弱的一条路（无输出校验 / 无纠错 / 无到账核验）。这里补一道**确定性**守门，
++#: 与「附魔 / NBT / 组件」等既有特征同源：命中即把 simple 升级为 complex。
++_COMPLEX_NUMERIC_MARKERS = (
++    "数值计算", "配比", "产量", "耗材", "材料需求", "需要多少",
++    "每分钟", "每秒产出", "机器效率",
++)
++
+ #: 携带物品数据的命令 —— **只对这类命令**检查物品参数。
+ #: 不做全局字符扫描：裸 ``[`` 是选择器语法，``kill @e[type=item]`` /
+ #: ``tp @p[tag=foo]`` / ``gamemode creative @a[team=red]`` 全是正常简单命令，
+@@ -396,10 +405,22 @@ def looks_like_complex_item_command(command: str) -> bool:
+     return any(m in low for m in _COMPLEX_ITEM_MARKERS)
+ 
+ 
++def looks_like_numeric_request(request: str) -> bool:
++    """请求是否属于「数值计算」类（v0.22.11，**确定性**守门）。
++
++    分类器提示词写的是「数值计算（配比/产量/耗材等）」，但提示词只能让模型
++    **倾向**判 complex —— 模型一旦返回 simple，提示词毫无约束力。凡命中本清单
++    一律升级为 complex：宁可多走一趟流水线，也不让配比类问题落到 simple 路径
++    （那里没有输出校验、没有纠错、没有到账核验）。
++    """
++    low = (request or "").lower()
++    return any(m in low for m in _COMPLEX_NUMERIC_MARKERS)
++
++
+ def looks_like_complex_request(request: str) -> bool:
+     """用户请求文本是否命中复杂特征（第一层路由信号）。"""
+     low = (request or "").lower()
+-    return any(m in low for m in _COMPLEX_REQUEST_MARKERS)
++    return looks_like_numeric_request(low) or any(m in low for m in _COMPLEX_REQUEST_MARKERS)
+ 
+ 
+ def looks_like_complex_task(request: str, commands: list | None = None) -> bool:
+diff --git a/core/workflow.py b/core/workflow.py
+index 100358e..94ed7b7 100644
+--- a/core/workflow.py
++++ b/core/workflow.py
+@@ -857,13 +857,15 @@ class MCWorkflow:
+         这是**插件内部结构异常**，不是服务器的问题：哪几条真正发出去过无从判断。
+         继续跑只会有两种坏结果 —— 少发一条（用户要的东西没做）或重发一条
+         （重复副作用），所以既不自动重试、也不静默跳过，把事实摊开给主人看。
++        对外措辞（v0.22.11 / 核验取舍 3 软化）：不写「插件缺陷」这类开发者口吻，
++        改用「内部执行状态异常」，但**安全信息一字不减** ——
++        仍要说明「本次没有继续发送命令，也不会自动重试」与「重复执行 / 漏发」两种风险。
+         """
+         return (
+-            "工作流已暂停：内部执行报告与命令数量对不上，无法判断哪几条真正发出去过。\n"
++            "工作流已暂停：内部执行状态异常，无法安全确认命令对应关系。\n"
+             f"（{err}）\n"
+-            "为避免重复副作用或漏发，本轮不会自动重试、也不交给纠错 Agent 重发。\n"
+-            "请先在游戏内确认实际结果，再决定是否重新发起；"
+-            "这属于插件缺陷，麻烦连同这条回执一起反馈给作者。"
++            "为避免重复执行或漏发，本次没有继续发送命令，也不会自动重试。\n"
++            "请先在游戏内确认实际结果，再决定是否重新发起；若持续出现，请反馈此提示。"
+         )
+ 
+     def _halt_on_uncertain(self, exec_reports: list[dict]) -> tuple[str, bool] | None:
+diff --git a/main.py b/main.py
+index 8cbe894..38d3cfc 100644
+--- a/main.py
++++ b/main.py
+@@ -1697,7 +1697,7 @@ class McControlPlugin(Star):
+     ):
+         """【MC任务总入口·多Agent工作流】处理 Minecraft 服务器任务，自动路由到最合适的执行路径。
+ 
+-        复杂场景优先用本工具：模组枪械满配（如「满配M4A1」）、模组物品/方块发放、复杂 NBT 构造、模组任务链、查配方或模组机制、批量或多条混合指令。
++        复杂场景优先用本工具：数值计算（配比/产量/耗材等）、模组枪械满配（如「满配M4A1」）、模组物品/方块发放、复杂 NBT 构造、模组任务链、查配方或模组机制、批量或多条混合指令。
+         简单单条指令用 mc_execute_command；查玩家 mc_list_players；广播 mc_broadcast；查物品ID mc_search_item；查配方 mc_get_recipes。
+ 
+         Args:
+@@ -1711,7 +1711,7 @@ class McControlPlugin(Star):
+                 "① mc_search_knowledge 查已沉淀的模组经验（NBT 格式/配件方案）；"
+                 "② mc_search_item 查准确物品 ID；③ mc_get_recipes 查合成配方；"
+                 "④ mc_execute_command 下发指令（可带复杂 NBT）；⑤ mc_give_item 发放物品。"
+-                "若任务确实需要多 Agent 流水线（满配枪械/复杂 NBT 推理），请提示用户到插件配置或 WebUI「自动化」页开启工作流总开关。"
++                "若任务确实需要多 Agent 流水线，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT 推理，请提示用户到插件配置或 WebUI「自动化」页开启工作流总开关。"
+             )
+         denied = self._admin_gate(event, tool="mc_workflow", action="多 Agent 工作流")
+         if denied:
+@@ -1734,7 +1734,7 @@ class McControlPlugin(Star):
+     ):
+         """向 Minecraft 服务器执行任意一条命令，结果会以自然语言提示展示给游戏内玩家。
+ 
+-        仅用于简单单条指令；模组枪械满配、复杂 NBT、批量指令请用 mc_workflow。
++        仅用于简单单条指令；数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT、批量指令请用 mc_workflow。
+ 
+         Args:
+             command(string): 要执行的 Minecraft 命令（不含开头的斜杠），例如 "time set noon"、"give Steve netherite_sword 1"
+@@ -1869,7 +1869,7 @@ class McControlPlugin(Star):
+     ):
+         """给指定玩家发放物品，结果会以自然语言提示展示给游戏内玩家。
+ 
+-        仅用于简单原版物品；带复杂 NBT（附魔/枪械 Attachments）或批量发放请用 mc_workflow。
++        仅用于简单原版物品；数值计算（配比/产量/耗材等）、带复杂 NBT（附魔/枪械 Attachments）或批量发放请用 mc_workflow。
+ 
+         Args:
+             player(string): 可选。目标玩家名（真实游戏名或聊天昵称，会自动映射为在线真实名）。留空则用当前账号绑定的MC玩家ID（未绑定会提示）
+@@ -2969,7 +2969,7 @@ class McControlPlugin(Star):
+     async def mc_search_item(self, event: AstrMessageEvent, keyword: str):
+         """搜索 Minecraft 服务器物品的精确 ID，支持中文名、英文名或 ID 片段。
+ 
+-        构造 give/summon 等命令前若不确定物品 ID，先用本工具查询；复杂任务（满配枪械/复杂 NBT）优先用 mc_workflow。
++        构造 give/summon 等命令前若不确定物品 ID，先用本工具查询；复杂任务优先用 mc_workflow，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT。
+ 
+         Args:
+             keyword(string): 搜索关键词，例如 "黄铜锭"、"brass"、"create:brass_ingot"
+@@ -2987,7 +2987,7 @@ class McControlPlugin(Star):
+                 f"词典中未找到与「{keyword}」相关的物品。建议："
+                 f"1) 尝试英文名或更短的关键词；"
+                 f"2) 用网络搜索「<Mod名> <物品名> item id」获取准确 ID。"
+-                f"提示：若目标是模组枪械满配、复杂 NBT 构造等复杂任务，建议改用 mc_workflow 工具走完整流水线。"
++                f"提示：若目标是数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT 构造等复杂任务，建议改用 mc_workflow 工具走完整流水线。"
+             )
+         lines = []
+         for r in results:
+@@ -3083,7 +3083,7 @@ class McControlPlugin(Star):
+             return (
+                 f"知识库中未找到与「{topic}」相关的沉淀知识。"
+                 f"可自行推理，成功后调用 mc_save_knowledge 沉淀经验。"
+-                f"提示：若该任务属于模组枪械满配、复杂 NBT 构造、批量/混合指令等复杂场景，"
++                f"提示：若该任务属于数值计算（配比/产量/耗材等）、模组枪械满配、复杂 NBT 构造、批量/混合指令等复杂场景，"
+                 f"建议改用 mc_workflow 工具走完整流水线，效果更佳。"
+             )
+         lines = []
+diff --git a/metadata.yaml b/metadata.yaml
+index 8d71bb8..5dd844d 100644
+--- a/metadata.yaml
++++ b/metadata.yaml
+@@ -2,8 +2,8 @@ name: astrbot_plugin_Scintilla_MC_Server_Control
+ display_name: Minecraft Server 智控台
+ short_desc: 用自然语言操控 Minecraft 服务器，整合包复杂任务一站式处理。
+ desc: 通过 RCON 用自然语言操控 Minecraft 服务器并具备高度完备的 WebUI：内置多 Agent 工作流处理整合包复杂任务；转发玩家进出/聊天/死亡/成就/对话/指令；平台指令组 mcs 支持绑定、喊话、状态查询与踢人封禁（管理员）。
+-help: 使用前请先在Minecraft服务端 server.properties 中开启RCON（enable-rcon=true 并设置 rcon.port 与 rcon.password），然后在插件配置中填写连接信息与管理员ID。更换服务端时只需在插件 WebUI「设置」页改 server_dir 并保存：整合包指纹与物品词典会就地重算、无需重载插件。插件设置已按「连接/权限/播报/桥接/指令/AI工具/知识库/外观/工作流/提示词」十大分组整理，原生设置页与插件 WebUI 均可视化调整；插件 WebUI 顶栏右上角可一键切换浅色/深色主题（选择会记住，首次跟随系统偏好）；多 Agent 五个角色（分类/判断/建库/实现/纠错）的系统提示词可在插件 WebUI「提示词」页或原生配置「⑩ 多 Agent 提示词」分组中查看与编辑，保存即生效、无需重启。复杂任务（满配枪械/模组任务等）请使用 mc_workflow 工具自动路由。命令工具有白名单/黑名单两种策略（默认白名单）：白名单下非管理员完全不能使用口头命令工具（执行指令/发物品/广播），黑名单下所有人都能用、但 stop/op/ban/kick/whitelist 等危险命令与权限等级 3/4 的管理命令仍仅管理员可用；喊话、状态、查询、绑定这类插件自带功能不受策略影响，可在 WebUI 设置页「权限与安全」下方的「命令工具 · 白名单 / 黑名单」窗口中切换。插件自带「重载即生效」补丁：在 AstrBot 插件管理页点「重载」时会深度清理模块缓存与 __pycache__（含 sys.path 方式引入的模块），插件更新重载即可应用、无需重启 AstrBot（聊天平台不再提供重载指令，重载请回 AstrBot 操作）。mcs 指令组（AstrBot 聊天平台指令，不是在游戏里输入；前缀跟随 AstrBot 唤醒词设置）：绑定/解绑/查询（自助绑定MC游戏名）、喊话 <内容>（带QQ昵称转发到服务器）、状态（mspt/tps/在线人数/运行时长/内存/CPU）、踢人 <玩家> [理由]、封禁 <玩家> [理由]、解封 <玩家>（后三者仅管理员）。
+-version: v0.22.10
++help: 使用前请先在Minecraft服务端 server.properties 中开启RCON（enable-rcon=true 并设置 rcon.port 与 rcon.password），然后在插件配置中填写连接信息与管理员ID。更换服务端时只需在插件 WebUI「设置」页改 server_dir 并保存：整合包指纹与物品词典会就地重算、无需重载插件。插件设置已按「连接/权限/播报/桥接/指令/AI工具/知识库/外观/工作流/提示词」十大分组整理，原生设置页与插件 WebUI 均可视化调整；插件 WebUI 顶栏右上角可一键切换浅色/深色主题（选择会记住，首次跟随系统偏好）；多 Agent 五个角色（分类/判断/建库/实现/纠错）的系统提示词可在插件 WebUI「提示词」页或原生配置「⑩ 多 Agent 提示词」分组中查看与编辑，保存即生效、无需重启。复杂任务请使用 mc_workflow 工具自动路由，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT、模组任务。命令工具有白名单/黑名单两种策略（默认白名单）：白名单下非管理员完全不能使用口头命令工具（执行指令/发物品/广播），黑名单下所有人都能用、但 stop/op/ban/kick/whitelist 等危险命令与权限等级 3/4 的管理命令仍仅管理员可用；喊话、状态、查询、绑定这类插件自带功能不受策略影响，可在 WebUI 设置页「权限与安全」下方的「命令工具 · 白名单 / 黑名单」窗口中切换。插件自带「重载即生效」补丁：在 AstrBot 插件管理页点「重载」时会深度清理模块缓存与 __pycache__（含 sys.path 方式引入的模块），插件更新重载即可应用、无需重启 AstrBot（聊天平台不再提供重载指令，重载请回 AstrBot 操作）。mcs 指令组（AstrBot 聊天平台指令，不是在游戏里输入；前缀跟随 AstrBot 唤醒词设置）：绑定/解绑/查询（自助绑定MC游戏名）、喊话 <内容>（带QQ昵称转发到服务器）、状态（mspt/tps/在线人数/运行时长/内存/CPU）、踢人 <玩家> [理由]、封禁 <玩家> [理由]、解封 <玩家>（后三者仅管理员）。
++version: v0.22.11
+ author: HuangGuaKnn
+ repo: https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control
+ astrbot_version: ">=4.17.0"
+diff --git a/pages/mc_control/index.html b/pages/mc_control/index.html
+index 670faee..f6c23ad 100644
+--- a/pages/mc_control/index.html
++++ b/pages/mc_control/index.html
+@@ -1991,7 +1991,7 @@ async function loadWorkflow(silent){
+       : "mc_workflow 对 LLM 不可用（工具表仍会暴露它，模型调用时会收到导航提示后改用具体工具）。";
+     banner.className = "banner show " + lvl;
+     banner.innerHTML = `<span class="bi">⚠</span><span class="bx">已关闭 <b>${off}</b>：${list}<br>`
+-      + `此时对满配枪械 / 复杂 NBT 这类任务，可按 <code>mc_search_knowledge</code>（查经验）`
++      + `此时对数值计算（配比/产量/耗材等）/ 满配枪械 / 复杂 NBT 这类任务，可按 <code>mc_search_knowledge</code>（查经验）`
+       + `→ <code>mc_search_item</code>（查 ID）→ <code>mc_get_recipes</code>（查配方）`
+       + `→ <code>mc_execute_command</code>（执行）分步完成；`
+       + `如需恢复流水线，打开上方开关即可（保存即生效）。</span>`;
+@@ -2702,7 +2702,7 @@ function renderWfTip(){
+   let cls, html;
+   if(wf && tool){
+     cls = "cv-tip ok";
+-    html = `✓ 复杂任务（满配枪械 / 复杂 NBT）会自动走 <b>分类→模板判断→前瞻建库→实现→纠错</b> 流水线，`
++    html = `✓ 复杂任务会自动走 <b>分类→模板判断→前瞻建库→实现→纠错</b> 流水线 —— 数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT，`
+          + `后台执行、完成后自动通知；决策 AI 也会做「玩家守门」（未声明玩家时终止而非猜测）。`;
+   }else if(wf){
+     cls = "cv-tip warn";
+@@ -2716,7 +2716,7 @@ function renderWfTip(){
+          + `「玩家守门」同时失效——决策 AI 不再拦截未声明玩家的任务。`;
+   }
+   if(!(wf && tool)){
+-    html += `<br>满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
++    html += `<br>数值计算（配比/产量/耗材等）/ 满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
+   }
+   if(WF_SAVED && (wf !== WF_SAVED.wf || tool !== WF_SAVED.tool)){
+     html += ` <span class="pend">改动未保存 · 点「保存全部设置」生效</span>`;
+diff --git a/tests/test_complex_routing.py b/tests/test_complex_routing.py
+index a2e2f82..87bb2bd 100644
+--- a/tests/test_complex_routing.py
++++ b/tests/test_complex_routing.py
+@@ -27,6 +27,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.command_result import (  #
+     looks_like_complex_item_command,
+     looks_like_complex_request,
+     looks_like_complex_task,
++    looks_like_numeric_request,
+ )
+ 
+ # 端到端那组要 import core.workflow，而它依赖 AstrBot 运行时（astrbot.api.*）。
+@@ -99,6 +100,46 @@ def combined_cases() -> None:
+           looks_like_complex_task("满配 M4A1", [{"command": "say hi"}]) is True)
+ 
+ 
++# ============ 三·五、数值计算：提示词之外的确定性守门（v0.22.11） ============
++
++def numeric_routing_cases() -> None:
++    """GPT 核验「额外发现」：提示词增强 ≠ 硬路由保证。
++
++    分类器提示词里写「数值计算（配比/产量/耗材等）」，但模型仍可能返回 simple，
++    而 simple 是唯一没有输出校验 / 纠错 / 到账核验的一条路。本组验证**确定性**
++    兜底真的兜得住，同时不得把无关请求误升级（升级代价 = 白烧 token + 变慢）。
++    """
++    print("---- 三·五、数值计算：提示词之外还有确定性守门 ----")
++    # ① 主人下午实测要用的那句话
++    check("★「算一下蒸汽机需要多少铜」→ 强制复杂（下午实测句）",
++          looks_like_complex_task("算一下蒸汽机需要多少铜", []) is True)
++    check("★「数值计算」显式出现 → 复杂",
++          looks_like_complex_task("帮我做个数值计算", []) is True)
++    for txt, why in (
++        ("蒸汽机每分钟能产多少", "每分钟"),
++        ("这条产线的产量是多少", "产量"),
++        ("这个配方要多少耗材", "耗材"),
++        ("机器效率怎么算", "机器效率"),
++        ("每秒产出几个", "每秒产出"),
++        ("材料需求列一下", "材料需求"),
++    ):
++        check(f"数值特征「{why}」→ 复杂", looks_like_complex_task(txt, []) is True, txt)
++
++    # ② 误伤边界：纯查询 / 纯指令不得被升级
++    for txt in ("把时间设成白天", "服务器现在几个人在线",
++                "给 Steve 一把钻石剑", "广播一句 hi"):
++        check(f"不含数值特征「{txt}」→ 不升级", looks_like_complex_task(txt, []) is False, txt)
++    check("对照：数值特征词不拦普通「几个」用量提问（避免过度升级）",
++          looks_like_complex_request("我背包里有几个钻石") is False)
++
++    # ③ 只升级不降级 + 新函数可单独调用（便于将来一键回退）
++    check("★数值守门只升级不降级",
++          looks_like_complex_task("算一下需要多少铜", [{"command": "time set day"}]) is True)
++    check("looks_like_numeric_request 可独立调用",
++          looks_like_numeric_request("蒸汽机配比") is True
++          and looks_like_numeric_request("把时间设成白天") is False)
++
++
+ # ===================== 四、端到端：dispatch 的强制转轨 =====================
+ 
+ class FakeEvent:
+@@ -251,6 +292,7 @@ def main() -> int:
+     request_marker_cases()
+     command_marker_cases()
+     combined_cases()
++    numeric_routing_cases()
+     asyncio.run(dispatch_cases())
+     print("==========================================")
+     if _fail:
+diff --git a/tests/test_v02210_label_and_contract.py b/tests/test_v02210_label_and_contract.py
+index 84c6bf8..36e1cc3 100644
+--- a/tests/test_v02210_label_and_contract.py
++++ b/tests/test_v02210_label_and_contract.py
+@@ -13,6 +13,8 @@
+   · 旧实现靠 ``zip()`` 隐式配对，长度不一致时**静默截断**：多出来的命令
+     既没记账、也没人发现。
+   · 改后：结构对不上就 fail-closed —— 不记账、不猜、停手问人。
++  · v0.22.11（核验取舍 3）：回执措辞软化，去掉「插件缺陷」这类开发者口吻，
++    但「本次没有继续发送命令」与「重复执行 / 漏发」两种风险必须留在回执里。
+ 
+ 附带收口（皮莉卡自曝，GPT 未点名）｜记账判据同源
+   · 旧实现按 ``r.get("ok")`` 记账，是**第二套成功口径**：报告漏填 ``status``
+@@ -120,9 +122,16 @@ def group_contract_length() -> None:
+     check("对照：空对空不算结构异常", got4 == set() and err4 is None, str((got4, err4)))
+ 
+     halt = MCWorkflow._contract_halt_text(err2 or "")
+-    check("★结构异常回执：写明不会自动重试", "不会自动重试" in halt)
+-    check("★结构异常回执：写明重复副作用与漏发两种风险",
+-          "重复副作用" in halt and "漏发" in halt)
++    check("★结构异常回执：写明本次没有继续发送命令（v0.22.11 软化后安全信息不减）",
++          "本次没有继续发送命令" in halt)
++    check("★结构异常回执：写明重复执行与漏发两种风险",
++          "重复执行" in halt and "漏发" in halt)
++    check("★结构异常回执：写明不会再自动重试（v0.22.11 · GPT 裁决 2）",
++          "不会自动重试" in halt)
++    check("★结构异常回执：给出下一步（先确认实际结果 / 持续出现则反馈此提示）",
++          "请先在游戏内确认实际结果" in halt and "反馈此提示" in halt)
++    check("★结构异常回执：不带开发者口吻（不出现「插件缺陷」字样）",
++          "插件缺陷" not in halt)
+     check("结构异常回执：带上原因原文（不吞事实）", (err2 or "") in halt)
+     check("结构异常回执：不谎称任务已完成", "已完成" not in halt)
+ 
