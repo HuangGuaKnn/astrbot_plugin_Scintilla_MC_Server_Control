@@ -123,7 +123,22 @@ def main() -> int:
         check("★版本未知时能力行明说「无法确定」", "无法确定" in caps0, caps0[:140])
         check("★未知时给出逃生出口（告诉主人填 1.20.1）",
               "1.20.1" in caps0, caps0[:160])
+        # v0.22.11：能力行**不在折叠区里** —— 「版本未知 → 带数据的请求会被拒绝」
+        # 属于安全警示，收起折叠区也必须看得见（这是折叠改造的硬边界）。
+        check("★能力警示行不在折叠区内（收起也看得见）",
+              page.evaluate("() => !document.getElementById('ver_caps_line')"
+                            ".closest('details.adv-fold')") is True)
         page.screenshot(path=str(SHOTS / "ver_override_1_unknown.png"))
+
+        # v0.22.11：版本 / 语法收进了「进阶设置」折叠区（默认收起）——
+        # 后续要改值得先展开；顺带把「默认收起」这条契约钉住。
+        check("★版本 / 语法默认收在折叠区里（普通用户不必调）",
+              page.evaluate("() => { const d = document.getElementById('adv_rcon');"
+                            " return !!d && d.open === false; }") is True)
+        page.click("#adv_rcon > summary")
+        page.wait_for_timeout(300)
+        check("展开后版本输入框可见（可改）", page.is_visible("#cfg_server_version"))
+        page.screenshot(path=str(SHOTS / "ver_override_1b_expanded.png"))
 
         print("[2] 只改草稿、不保存 → 后端状态与能力行都不该动")
         calls_before = STATE["status_calls"]

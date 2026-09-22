@@ -380,6 +380,23 @@ details.kb-fold>summary::after{content:"（点开看实测数据与前提）";fo
 details.kb-fold[open]>summary::after{content:"（点标题收起）"}
 details.kb-fold .hint{margin-top:9px;line-height:1.7}
 details.kb-fold .hint b{color:var(--dim);font-weight:600}
+/* v0.23.0：RCON 卡的进阶调参收进折叠区（默认收起）—— 基础三件套（地址 / 端口 / 密码）
+   之后的设置项对普通用户只是噪音，卡片高度随之回落。与知识库卡同一套视觉语言
+   （details.kb-fold），只是 summary 文案不同；额外多一枚收起态摘要徽标。
+   ⚠️ 边界：承载「边界未确认 / 已自动降级 / 版本未知」这类**安全警示**的状态行
+   （#ver_caps_line / #rcon_runtime_line）与「重建 RCON 连接」按钮**留在折叠区外** ——
+   折叠起来等于把警示藏掉，与「不削弱安全信息」的既定口径冲突。 */
+details.adv-fold{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
+details.adv-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0;cursor:pointer}
+details.adv-fold>summary::-webkit-details-marker{display:none}
+details.adv-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
+details.adv-fold[open]>summary::before{content:"▾"}
+details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
+details.adv-fold[open]>summary::after{content:"（点标题收起）"}
+details.adv-fold .hint{margin-top:9px;line-height:1.7}
+details.adv-fold .hint b{color:var(--dim);font-weight:600}
+details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);font-weight:500}
+details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 /* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
 /* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
 #sd_box.dimmed input{pointer-events:none;color:var(--dim);opacity:1;
@@ -805,6 +822,8 @@ try{
         <b>物品词典 / 知识库 / 聊天桥接 / 服务器事件播报 / 版本探测 / 进程指标</b>
         这些依赖服务端本地文件的能力会按设计禁用 —— 下方对应区块会被<b>标记为不可用并写明原因</b>，
         终端、mcs 状态与决策 AI 也会明确告知，不会假装可用。
+        <br><b>服务端版本必须手填</b>（读不到服务端文件，插件不会猜一个版本硬编）：
+        <span class="jump" onclick="openAdvRcon('cfg_server_version')">展开「进阶设置」填写 →</span>
       </div>
       <div class="hint" id="remote_mode_pending" style="display:none;margin-top:2px;color:var(--warn)"></div>
       <div id="sd_box" style="margin-top:12px">
@@ -818,40 +837,44 @@ try{
       </div>
       <label class="f">RCON 密码</label>
       <input type="password" id="cfg_rcon_password" placeholder="••••••••">
-      <label class="f">RCON 超时（秒）</label>
-      <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
-      <label class="f">响应结束判定方式</label>
-      <select id="cfg_rcon_end_mode">
-        <option value="sentinel">sentinel —— 结束哨兵（推荐：可靠结束边界）</option>
-        <option value="idle">idle —— 静默窗口（降级：兼容优先）</option>
-      </select>
-      <div class="hint">默认 <b>sentinel</b>：发包后紧跟一条无害探测命令，用它的响应当「上一条已经发完」的边界 ——
-        慢分包、半包停顿都不会被误判成「读完了」。只有服务端完全不回应探测命令时，才改成 idle。</div>
-      <div class="frow" style="margin-top:12px">
-        <div style="flex:2"><label class="f" style="margin-top:0">结束哨兵探测命令</label><input type="text" id="cfg_rcon_probe_command" placeholder="留空 = 空命令（无副作用）"></div>
-        <div style="flex:1;max-width:150px"><label class="f" style="margin-top:0">静默窗口（秒）</label><input type="number" id="cfg_rcon_idle_probe" placeholder="0.5" step="0.05"></div>
-      </div>
-      <div class="hint">探测命令留空即空命令：服务端照样回一个响应，且本身没有任何副作用。静默窗口只在 idle 模式生效；
-        连续多次拿不到哨兵时插件会自动降级为 idle 并写日志提醒，不会静默假装读完了。</div>
-      <label class="f" style="margin-top:16px">服务端版本与物品语法</label>
-      <div class="frow" style="margin-top:2px">
-        <div style="flex:1">
-          <label class="f" style="margin-top:0">服务端版本 server_version_override</label>
-          <input type="text" id="cfg_server_version" placeholder="留空 = 自动探测，例：1.20.1">
+      <details class="adv-fold" id="adv_rcon">
+        <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-sum" id="adv_rcon_sum"></span></summary>
+        <label class="f" style="margin-top:12px">RCON 超时（秒）</label>
+        <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
+        <label class="f">响应结束判定方式</label>
+        <select id="cfg_rcon_end_mode">
+          <option value="sentinel">sentinel —— 结束哨兵（推荐：可靠结束边界）</option>
+          <option value="idle">idle —— 静默窗口（降级：兼容优先）</option>
+        </select>
+        <div class="hint">默认 <b>sentinel</b>：发包后紧跟一条无害探测命令，用它的响应当「上一条已经发完」的边界 ——
+          慢分包、半包停顿都不会被误判成「读完了」。只有服务端完全不回应探测命令时，才改成 idle。</div>
+        <div class="frow" style="margin-top:12px">
+          <div style="flex:2"><label class="f" style="margin-top:0">结束哨兵探测命令</label><input type="text" id="cfg_rcon_probe_command" placeholder="留空 = 空命令（无副作用）"></div>
+          <div style="flex:1;max-width:150px"><label class="f" style="margin-top:0">静默窗口（秒）</label><input type="number" id="cfg_rcon_idle_probe" placeholder="0.5" step="0.05"></div>
         </div>
-        <div style="flex:1;max-width:250px">
-          <label class="f" style="margin-top:0">物品语法世代 item_syntax_override</label>
-          <select id="cfg_item_syntax">
-            <option value="auto">auto —— 按版本自动判定</option>
-            <option value="legacy_nbt">legacy_nbt —— NBT {…}</option>
-            <option value="components">components —— 物品组件 […]</option>
-          </select>
+        <div class="hint">探测命令留空即空命令：服务端照样回一个响应，且本身没有任何副作用。静默窗口只在 idle 模式生效；
+          连续多次拿不到哨兵时插件会自动降级为 idle 并写日志提醒，不会静默假装读完了。</div>
+        <label class="f" style="margin-top:16px">服务端版本与物品语法</label>
+        <div class="frow" style="margin-top:2px">
+          <div style="flex:1">
+            <label class="f" style="margin-top:0">服务端版本 server_version_override</label>
+            <input type="text" id="cfg_server_version" placeholder="留空 = 自动探测，例：1.20.1">
+          </div>
+          <div style="flex:1;max-width:250px">
+            <label class="f" style="margin-top:0">物品语法世代 item_syntax_override</label>
+            <select id="cfg_item_syntax">
+              <option value="auto">auto —— 按版本自动判定</option>
+              <option value="legacy_nbt">legacy_nbt —— NBT {…}</option>
+              <option value="components">components —— 物品组件 […]</option>
+            </select>
+          </div>
         </div>
-      </div>
+        <div class="hint">优先级：<b>手动声明 &gt; 文件探测 &gt; 未知</b>。异地 RCON 模式读不到服务端文件，
+          <b>必须手填</b>，否则附魔 / NBT / 物品组件类请求会被明确拒绝 ——
+          插件不会猜一个版本硬编（猜错只会生成解析失败的命令）。</div>
+      </details>
+
       <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
-      <div class="hint">优先级：<b>手动声明 &gt; 文件探测 &gt; 未知</b>。异地 RCON 模式读不到服务端文件，
-        <b>必须手填</b>，否则附魔 / NBT / 物品组件类请求会被明确拒绝 ——
-        插件不会猜一个版本硬编（猜错只会生成解析失败的命令）。</div>
       <div class="hint" id="rcon_runtime_line" style="margin-top:8px"></div>
       <div class="btnrow" style="margin-top:6px">
         <button class="btn ghost sm" type="button" id="btn_rcon_reset">↻ 重建 RCON 连接（回到配置方式）</button>
@@ -2222,6 +2245,41 @@ const S_DEFAULTS = {
   "cfg_grad_fmt": "json",
 };
 
+// ============ RCON 进阶设置折叠（v0.23.0） ============
+// 收起不等于失明：异地模式漏填版本会让附魔 / NBT 请求被**直接拒绝**，
+// 这种「必须补的事」要在 summary 上就看得见，不能靠用户自己想起来展开。
+// 反过来说，承载安全警示的状态行（#ver_caps_line / #rcon_runtime_line）与
+// 「重建 RCON 连接」按钮**不进折叠区** —— 收起等于把警示藏掉。
+function renderAdvSummary(){
+  const el = $("adv_rcon_sum");
+  if(!el) return;
+  const rmt = $("cfg_remote_rcon_mode");
+  const ver = ($("cfg_server_version") || {}).value || "";
+  const to = ($("cfg_rcon_timeout") || {}).value || "";
+  const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
+  if(rmt && rmt.checked && !String(ver).trim()){
+    // 异地模式读不到服务端文件 → 版本只能手填，漏填的后果是「请求被拒绝」
+    el.className = "adv-sum warn";
+    el.textContent = "⚠ 异地模式需手填服务端版本";
+    return;
+  }
+  el.className = "adv-sum";
+  el.textContent = `当前：超时 ${to || "默认 5"}s · `
+    + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）");
+}
+function openAdvRcon(focusId){
+  const d = $("adv_rcon");
+  if(!d) return;
+  d.open = true;
+  renderAdvSummary();
+  const el = focusId && $(focusId);
+  if(el){
+    el.scrollIntoView({behavior:"smooth", block:"center"});
+    el.focus({preventScroll:true});
+  }
+}
+window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .jump 写法一致）
+
 // ============ 服务端版本能力（v0.22.7） ============
 // 设置页必须**能改**、也必须**能看见** Agent 实际在用哪个版本 ——
 // 否则会出现「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
@@ -2852,6 +2910,16 @@ async function loadSettings(){
   bindTerminalUI();
   const rcr = $("btn_rcon_reset");
   if(rcr) rcr.onclick = resetRcon;
+  // v0.23.0：RCON 进阶设置折叠 —— 收起态摘要随值走；展开 / 收起时同步刷新
+  const adv = $("adv_rcon");
+  if(adv) adv.ontoggle = renderAdvSummary;
+  ["cfg_rcon_timeout","cfg_rcon_end_mode","cfg_server_version","cfg_item_syntax","cfg_remote_rcon_mode"]
+    .forEach(id=>{
+      const el = $(id); if(!el) return;
+      el.addEventListener("change", renderAdvSummary);
+      el.addEventListener("input", renderAdvSummary);
+    });
+  renderAdvSummary();
   ["cfg_wf_enabled","cfg_wf_tool"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderWfTip;
   });
