@@ -385,8 +385,8 @@ def workflow_summary() -> None:
 
     check("workflow 汇总单列 inferred_success",
           "inferred_success" in WF_SRC and "已执行但未确认" in WF_SRC)
-    check("workflow 的 _fmt_results 有 inferred_success 标签",
-          '"inferred_success": "已执行·未确认"' in WF_SRC)
+    check("workflow 的 _fmt_results 复用 STATUS_LABEL（v0.22.10：不再自带标签表）",
+          "STATUS_LABEL.get(status" in WF_SRC and "_tag = {" not in WF_SRC)
     check("★inferred_success 不把工作流标成 done",
           "elif unknown or inferred:" in WF_SRC)
     check("main.py 回执里 inferred_success 明确写「未确认」",
