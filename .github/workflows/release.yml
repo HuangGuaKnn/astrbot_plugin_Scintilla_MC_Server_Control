@@ -48,6 +48,25 @@ jobs:
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then rm -f notes.md; echo "CHANGELOG 里没有对应小节，改用自动生成"; fi
           wc -l notes.md 2>/dev/null || true
+      - name: 追加「上一个正式版 → 本版」的 Full changes 链接
+        # 基线只认**真实发布状态**（prerelease == false），不能靠 CHANGELOG 标题推断 ——
+        # v0.22.3 / v0.22.4 的小节没写「（预发布）」，但它们从未发过 Release，纯文本会误判。
+        # 本步失败**不阻断发布**：拿不到基线就只是说明末尾少一行链接。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f notes.md ]; then echo "没有自定义说明（走 --generate-notes），跳过"; exit 0; fi
+          prev="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                  --jq '.[] | select(.prerelease == false) | .tag_name' \
+                  | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
+          if [ -n "$prev" ]; then
+            printf '\n---\n\n**Full changes**（上一个正式版 %s → %s）：%s/%s/compare/%s...%s\n' \
+              "$prev" "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME" >> notes.md
+            echo "已追加 Full changes 链接：$prev → $GITHUB_REF_NAME"
+          else
+            echo "未找到上一个正式版，跳过"
+          fi
       - name: 判定是否预发布（CHANGELOG 小节标题含「预发布」→ pre-release）
         run: |
           set -e
