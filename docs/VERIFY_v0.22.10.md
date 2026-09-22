@@ -4,9 +4,9 @@
 | --- | --- |
 | 版本 | `v0.22.10`（`metadata.yaml:6` = `v0.22.10`） |
 | 基线 | `v0.22.9` / 提交 `c29f5f8`（文档提交 `b2a7b95`、`97e13f0` 之后） |
-| 提交 | **`1d7d805`**（本地 `main`，**尚未推送**；2026-09-22 提交） |
-| 标签 | **未打**（等 GPT 核验 / 主人拍板） |
-| 发布 | **未发**（不打 tag、不发 Release、未重载插件） |
+| 提交 | **`1d7d805`**（2026-09-22 提交，已推送 `main`） |
+| 标签 | **`v0.22.10`**（annotated tag，已推送，触发 release 流水线 run **#12**） |
+| 发布 | **pre-Release 已发布**（`prerelease=true`、`draft=false`，附件 `..._v0.22.10.zip` = **2,107,619 字节**） |
 | 改动规模 | **8 个文件、+474 / −26**（源码 `core/workflow.py` +67/−16；测试 +259/−9；`CHANGELOG.md` +61；`metadata.yaml` ±1；`run_v02210_all.py` +86） |
 | 改动文件 | `core/workflow.py`、`metadata.yaml`、`CHANGELOG.md`、`tests/test_v0227_result_hardening.py`、`tests/test_v0229_failclosed_and_no_duplicate.py`、`tests/test_simple_workflow_result.py` |
 | 新增文件 | `tests/test_v02210_label_and_contract.py`（249 行）、`run_v02210_all.py`（86 行）、`docs/v0.22.10.diff`（632 行快照） |
@@ -254,18 +254,23 @@ README / 文档里若有回执截图需一并核对（本次已确认 README 无
 5. 第四节：四条旧契约的更新是否属于合理同步、有无被削弱？
 6. 本版能否作为 `v0.22.10` pre-release 发布（仍缺 Vanilla / Paper / Fabric 真实矩阵）？
 
+> 注：主人已拍板「先推 pre-Release」，故 tag `v0.22.10` 与 pre-Release 已按第八节留痕发布；
+> 第 6 问仍请 GPT 裁决「此形态是否可接受为稳定版候选」，以及是否需在开服后补真机冒烟。
+
 ---
 
 ## 八、发布与流水线留痕
 
 | 项 | 值 |
 | --- | --- |
-| 提交 | `1d7d805`（本地 `main`，未推送） |
+| 提交 | `1d7d805`（已推送 `main`；`main` 已推进到本单文档提交） |
 | 提交信息 | `fix: v0.22.10（预发布）—— 回执标签统一走 STATUS_LABEL + 记账 fail-closed（显式等长校验 / 判据同源）` |
-| 标签 | **未打**（等核验） |
-| Release | **未发**（等核验） |
-| 插件重载 | **未重载**（等核验；本版无前端改动，重载只为生效后端） |
-| 本单自身 | 本核验单以 `docs:` 文档提交追加，**晚于**被测提交，不含被测代码 |
+| 标签 | **`v0.22.10`**（annotated tag，已推送） |
+| Release | **已发布为 pre-Release**：run **#12**（`release`，conclusion = `success`）<br>tag = `v0.22.10`、`prerelease = true`、`draft = false`、发布时间 `2026-09-22T03:08:56Z`<br>附件：`astrbot_plugin_Scintilla_MC_Server_Control_v0.22.10.zip`（**2,107,619 字节**） |
+| 流水线 | `release` run #12 → `success`；`tests` run #19 → `success`（02:51 那次，v0.22.9 之后）；`tests` run #20 → `in_progress`（本单文档提交触发） |
+| 插件重载 | **未重载**（等主人开服 / 拍板；本版无前端改动，重载只为生效后端） |
+| 本单自身 | 本核验单以 `docs:` 文档提交追加，**晚于**被测提交，不含被测代码（本单最终 hash 见 `git log -1 -- docs/VERIFY_v0.22.10.md`） |
+| 推送备注 | 本机经代理（`127.0.0.1:7897`）推送时 schannel 在 HTTP/2 下握手不稳，改用 `git -c http.version=HTTP/1.1 push` 后 `main` 推送成功（tag 那次首次即通） |
 
 核验入口：
 
