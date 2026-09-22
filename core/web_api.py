@@ -17,6 +17,7 @@ from astrbot.api.web import request, json_response
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
+from .version_caps import ITEM_SYNTAX_CHOICES
 
 PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
 
@@ -272,9 +273,16 @@ class McControlWebApi:
     DICT_SETTING_KEYS = ("notify_target_events",)
     # 会话目标类列表：允许「私聊:123456789 / 群聊:987654321」简写，落盘前统一规范化
     SESSION_TARGET_KEYS = ("notify_targets", "chat_bridge_targets")
+    # v0.23.0 修复：v0.22.7 新增的「手动声明版本 / 语法世代」两个键**只加了 schema、
+    # 漏加了这里的白名单** —— 前端每次保存都会带上它们，后端 `_validate_settings`
+    # 认不出 → 一律回给前端 `ignored`，界面于是长期误报「2 项后端未接受：
+    # 请到 AstrBot「插件管理」重载本插件后重新保存」。重载当然没用（代码里就缺），
+    # 主人白重载了好几回。别再手工同步两份清单 —— tests/test_settings_whitelist_contract.py
+    # 会把「前端提交键 ⊆ 后端接受键」钉死。
     STR_SETTING_KEYS = (
         "rcon_host", "rcon_end_mode", "rcon_probe_command", "rcon_password", "server_dir", "chat_bridge_prefix",
         "chat_bridge_format", "ban_default_reason", "feedback_name",
+        "server_version_override",
         "llm_provider_id", "agent_classifier_provider_id",
         "agent_judge_provider_id", "agent_engineer_provider_id",
         "agent_implementer_provider_id", "agent_corrector_provider_id",
@@ -286,6 +294,9 @@ class McControlWebApi:
         "danger_command_policy": ("whitelist", "blacklist"),
         # v0.21.40：知识库检索引擎（bm25=默认 / legacy=旧版兼容）
         "knowledge_search_engine": ("bm25", "legacy"),
+        # v0.22.7 新增（v0.23.0 补白名单）：直接引用 version_caps 里的合法取值，
+        # 免得枚举值再出现第三份手抄清单。
+        "item_syntax_override": ITEM_SYNTAX_CHOICES,
     }
 
     def _validate_settings(self, settings: dict):
