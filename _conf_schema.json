@@ -174,7 +174,7 @@
       "notify_target_events": {
         "description": "各会话的播报内容（WebUI 维护）",
         "hint": "由 WebUI「播报目标」列表中点击会话展开的子菜单维护：{会话标识: [事件组]}，事件组取 join_leave / chat / death / advancement / command；未列出的会话默认全开。推送需 总开关 + 类型开关 + 目标 + 该会话勾选的事件 四者齐备。",
-        "type": "object",
+        "type": "dict",
         "items": {},
         "invisible": true,
         "default": {}

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import threading
@@ -106,5 +107,13 @@ class PlayerBindings:
         }
 
     def all(self) -> dict:
+        """返回全部绑定的**深拷贝**快照。
+
+        v0.23.0：原先只做 `dict(self._data)`（浅拷贝）—— 外层是新对象，
+        但每条记录的内层 dict 仍是存储里那一份。调用方只要顺手改一下
+        `all()["uid"]["player"]`，就当场污染了内存里的绑定表，下次落盘还会把
+        脏数据写进 player_bindings.json。目前唯一调用方只是 `len()` 它，
+        所以还没炸 —— 但接口不该把内部结构借出去。
+        """
         with self._lock:
-            return dict(self._data)
+            return copy.deepcopy(self._data)
