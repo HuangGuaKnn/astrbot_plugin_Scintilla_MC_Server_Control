@@ -185,6 +185,32 @@ def main() -> int:
               "legacy_nbt" not in caps_clear, caps_clear[:140])
         page.screenshot(path=str(SHOTS / "ver_override_3_cleared.png"))
 
+        print("[5] 填 1.12.2 → 保存 → 能力行明确说不支持自动生成（v0.23.2 裁决 Q1/Q4）")
+        page.fill("#cfg_server_version", "1.12.2")
+        save_and_wait(page)
+        check("1.12.2 确实提交了", STATE["ov"] == "1.12.2", STATE["ov"])
+        caps12 = page.inner_text("#ver_caps_line")
+        check("★★1.12.2 → 能力行明说「暂不支持该版本的自动命令生成」",
+              "暂不支持" in caps12, caps12[:200])
+        check("★1.12.2 → 点名 1.13 分水岭（不是含糊说「可能不兼容」）",
+              "1.13" in caps12, caps12[:200])
+        check("★1.12.2 → 不谎报支持（不得出现 legacy_nbt 能力结论）",
+              "legacy_nbt" not in caps12, caps12[:200])
+        check("★1.12.2 → 给出可执行出路（手动执行 / 升级服务端）",
+              "手动" in caps12 or "升级" in caps12, caps12[:200])
+        check("★1.12.2 → 与「版本未知」区分（不再说「无法确定」）",
+              "无法确定" not in caps12, caps12[:200])
+        page.screenshot(path=str(SHOTS / "ver_override_4_preflatten.png"))
+
+        print("[6] 1.12.2 下手填 legacy_nbt → 仍不得放行")
+        page.select_option("#cfg_item_syntax", "legacy_nbt")
+        save_and_wait(page)
+        caps12b = page.inner_text("#ver_caps_line")
+        check("★★已知 1.12.2 时手填 legacy_nbt 不放行"
+              "（legacy_nbt 是 1.13~1.20.4 的写法，拿它覆盖只会生成错命令）",
+              "legacy_nbt" not in caps12b and "暂不支持" in caps12b, caps12b[:200])
+        page.screenshot(path=str(SHOTS / "ver_override_5_preflatten_override.png"))
+
         check("全程无 JS 异常（pageerror）", not errors, "；".join(errors[:3]))
         print(f"  截图目录：{SHOTS}")
         ctx.close()
@@ -194,7 +220,7 @@ def main() -> int:
     if failed:
         print(f"✗ 失败 {len(failed)} 项：" + "；".join(failed))
         return 1
-    print("✓ 全部通过：填写版本 → 保存 → item_syntax 切到 legacy_nbt 的完整链路已验通")
+    print("✓ 全部通过：填写版本 → 保存 → item_syntax 切换（含 1.12.2 预扁平化拒绝）的完整链路已验通")
     return 0
 
 
