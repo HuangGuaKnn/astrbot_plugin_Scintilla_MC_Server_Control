@@ -38,6 +38,7 @@ from .command_result import (
     looks_like_complex_task,
 )
 from .rcon import RconTimeoutError
+from .version_caps import ITEM_PREFLATTEN_CUTOVER, preflatten_block_reason
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
@@ -66,6 +67,8 @@ class MCWorkflow:
         self.agent = AgentLLM(plugin.context, plugin.config, plugin._cfg, logger=plugin.logger)
         self._tasks: set[asyncio.Task] = set()
         self.logs: deque[dict] = deque(maxlen=30)  # 最近任务日志（WebUI 展示）
+        # v0.23.2：已知服务端 < 1.13 的标记（发送前守门用，见 _refresh_version_context）
+        self._preflatten = False
 
     def _log(self, **kw) -> None:
         """记录一条任务日志。"""
@@ -166,6 +169,28 @@ class MCWorkflow:
         except Exception as e:  # noqa: BLE001
             self.logger.warning("版本上下文写入 Agent 失败: %s", e)
 
+        # ---- v0.23.2（GPT 续单裁决 Q4）：记录「已知服务端 < 1.13」标记 ----
+        # 提示词只是**软约束**，裁决要求代码侧硬拦（「1.12.2 + 附魔请求 →
+        # 不调用 rcon.command()」）。这里算一次，供两条执行路径的发送前守门复用。
+        self._preflatten = False
+        try:
+            _info = self.plugin._resolve_version_info()
+            self._preflatten = bool(
+                _info.mc is not None and tuple(_info.mc) < ITEM_PREFLATTEN_CUTOVER
+            )
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("预扁平化标记解析失败（按放行处理）: %s", e)
+
+    def _preflatten_block(self, cmd: str) -> str:
+        """已知服务端 < 1.13 时该命令是否被拦（v0.23.2）；返回原因或空串。
+
+        只作用于**自动构造**路径（工作流 / mc_give_item）；
+        用户显式写下的命令（mc_execute_command）不由它拦。
+        """
+        if not getattr(self, "_preflatten", False):
+            return ""
+        return preflatten_block_reason(cmd)
+
     # =============== 简单路径 ===============
 
     async def _run_simple(
@@ -209,6 +234,13 @@ class MCWorkflow:
                     reason=f"被权限闸门拒绝：{denied}",
                 ))
                 continue
+            # v0.23.2（裁决 Q4）：已知服务端 < 1.13 → 该命令族不自动构造（代码侧硬拦）
+            _pf = self._preflatten_block(cmd)
+            if _pf:
+                reports.append(CommandResult(
+                    command=cmd, status="skipped", reason=_pf,
+                ))
+                continue
             try:
                 out = await rcon.command(cmd)
                 reports.append(classify_command_output(
@@ -240,6 +272,7 @@ class MCWorkflow:
         syntax = sum(1 for r in reports if r.status == "syntax_error")
         unknown = sum(1 for r in reports if r.status == "unknown")
         failed = sum(1 for r in reports if r.status == "failed")
+        skipped = sum(1 for r in reports if r.status == "skipped")   # v0.23.2
 
         # 工作流日志状态：不再无条件写 done
         if reports and all(r.ok for r in reports):
@@ -257,6 +290,7 @@ class MCWorkflow:
             (syntax, "语法错误（未执行）"),
             (failed, "失败"),
             (unknown, "结果未知"),
+            (skipped, "因服务端版本不支持自动生成而未发送"),
         ):
             if n:
                 head += f"；{n} 条{label}"
@@ -657,6 +691,17 @@ class MCWorkflow:
                         "output": f"目标玩家「{target}」不在线或不存在（当前在线：{', '.join(online_players) or '无'}）。请使用真实游戏名。",
                     })
                     continue
+            # v0.23.2（裁决 Q4）：已知服务端 < 1.13 → 该命令族不自动构造
+            _pf = self._preflatten_block(cmd)
+            if _pf:
+                reports.append({
+                    "command": cmd, "ok": False, "status": "skipped",
+                    "output": (
+                        f"{_pf}。本插件**暂不支持该版本的自动命令生成**："
+                        "请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上。"
+                    ),
+                })
+                continue
             try:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()

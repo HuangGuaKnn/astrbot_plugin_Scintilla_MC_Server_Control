@@ -50,6 +50,29 @@
 
 ---
 
+## 支持的 Minecraft 版本
+
+| 服务端版本 | 自动命令生成 | 物品数据写法 |
+| --- | --- | --- |
+| **1.13 ~ 1.20.4** | ✅ 支持 | NBT：`netherite_sword{Enchantments:[{id:"minecraft:sharpness",lvl:5}]}` |
+| **1.20.5 ~ 1.21+** | ✅ 支持 | 物品组件：`netherite_sword[enchantments={levels:{"minecraft:sharpness":5}}]` |
+| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
+| 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，必须手填） |
+
+几点说明：
+
+- **版本能力由代码判定**（`core/version_caps.py`），不交给 AI 猜：版本 → 语法世代 → 注入 Agent 的硬约束片段；
+  运行期还会按服务端回包复核（语法错误单独成态，可安全重写；结果未知则熔断不重发）。
+- **真机验证矩阵目前只覆盖 1.20.1 · Forge 47.4.23**；其余版本按命令语法分水岭推导，属**未实测**。
+- 1.13 以下**不受命令图改动影响的简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` /
+  `tellraw` / `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；
+  被拦的是物品类（`give` / `clear` / `item` / `replaceitem`，**不带数据也拦** —— 旧版物品 ID 与当前版本不同）
+  与 `execute` / `effect` / `difficulty` / `data` / `summon` / `setblock` 这类。
+- 守门对**所有执行入口**生效（工具、工作流、指令入口一视同仁），不只是自动构造路径；
+  想手动发旧版命令请在游戏控制台执行，插件不代为生成。
+- 1.13 以下的**完整支持**（`legacy_preflatten` 能力档案）在路线图上，需先有 1.12.2 真机实例 ——
+  未经实测就宣称支持，会把「静默生成错命令」换成「看起来支持、其实没验证」，两种都不好。
+
 ## 安装
 
 ### 方式一：AstrBot 应用市场（推荐）
@@ -161,6 +184,34 @@ python tests\make_docs_images.py          # 重拍 docs/ 文档配图（界面�
 UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 Edge / Chromium；截图输出到 `tests/_shots/`（已在 `.gitignore` 里）。
 `make_docs_images.py` 另需 `Pillow`，输出到 `docs/images/`（这一份要入库）。
 路径一律由 `tests/_paths.py` 自动发现，不写死任何机器路径。
+
+---
+
+## 遇到问题？请反馈
+
+> **本插件是个人维护的开源项目。** 1.13 ~ 1.21+ 的自动命令生成**只在 `1.20.1 · Forge 47.4.23` 上做过真机验证**，
+> 其余版本按官方命令语法分水岭推导 —— 所以你遇到版本相关的异常，很可能正是当前最缺的第一手资料。
+
+### 先看这两条：它们**不是故障**
+
+| 现象 | 说明 |
+| --- | --- |
+| **1.8 ~ 1.12.2** 服务端上，`give` / `clear` / `item` / `replaceitem` / `execute` / `effect` / `summon` / `setblock` 被**明确拒绝并说明原因** | ✅ **预期行为**。1.13 以下的物品 ID 与命令图不同（扁平化前是「数字 ID + data 值」），插件尚未完成旧版映射，**宁可不发，也不发一条必然失败的**。详见 [支持的 Minecraft 版本](#支持的-minecraft-版本) |
+| **版本未知**时，附魔 / NBT / 物品组件请求被拒绝 | ✅ **预期行为**。到 WebUI「设置」页手填 `server_version_override` —— 异地 RCON 模式探测必然失败，必须手填 |
+
+### 真要反馈，请带上这几样
+
+到 **[Issues](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/issues)** 开一条，附上：
+
+1. **插件版本** —— AstrBot 插件管理页可见，如 `v0.23.2`；
+2. **服务端版本 + 加载器** —— 如 `1.20.1 · Forge 47.4.23`、`1.12.2 · Forge`；
+3. **你原话说了什么** + **插件最终执行或拒绝的命令原文**；
+4. **报错原文或截图** —— 服务端控制台、AstrBot 日志都可以；
+5. 整合包用户请带上**整合包名 + 关键模组** —— 模组命令与物品 ID 常常才是元凶。
+
+> 特别欢迎 **`1.12.2` / `1.13.2` / `1.20.4` / `1.20.5+`** 的用户反馈：
+> 路线图上的「旧版能力实现」（`legacy_preflatten` 档案、数字物品 ID / data 映射、`ench` 数字附魔）
+> 正是卡在缺少这些真机样本。
 
 ---
 

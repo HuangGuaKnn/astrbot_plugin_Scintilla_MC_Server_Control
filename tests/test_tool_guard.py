@@ -137,11 +137,23 @@ class FakeSelf:
     def _is_whitelist_policy(self):
         return str(self._cfg("danger_command_policy", "whitelist")) != "blacklist"
 
+    def _preflatten_block_reason(self, command):
+        """v0.23.2：版本能力守门不在本测试范围 —— 恒放行。
+
+        本文件只验权限闸门；「1.12.2 下带数据命令不发送」由
+        tests/test_v0232_preflatten_gate.py 专项覆盖。
+        """
+        return ""
+
 
 # 把插件类里真实的闸门方法绑到替身上（不实例化 Star，但逻辑一模一样）
 for _name in ("_latch", "_latch_enabled", "_latch_key", "_latch_hit", "_deny",
               "_admin_gate", "_safe_command", "_inject_permission_hint",
-              "_append_user_hint"):
+              "_append_user_hint",
+              # v0.23.2 第二版（GPT 核验 P0-1/P0-3）：所有执行入口都要过统一版本守门，
+              # 本文件挂真实方法才能覆盖 mc_give_item / mc_execute_command 的新调用链。
+              # 替身的 _preflatten_block_reason 恒返回 ""，故这些用例仍只验权限闸门。
+              "_guard_command_for_version"):
     _fn = getattr(main.McControlPlugin, _name, None)
     if _fn is not None:
         setattr(FakeSelf, _name, _fn)
