@@ -55,8 +55,10 @@ from .core.log_watcher import (
 from .core.rcon import AsyncRcon, RconError, RconTimeoutError
 from .core.server_dir_check import format_check, inspect_server_dir
 from .core.version_caps import (
+    ITEM_PREFLATTEN_CUTOVER,
     build_version_context,
     describe_capabilities,
+    preflatten_block_reason,
     resolve_version_info,
 )
 from .core.java_commands import check_command as check_command_policy
@@ -1745,6 +1747,11 @@ class McControlPlugin(Star):
         denied = await self._safe_command(event, command, tool="mc_execute_command")
         if denied:
             return denied
+        # v0.23.2 第二版（GPT 核验 P0-1）：本工具是 @filter.llm_tool，
+        # 命令由 LLM 生成、不等于「用户手写」，必须过版本守门。
+        blocked = self._guard_command_for_version(command, source="mc_execute_command")
+        if blocked:
+            return blocked
         try:
             rcon = await self._get_rcon()
             r = await self._exec_checked(rcon, command)
@@ -1852,6 +1859,9 @@ class McControlPlugin(Star):
             denied = await self._safe_command(event, cmd, tool="mc_broadcast")
             if denied:
                 return denied
+            blocked = self._guard_command_for_version(cmd, source="mc_broadcast")
+            if blocked:
+                return blocked
             r = await self._exec_checked(rcon, cmd)
             return self._render_result(r, f"已在服务器内广播：{message}", "广播失败")
         except RconError as e:
@@ -1873,7 +1883,8 @@ class McControlPlugin(Star):
 
         Args:
             player(string): 可选。目标玩家名（真实游戏名或聊天昵称，会自动映射为在线真实名）。留空则用当前账号绑定的MC玩家ID（未绑定会提示）
-            item(string): 物品ID，例如 diamond_sword、oak_log、netherite_sword
+            item(string): 物品ID，例如 diamond_sword、oak_log、netherite_sword。
+                注意：服务端低于 1.13 时，本工具只接受不带 NBT/物品组件的简单物品ID
             count(number): 数量，默认 1
             feedback(string): 可选。展示给游戏内玩家的提示文案（插件自动加「[署名]」）。需贴合用户原话，例如「已给 Steve 发了一把锋利5的下界合金剑」；无法生成时留空
         """
@@ -1881,6 +1892,11 @@ class McControlPlugin(Star):
             return "该功能已在插件配置中停用。"
         if not item or not str(item).strip():
             return "请指定要发放的物品ID。"
+        # v0.23.2（GPT 续单裁决 Q4）：已知服务端 < 1.13 时，带数据的物品命令不自动构造。
+        # 放在最前面 —— 与 v0.21.0「拦截即终局」同一口径，免得 AI 先折腾绑定再撞墙。
+        _pf = self._guard_command_for_version(f"give {item}", source="mc_give_item")
+        if _pf:
+            return _pf
         try:
             count = max(1, int(count))
         except (TypeError, ValueError):
@@ -2057,7 +2073,12 @@ class McControlPlugin(Star):
             payload = self._colored_payload(
                 f"[群聊→{nickname}] {text}", "color_say", "gradient_colors_say", "white"
             )
-            r = await self._exec_checked(rcon, f"tellraw @a {payload}")
+            _cmd = f"tellraw @a {payload}"
+            blocked = self._guard_command_for_version(_cmd, source="mcs_say")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
+            r = await self._exec_checked(rcon, _cmd)
             self.logger.info(
                 "[审计] 请求者=%s 喊话=%s 状态=%s",
                 self._sender_id(event), text, r.status,
@@ -2087,7 +2108,12 @@ class McControlPlugin(Star):
             payload = self._colored_payload(
                 text, "color_title", "gradient_colors_title", "gold"
             )
-            r = await self._exec_checked(rcon, f"title @a title {payload}")
+            _cmd = f"title @a title {payload}"
+            blocked = self._guard_command_for_version(_cmd, source="mcs_title_cmd")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
+            r = await self._exec_checked(rcon, _cmd)
             self.logger.info(
                 "[审计] 请求者=%s 全屏喊话=%s 状态=%s",
                 self._sender_id(event), text, r.status,
@@ -2169,6 +2195,10 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"kick {player} {reason}".strip() if reason else f"kick {player}"
+            blocked = self._guard_command_for_version(cmd, source="mcs_kick_cmd")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
             r = await self._exec_checked(rcon, cmd)
             self.logger.info(
                 "[审计] 请求者=%s 踢人=%s 理由=%s 状态=%s",
@@ -2206,6 +2236,10 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"ban {player} {reason}".strip()
+            blocked = self._guard_command_for_version(cmd, source="mcs_ban_cmd")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
             r = await self._exec_checked(rcon, cmd)
             self.logger.info(
                 "[审计] 请求者=%s 封禁=%s 理由=%s 状态=%s",
@@ -2235,7 +2269,12 @@ class McControlPlugin(Star):
             return
         try:
             rcon = await self._get_rcon()
-            r = await self._exec_checked(rcon, f"pardon {player}")
+            _cmd = f"pardon {player}"
+            blocked = self._guard_command_for_version(_cmd, source="mcs_unban_cmd")
+            if blocked:
+                yield event.plain_result(blocked)
+                return
+            r = await self._exec_checked(rcon, _cmd)
             self.logger.info(
                 "[审计] 请求者=%s 解封=%s 状态=%s",
                 self._sender_id(event), player, r.status,
@@ -2696,6 +2735,65 @@ class McControlPlugin(Star):
         info = self._resolve_version_info()
         return describe_capabilities(info, self._cfg("item_syntax_override", "auto"))
 
+    def _preflatten_block_reason(self, command: str) -> str:
+        """已知服务端 < 1.13 时，该命令能否**执行**？返回拒绝原因或空串（v0.23.2）。
+
+        为什么要在代码侧拦、而不是只靠提示词：GPT 续单裁决 Q4 明确要求
+        「1.12.2 + 附魔请求 → 不调用 rcon.command()」—— 提示词是软约束，
+        静默生成错命令的代价太高（用户会以为发了、实际解析失败）。
+
+        本函数是**纯版本判据**（版本解析 + 委托 ``preflatten_block_reason()``），
+        所有执行入口请改调 :meth:`_guard_command_for_version`（带来源与日志）。
+        """
+        try:
+            info = self._resolve_version_info()
+        except Exception:  # noqa: BLE001
+            return ""      # 版本解析异常不得阻断主流程
+        if info.mc is None or tuple(info.mc) >= ITEM_PREFLATTEN_CUTOVER:
+            return ""
+        return preflatten_block_reason(command)
+
+    def _guard_command_for_version(
+        self, command: str, *, source: str = "llm_tool", manual: bool = False
+    ) -> str:
+        """**统一**版本能力守门：已知服务端 < 1.13 时，该命令能否执行？放行返回空串。
+
+        v0.23.2 第二版（GPT 核验 P0-1 / P0-3）：**所有执行型入口**都必须过这里 ——
+        LLM 工具（``mc_execute_command`` / ``mc_broadcast`` / ``mc_give_item``）、
+        指令入口（``mcs_say`` / ``mcs_title_cmd`` / ``mcs_kick_cmd`` / ``mcs_ban_cmd`` /
+        ``mcs_unban_cmd``）与工具入口（``mc_kick`` / ``mc_ban``）。
+        工作流内部另有 ``MCWorkflow._preflatten_block()``，调用同一判据，两处口径一致。
+
+        为什么 ``mc_execute_command`` 也要拦：它是 ``@filter.llm_tool``，
+        命令字符串由 **LLM 生成**、不等于「用户手写」，同样可能把 1.13+ 语法
+        发给 1.12 服务端 —— 这正是 GPT 核验点名的绕过路径。
+
+        Args:
+            command: 待执行命令（不含前导斜杠）。
+            source: 调用来源，仅用于日志追溯（哪个入口拦下的）。
+            manual: 是否「人工原始命令」通道（P1 预留）。当前无调用方传 True；
+                将来若开放，应仅限管理员 + WebUI 明确警告 + 回执写明「不保证跨版本兼容」。
+        """
+        if manual:
+            return ""
+        try:
+            reason = self._preflatten_block_reason(command)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("版本能力守门异常（按放行处理）: %s", e)
+            return ""
+        if reason:
+            self.logger.info(
+                "[版本守门] 拦截 source=%s 命令=%s 原因=%s", source, command, reason
+            )
+            return (
+                f"{reason}。\n"
+                "本插件暂不支持该服务端版本的自动命令生成："
+                "请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上。\n"
+                "如认为此判断有误（例如你确认该命令在旧版同样有效），"
+                "请带上服务端版本与这条命令原文到项目 Issues 反馈。"
+            )
+        return ""
+
     @staticmethod
     def _format_uptime(seconds: float) -> str:
         """把秒数格式化为「X天X小时X分」。"""
@@ -2875,6 +2973,9 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"kick {player} {reason}".strip() if reason else f"kick {player}"
+            blocked = self._guard_command_for_version(cmd, source="mc_kick")
+            if blocked:
+                return blocked
             r = await self._exec_checked(rcon, cmd)
             if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 踢出服务器")
@@ -2903,6 +3004,9 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             cmd = f"ban {player} {reason}".strip() if reason else f"ban {player}"
+            blocked = self._guard_command_for_version(cmd, source="mc_ban")
+            if blocked:
+                return blocked
             r = await self._exec_checked(rcon, cmd)
             if r.status == "success":
                 await self._send_feedback(rcon, f"已将 {player} 封禁")

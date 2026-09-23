@@ -11,6 +11,7 @@
 
 # 内部核验/交接文档：留在仓库备查，但不进发布包
 /docs/VERIFY_*.md export-ignore
+/docs/*.diff export-ignore
 
 # 开发自测脚本：v0.23.1 的插件市场审核报告里，审查员点名
 # 「subprocess 仅出现在随包附带的开发自测脚本（run_v022*.py）中且只执行本地测试文件」——

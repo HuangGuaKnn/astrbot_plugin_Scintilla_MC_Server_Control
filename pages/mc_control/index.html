@@ -2287,6 +2287,7 @@ window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .
 const SYNTAX_LABEL = {
   "legacy_nbt": "legacy_nbt（NBT {…}）",
   "components": "components（物品组件 […]）",
+  "unsupported_preflatten": "unsupported_preflatten（1.13 以下，暂不支持自动生成）",
 };
 function renderVersionCaps(caps, targetId){
   const el = $(targetId || "ver_caps_line"); if(!el) return;
@@ -2300,6 +2301,17 @@ function renderVersionCaps(caps, targetId){
       + `含 NBT、附魔、物品组件的请求<b>不会直接执行</b>。`
       + `请填写服务端版本，例如 <code>1.20.1</code>。`
       + (caps.raw ? `（已填「${esc(caps.raw)}」但解析不出，请用 <code>1.20.1</code> 这种写法）` : "");
+    return;
+  }
+  if(caps.item_syntax === "unsupported_preflatten"){
+    // v0.23.2（GPT 续单裁决 Q1/Q4）：**已知**版本但低于 1.13 —— 本插件不自动生成命令。
+    // 与「版本未知」区分：那是「不知道」，这是「知道、且明确不支持」。
+    el.innerHTML = `<span style="color:var(--warn)">⚠ 服务端 <b>${esc(caps.raw || caps.version || "-")}</b>`
+      + ` 低于 ${esc(caps.preflatten_cutover || "1.13")}，本插件<b>暂不支持该版本的自动命令生成</b>。</span>`
+      + `1.13 重写了 give / execute / effect 等命令语法并做资源 ID 扁平化，`
+      + `带数据命令会被<b>直接拒绝</b>（而不是生成一条必然失败的命令）。`
+      + `请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上。`
+      + `（不受影响的简单命令如 time / weather / say / list 仍可生成）`;
     return;
   }
   const syn = SYNTAX_LABEL[caps.item_syntax] || caps.item_syntax || "-";
