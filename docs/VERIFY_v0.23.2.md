@@ -779,3 +779,27 @@ test_v0232_preflatten_gate.py：118 项通过
 「**遇到与版本相关的错误（含「明明版本填对了却被拒绝」）请到项目 GitHub Issues 反馈**，
 并附上插件版本、服务端版本与加载器、你的原话与插件实际执行的命令、报错原文或截图。」——
 用户在设置页手填版本的地方，恰好也是最容易产生困惑的地方。
+
+## 二十五、发布完成留痕（2026-09-23 16:12）
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | `f2a2f82`（14 files changed, 3216 insertions(+), 17 deletions(-)） |
+| tag | `v0.23.2`（annotated） |
+| 远端 main | `f2a2f82` |
+| Release | **pre-release**（`prerelease=true`, `draft=false`） |
+| Release URL | https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases/tag/v0.23.2 |
+| 附件 | `astrbot_plugin_Scintilla_MC_Server_Control_v0.23.2.zip` · 2,057,841 字节 · state=uploaded |
+| CI | `release` ✓ / `tests` ✓ 双绿 |
+| Latest 正式版 | 仍为 **v0.23.1**（pre-release 未占位 ✓） |
+| Release 说明 | 4,322 字符，含「⚠️ 遇到错误请反馈」小节 ✓ |
+
+### 发布过程中的一个误判（如实登记）
+
+- 皮莉卡用 `GET /repos/{repo}/releases/tags/{tag}` 核对附件时，该端点返回 `assets: []`，
+  于是误判「CI 没上传附件」，并删掉重建了一次 Release。
+- **实际 CI 早已上传成功**（重新上传时报 `422 already_exists` 就是证据）。
+- **根因**：`/releases/tags/{tag}` 的 `assets` 字段存在缓存，而 `/releases/{id}/assets` 是实时的。
+  最终以「直接下载 zip（HTTP 206 + `PK\x03\x04` 魔数）」与「`/releases/{id}/assets`」双重验证确认真实存在。
+- **结论**：**以后核对附件一律走 `/releases/{id}/assets` 或直接下载链接，不要信 `/releases/tags/{tag}`**。
+  本次重建没有造成任何损失（附件名、大小与 CI 产物一致，tag 未动）。
