@@ -110,9 +110,12 @@ check("提供了统一注入出口 _append_user_hint（拼到用户消息的额�
       "def _append_user_hint(" in main_src)
 check("注入出口用的是 extra_user_content_parts，且格式是 {type: text, text: ...}",
       'parts.append({"type": "text", "text": block})' in main_src)
-check("四处注入调用点都改走 _append_user_hint",
-      main_src.count("self._append_user_hint(req, blocks)") == 4,
+check("注入出口收口到 _emit_hint：_append_user_hint 只在内部调用一次（唯一出口）",
+      main_src.count("self._append_user_hint(req, blocks)") == 1,
       f"→ 实际 {main_src.count('self._append_user_hint(req, blocks)')} 处")
+check("三处注入分支都经 _emit_hint（v0.23.3：管理员 / 无启用工具 / 权限提醒）",
+      main_src.count("self._emit_hint(") == 3,
+      f"→ 实际 {main_src.count('self._emit_hint(')} 处")
 check("老版本 AstrBot 无该字段时宁可不提醒、也不回退写 system_prompt",
       "extra_user_content_parts" in main_src and "跳过权限前置提醒" in main_src)
 
