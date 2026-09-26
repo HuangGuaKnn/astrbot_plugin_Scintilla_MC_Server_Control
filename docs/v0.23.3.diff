@@ -1,0 +1,1104 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a9a2f04..b6a918c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,52 @@
+ > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
+ > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
+ 
++## [v0.23.3] - 2026-09-26（预发布）
++
++> 一句话：**权限前置提醒从「每轮硬塞」改成「按需触发」** —— 新增 `permission_hint_mode`（`always` / `on_demand` / `off`，默认 `on_demand`）：只有本轮消息涉及 MC（命中话题关键词）或本会话近期试图调用过 MC 工具时才注入，**日常闲聊零打扰**；同时把注入文案里的**请求者 ID 移除**、给每次注入补上审计日志，并把多处注入分支收口到唯一出口。
++
++### 修复
++
++- **日常闲聊也被注入权限提醒**（v0.21.0 引入，本版修）：
++  `on_llm_request` 是全局钩子、原本不看话题，只要非管理员发消息就挂一段「请**不要尝试调用**上述工具……」的强指令文案，
++  闲聊时既抢模型注意力、又可能让 Bot 突然回一句「你被权限限制了」。
++  现在默认档 `on_demand` 只在两路信号命中时才注入：
++  **① 本会话近期（默认 600 秒）试图调用过 MC 工具** —— 由 `tolerant_tool` 装饰器在每次工具调用入口统一埋点，
++  不需要逐个改动二十来个工具；**② 本轮消息命中 MC 话题关键词**（`HINT_TOPIC_KEYWORDS`，只收「基本只可能出现在 MC 语境」的词）。
++  **注意：三档都不影响权限闸门与会话闩锁** —— 注入只是「省一次往返」的优化，安全边界始终在工具层。
++- **请求者 ID 被送进模型上下文**（安全）：
++  提醒文案原含 `当前请求者（ID: {sender}）`，QQ 官方平台下即 **openid 明文**，每轮都会进入 LLM 上下文与第三方 API 日志。
++  现已改为不透明表述（「当前请求者**不是管理员**」）—— 模型本来也不需要这串 ID，而它拼在同一条用户消息尾部，指代本就明确。
++- **「同一次事件只注入一次」名不副实**：`_mc_perm_hint_done` 只守权限提醒，而能力降级提醒（异地 RCON / 目录校验未通过）
++  仍会被每轮补上。现在两者共用同一道闸门，同一次事件只注入一轮。
++
++### 变更
++
++- **新增配置项 `permission_hint_mode`**（枚举：`always` / `on_demand` / `off`，默认 `on_demand`），取代旧的
++  `permission_hint_injection` 开关。旧键**兼容保留** —— 显式 `false` 等价于 `off`，其余情形（含旧配置里写死的 `true`）
++  一律落到新默认值 `on_demand`，**老用户升级后自动获得「日常闲聊零打扰」**；想恢复「每轮都提醒」把
++  `permission_hint_mode` 设为 `always` 即可。三处口径（`_conf_schema.json` / `docs/configure.md` / 后端校验白名单）已同步。
++- **新增配置项 `permission_hint_keywords`**（列表，默认即内置的 **29** 个词）：把「哪些说法算涉及 MC」交给用户自己定。
++  默认值直接写成内置词表，所以设置页上看得到全部词、随手就能增删，也能追加自己服务器里的说法（「开黑」「刷怪塔」…）；
++  **留空视为仍用内置**（避免误删后两路信号只剩一路），匹配不区分大小写、按子串命中。
++  `tests/test_v0233_hint_config.py` 会把「schema 默认值 = 内置词表」钉死，防止两份清单日后漂移。
++  > 词表按实际语料收窄过一次：**移除 `枪` / `配件` / `弹药` / `弹匣`** —— 不是每个整合包都装 tacz，
++  > 而这几个词在聊游戏时几乎都会提到，命中率虚高（症状就是「本该闲聊的对话又被注入」）。
++  > 需要的话可在设置页自行加回；升级后若发现自己的配置里还留着旧词，直接删掉即可。
++- **注入收口到唯一出口 `_emit_hint`**：管理员 / 无启用工具 / 权限提醒三处分支统一走它，每次注入记一条 debug 日志
++  （`[提示注入] 触发=… 时机=… 块数=…`）—— 此前注入成功路径**一条日志都不留**，排查「为什么每轮都有这段」只能靠猜。
++- **`_append_user_hint` 文档同步**：「不写 system_prompt」的理由从「内容含请求者 ID」修正为
++  「内容随请求者权限 / 会话状态变化」（结论不变，理由更准确）。
++
++### 测试
++
++- `tests/test_tool_guard.py`：新增十余项断言 —— on_demand 命中 / 跳过、三档切换与非法值回落、旧键兼容、
++  会话隔离、`tolerant_tool` 自动埋点的**真链路**、以及**文案不含请求者 ID**。
++- `tests/test_remote_rcon_mode.py`：降级提醒补「与 MC 无关的对话不注入」反向断言；修一处桩缺陷 ——
++  `_sender_id` 是 `@staticmethod`，直接 `setattr` 会把它变成实例方法、调用时凭空多出一个 self。
++- `tests/test_review_compliance.py`：注入点断言从「四处都走 `_append_user_hint`」改为
++  「收口到 `_emit_hint`：`_append_user_hint` 只被调用一次 + 三处分支都经 `_emit_hint`」。
++
+ ## [v0.23.2] - 2026-09-23（预发布）
+ 
+ > 一句话：**收窄版本承诺、堵住静默错命令** —— 1.13 以下的预扁平化语法（数字 ID + data 值、`ench` 数字附魔、旧 `execute`）此前会被**静默当作 1.13+** 生成命令，现改为「明确不支持 + **全仓执行入口统一硬拦**」；同时补全 1.13 分水岭（旧版只写了 `execute`，漏了 `give` 参数顺序变化），并把分水岭清单结构化
+diff --git a/_conf_schema.json b/_conf_schema.json
+index 769de36..68c5cc6 100644
+--- a/_conf_schema.json
++++ b/_conf_schema.json
+@@ -98,9 +98,36 @@
+         ],
+         "default": "whitelist"
+       },
++      "permission_hint_mode": {
++        "description": "权限前置提醒触发时机",
++        "hint": "控制何时把权限说明追加到用户消息里（不改写系统提示词，避免动态内容破坏提示词缓存命中）。always=每次对话都注入；on_demand（默认）=只在本轮消息涉及 MC（命中话题关键词）或本会话近期试图调用过 MC 工具时才注入，日常闲聊零打扰；off=从不注入，只在调用被拦时才告知。三档都不影响权限闸门与会话闩锁 —— 注入只是「省一次往返」的优化，真正的安全边界始终在工具层。",
++        "type": "string",
++        "options": [
++          "always",
++          "on_demand",
++          "off"
++        ],
++        "default": "on_demand"
++      },
++      "permission_hint_keywords": {
++        "description": "MC 话题关键词（按需注入用）",
++        "hint": "只有本轮消息**命中其中之一**（或本会话近期调用过 MC 工具）时才注入权限前置提醒，日常闲聊因此零打扰。默认值就是内置词表，可在设置页直接增删，或追加自己服务器里的说法（如「开黑」「刷怪塔」「腐竹」）。留空 = 回退内置词表；匹配不区分大小写、子串命中；仅在「触发时机 = on_demand」时生效。",
++        "type": "list",
++        "default": [
++          "mc", "minecraft", "我的世界", "麦块",
++          "tacz", "rcon", "nbt", "服务器",
++          "指令", "发放", "给我发", "发一把",
++          "发把", "发个", "物品id", "词典",
++          "模组", "整合包", "配方", "合成",
++          "附魔", "满配", "广播", "喊话",
++          "踢人", "封禁", "白名单", "在线玩家",
++          "任务链"
++        
++        ]
++      },
+       "permission_hint_injection": {
+-        "description": "权限前置提醒（注入本轮对话）",
+-        "hint": "开启后，非管理员发起对话时会在这轮的用户消息里追加一段说明（不改写系统提示词，避免含请求者 ID 的动态内容破坏提示词缓存命中）：哪些命令工具会被直接拒绝、有哪些替代方式。比事后拦截更早一步，从源头减少「明知不可为而硬试」。关闭则只在调用被拦时才告知。",
++        "description": "权限前置提醒（旧开关·兼容保留）",
++        "hint": "兼容保留：false 等价于「触发时机 = off」。新配置请改用 permission_hint_mode —— 旧版写死的 true 现在会落到默认的 on_demand（日常闲聊不再注入），想恢复「每轮都提醒」请把 permission_hint_mode 设为 always。",
+         "type": "bool",
+         "default": true
+       },
+diff --git a/core/tool_guard.py b/core/tool_guard.py
+index 885dd2f..2b43e75 100644
+--- a/core/tool_guard.py
++++ b/core/tool_guard.py
+@@ -32,6 +32,24 @@ MARK_LATCH = "【权限拦截 · 会话闩锁】"
+ #: 工具参数问题的标记头（与权限无关，属于调用格式错误）
+ MARK_PARAM = "【工具参数错误 · 非权限问题】"
+ 
++#: 权限前置提醒的触发时机（v0.23.3）：always / on_demand / off
++HINT_MODES: tuple[str, ...] = ("always", "on_demand", "off")
++
++#: 「近期调用过 MC 工具」的记忆窗口（秒）—— 按需注入的第一路信号
++HINT_RECALL_TTL = 600.0
++
++#: 「按需注入」的话题关键词（v0.23.3）—— 第二路信号。
++#:
++#: 只收「基本只可能出现在 MC 语境」的词：宁可少注入一次，也别吵到日常闲聊。
++#: 真正的兜底始终是闸门 —— 提示注入只是「省一次往返」的优化，漏了也无害。
++HINT_TOPIC_KEYWORDS: tuple[str, ...] = (
++    "mc", "minecraft", "我的世界", "麦块", "tacz", "rcon", "nbt",
++    "服务器", "指令", "发放", "给我发", "发一把", "发把", "发个",
++    "物品id", "词典", "模组", "整合包", "配方", "合成",
++    "附魔", "满配",
++    "广播", "喊话", "踢人", "封禁", "白名单", "在线玩家", "任务链",
++)
++
+ #: 命令类工具（白名单策略下非管理员一律不可用；闩锁对它们生效）
+ COMMAND_TOOLS: tuple[str, ...] = (
+     "mc_execute_command",
+@@ -208,6 +226,16 @@ def tolerant_tool(fn: Callable) -> Callable:
+ 
+     @functools.wraps(fn)
+     async def wrapper(self, event, *args, **kwargs):
++        # v0.23.3：只要 LLM 确实「试图调用」MC 工具就先记一笔 —— 供按需提示注入
++        # 判定用（本会话近期调用过 MC 工具 → 后续请求补上前置提醒）。
++        # 放在最前面：无论后面参数剥壳顺不顺利，这次「试图调用」都算数。
++        if tool_name.startswith("mc"):
++            _mark = getattr(self, "_mark_mc_tool_used", None)
++            if callable(_mark):
++                try:
++                    _mark(event)
++                except Exception:
++                    pass
+         raw = unwrap_nested_arguments(kwargs)
+         clean = {k: v for k, v in raw.items() if k in accepted}
+         dropped = [k for k in raw if k not in accepted]
+diff --git a/core/web_api.py b/core/web_api.py
+index ddcc694..69c2ed8 100644
+--- a/core/web_api.py
++++ b/core/web_api.py
+@@ -17,6 +17,7 @@ from astrbot.api.web import request, json_response
+ from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
+ from .rcon import IDLE_PROBE
+ from .server_dir_check import format_check, inspect_server_dir
++from .tool_guard import HINT_MODES, HINT_TOPIC_KEYWORDS
+ from .version_caps import ITEM_SYNTAX_CHOICES
+ 
+ PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
+@@ -210,6 +211,9 @@ class McControlWebApi:
+         return json_response({
+             "ok": True,
+             "settings": flat,
++            # v0.23.3：内置话题词表（前端「恢复内置词表」按钮的填充源，
++            # 免得前端再手抄一份 33 个词、两边慢慢漂移）
++            "hint_keywords_default": list(HINT_TOPIC_KEYWORDS),
+             "platforms": platforms,
+             "wake_prefix": wake_prefix,
+         })
+@@ -268,7 +272,9 @@ class McControlWebApi:
+         "permission_latch_ttl": (10, 3600),
+     }
+     FLOAT_RANGES = {"rcon_timeout": (0.1, 300.0), "rcon_idle_probe": (0.05, 5.0)}
+-    LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets")
++    LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets",
++                         # v0.23.3：MC 话题关键词（按需注入用；默认值即内置词表）
++                         "permission_hint_keywords")
+     # 会话 → 事件组列表（v0.17.0：每个会话单独配置播报内容）
+     DICT_SETTING_KEYS = ("notify_target_events",)
+     # 会话目标类列表：允许「私聊:123456789 / 群聊:987654321」简写，落盘前统一规范化
+@@ -292,6 +298,8 @@ class McControlWebApi:
+     ENUM_SETTING_KEYS = {
+         # 与 _conf_schema.json / main.py 的闸门实现保持一致
+         "danger_command_policy": ("whitelist", "blacklist"),
++        # v0.23.3：权限前置提醒的触发时机（默认 on_demand，日常闲聊不注入）
++        "permission_hint_mode": HINT_MODES,
+         # v0.21.40：知识库检索引擎（bm25=默认 / legacy=旧版兼容）
+         "knowledge_search_engine": ("bm25", "legacy"),
+         # v0.22.7 新增（v0.23.0 补白名单）：直接引用 version_caps 里的合法取值，
+diff --git a/docs/configure.md b/docs/configure.md
+index 69bd3f5..d786b49 100644
+--- a/docs/configure.md
++++ b/docs/configure.md
+@@ -101,10 +101,27 @@
+ > [!IMPORTANT]
+ > 只管「命令工具」：mc_execute_command（执行指令）、mc_give_item（发物品）、mc_broadcast（广播）；喊话、状态、查询、绑定这类插件自带功能不受本策略影响（想限制喊话请改 say_command_public）。whitelist=白名单（默认）：非管理员完全不能使用口头命令工具；blacklist=黑名单：所有玩家都能使用命令工具，但危险命令（stop/op/ban/kick/whitelist…）与权限等级 3/4 的服务器管理命令仍仅管理员可用
+ 
+-**`permission_hint_injection`** — 权限前置提醒（注入本轮对话）  
++**`permission_hint_mode`** — 权限前置提醒触发时机  
++<sub>枚举 · 默认：`on_demand`</sub>
++
++可选值：`always` / `on_demand` / `off`
++
++> 控制何时把权限说明追加到本轮用户消息里（**不改写系统提示词**，避免动态内容破坏提示词缓存命中）：
++> **`always`** —— 每次对话都注入（旧版行为）；
++> **`on_demand`（默认）** —— 只在本轮消息涉及 MC（命中话题关键词）或本会话近期试图调用过 MC 工具时才注入，日常闲聊零打扰；
++> **`off`** —— 从不注入，只在调用被拦时才告知。
++> 三档都**不影响权限闸门与会话闩锁** —— 注入只是「省一次往返」的优化，真正的安全边界始终在工具层。
++> 改完点「保存全部设置」即时生效，无需重载插件；填非法值时自动回落 `on_demand`。
++
++**`permission_hint_keywords`** — MC 话题关键词（按需注入用）  
++<sub>列表 · 默认：内置 29 词</sub>
++
++> 只有本轮消息**命中其中之一**（或本会话近期调用过 MC 工具）时才注入权限前置提醒，日常闲聊因此零打扰。默认值就是内置词表，可在设置页直接增删，或追加自己服务器里的说法（如「开黑」「刷怪塔」「腐竹」）。留空 = 回退内置词表；匹配不区分大小写、按子串命中；仅在「触发时机 = `on_demand`」时生效。
++
++**`permission_hint_injection`** — 权限前置提醒（旧开关·兼容保留）  
+ <sub>开关 · 默认：开</sub>
+ 
+-> 开启后，非管理员发起对话时会在这轮的用户消息里追加一段说明（**不改写系统提示词**，避免含请求者 ID 的动态内容破坏提示词缓存命中）：哪些命令工具会被直接拒绝、有哪些替代方式。比事后拦截更早一步，从源头减少「明知不可为而硬试」。关闭则只在调用被拦时才告知。
++> 兼容保留：`false` 等价于「触发时机 = `off`」。新配置请改用 `permission_hint_mode` —— 旧版写死的 `true` 现在会落到默认的 `on_demand`（日常闲聊不再注入），想恢复「每轮都提醒」请把 `permission_hint_mode` 设为 `always`。
+ 
+ **`permission_latch`** — 拦截后会话闩锁  
+ <sub>开关 · 默认：开</sub>
+diff --git a/main.py b/main.py
+index 97db5c0..9a79711 100644
+--- a/main.py
++++ b/main.py
+@@ -65,6 +65,9 @@ from .core.java_commands import check_command as check_command_policy
+ from .core.tool_guard import (
+     ALTERNATIVES,
+     COMMAND_TOOLS,
++    HINT_MODES,
++    HINT_RECALL_TTL,
++    HINT_TOPIC_KEYWORDS,
+     DenyLatch,
+     deny_result,
+     latch_result,
+@@ -295,6 +298,8 @@ class McControlPlugin(Star):
+         self._deny_latch: DenyLatch = DenyLatch(
+             ttl=float(self._cfg("permission_latch_ttl", 300) or 300)
+         )
++        # v0.23.3：本会话「近期试图调用过 MC 工具」的到期时间表（按需提示注入用）
++        self._mc_tool_recent: dict[str, float] = {}
+         # 最近服务器事件缓存（WebUI 实时动态展示）
+         self._recent_events: deque = deque(maxlen=60)
+ 
+@@ -1444,12 +1449,145 @@ class McControlPlugin(Star):
+             return self._deny(event, denied, tool=tool, command=command)
+         return None
+ 
+-    # ================= 权限前置提醒（v0.21.0） =================
++    # ================= 权限前置提醒（v0.21.0 / v0.23.3 起按需触发） =================
++
++    def _hint_mode(self) -> str:
++        """读取前置提醒的触发时机：`always` / `on_demand` / `off`。
++
++        v0.23.3 起由 `permission_hint_mode` 控制；旧键 `permission_hint_injection`
++        仍然兼容 —— 显式 `false` 等价于 `off`，其余情形（含旧配置里写死的 `true`）
++        一律落到新默认值 `on_demand`。这样老用户升级后自动享受「日常闲聊零打扰」，
++        想恢复「每轮都提醒」把 `permission_hint_mode` 显式设成 `always` 即可。
++        """
++        mode = str(self._cfg("permission_hint_mode", "") or "").strip().lower()
++        if mode in HINT_MODES:
++            return mode
++        if self._cfg("permission_hint_injection", None) is False:
++            return "off"
++        return "on_demand"
++
++    def _mc_tool_recall_ttl(self) -> float:
++        """「近期调用过 MC 工具」的记忆窗口（秒）。配置未暴露，走内部默认值。"""
++        try:
++            return max(0.0, float(self._cfg("permission_hint_recall_ttl", HINT_RECALL_TTL) or 0))
++        except (TypeError, ValueError):
++            return HINT_RECALL_TTL
++
++    def _mark_mc_tool_used(self, event: AstrMessageEvent) -> None:
++        """记下「本会话刚试图调用过 MC 工具」。
++
++        由 `core.tool_guard.tolerant_tool` 装饰器在每次工具调用入口统一回调，
++        因此不需要逐个改动二十来个工具实现。异常一律吞掉：埋点失败绝不能
++        影响工具本身。
++        """
++        key = self._latch_key(event)
++        if not key or key == "|":
++            return
++        ttl = self._mc_tool_recall_ttl()
++        if ttl <= 0:
++            return
++        now = time.time()
++        store = getattr(self, "_mc_tool_recent", None)
++        if store is None:
++            store = self._mc_tool_recent = {}
++        # 表很小（每个活跃会话一条），顺手全扫剪枝，省得再引入一个定时器
++        for k in [k for k, exp in store.items() if exp <= now]:
++            store.pop(k, None)
++        store[key] = now + ttl
++
++    def _mc_tool_recent_hit(self, event: AstrMessageEvent) -> bool:
++        """本会话在记忆窗口内是否调用过 MC 工具（按需注入的第一路信号）。"""
++        key = self._latch_key(event)
++        if not key:
++            return False
++        store = getattr(self, "_mc_tool_recent", None)
++        if not store:
++            return False
++        exp = store.get(key)
++        if exp is None:
++            return False
++        if exp <= time.time():
++            store.pop(key, None)
++            return False
++        return True
++
++    def _event_text(self, event: AstrMessageEvent) -> str:
++        """取本轮用户消息文本（取不到就返回空串，绝不抛错）。"""
++        try:
++            text = getattr(event, "message_str", None)
++            if isinstance(text, str) and text.strip():
++                return text
++        except Exception:
++            pass
++        try:
++            obj = getattr(event, "message_obj", None)
++            text = getattr(obj, "message_str", None) if obj is not None else None
++            if isinstance(text, str):
++                return text
++        except Exception:
++            pass
++        return ""
++
++    def _hint_keywords(self) -> tuple[str, ...]:
++        """按需注入的话题词表：**配置项优先，留空 / 非法则回退内置词表**。
++
++        schema 里 `permission_hint_keywords` 的默认值就是内置词表（33 个词），
++        所以用户能在设置页直接看到全部词并自由增删；而「清空」视为「仍用内置」，
++        免得误删之后两路信号只剩一路。
++        """
++        raw = self._cfg("permission_hint_keywords", None)
++        words: list[str] = []
++        if isinstance(raw, (list, tuple)):
++            words = [str(x).strip().lower() for x in raw if str(x).strip()]
++        elif isinstance(raw, str):  # 后端同样接受「逗号 / 换行分隔的纯文本」
++            words = [w.strip().lower() for w in re.split(r"[,，\n]", raw) if w.strip()]
++        return tuple(words) or HINT_TOPIC_KEYWORDS
++
++    def _hint_topic_hit(self, event: AstrMessageEvent) -> bool:
++        """本轮消息是否命中 MC 话题关键词（按需注入的第二路信号，大小写不敏感）。"""
++        text = self._event_text(event).lower()
++        if not text:
++            return False
++        return any(kw in text for kw in self._hint_keywords())
++
++    def _hint_trigger(self, event: AstrMessageEvent) -> str:
++        """该不该注入？返回触发依据（`always`/`recent_tool`/`topic`），空串 = 不注入。
++
++        判定顺序即成本顺序：`always` 档不判、`on_demand` 档先看「本会话刚调用过
++        MC 工具」这条强信号，再退回关键词。
++        """
++        mode = self._hint_mode()
++        if mode == "off":
++            return ""
++        if mode == "always":
++            return "always"
++        if self._mc_tool_recent_hit(event):
++            return "recent_tool"
++        if self._hint_topic_hit(event):
++            return "topic"
++        return ""
++
++    def _emit_hint(
++        self,
++        req: ProviderRequest,
++        event: AstrMessageEvent,
++        blocks: list[str],
++        trigger: str,
++    ) -> None:
++        """所有注入的唯一出口：挂内容块 + 打「本轮已注入」标 + 记审计日志。"""
++        if not blocks:
++            return
++        self._append_user_hint(req, blocks)
++        event.set_extra("_mc_perm_hint_done", True)
++        self.logger.debug(
++            "[提示注入] 触发=%s 时机=%s 块数=%d 请求者=%s",
++            trigger, self._hint_mode(), len(blocks), self._sender_id(event),
++        )
+ 
+     def _append_user_hint(self, req: ProviderRequest, blocks: list[str]) -> None:
+         """把提示块挂到「用户消息的额外内容块」上（v0.22.1：不再改写 system_prompt）。
+ 
+-        为什么不写 system_prompt：这段内容含**请求者 ID**，每人 / 每会话都不同。
++        为什么不写 system_prompt：这段内容随请求者权限 / 会话状态变化。
+         系统提示词一旦被动态内容拼改，前缀缓存（prompt cache）当场失效，
+         命中率掉下去 = 又慢又贵。AstrBot 给插件准备的正规注入口是
+         `ProviderRequest.extra_user_content_parts`（AstrBot 自身的系统提醒也走它）：
+@@ -1476,18 +1614,31 @@ class McControlPlugin(Star):
+         """在 LLM 请求组装阶段把「哪些工具用不了」挂到用户消息的额外内容块上。
+ 
+         比事后拦截更早一步：让模型从一开始就知道命令工具不可用，
+-        从源头减少「明知不可为而硬试」。同一次事件的多轮工具循环只注入一次。
+-
+-        注意：**不改写 system_prompt**（含请求者 ID 的动态内容会废掉前缀缓存），
+-        所有注入统一走 _append_user_hint。
++        从源头减少「明知不可为而硬试」。同一次事件只注入一轮。
++
++        v0.23.3 · 触发时机可配（`permission_hint_mode`）：
++          * `always`    —— 每次请求都注入（旧行为）；
++          * `on_demand` —— **默认**。仅当「本会话近期试图调用过 MC 工具」或
++                           「本轮消息命中 MC 话题关键词」时才注入，日常闲聊零打扰；
++          * `off`       —— 从不注入，只在调用被拦时才告知。
++        三档都**不影响权限闸门与会话闩锁**：注入只是「省一次往返」的优化，
++        真正的安全边界始终在工具层（tolerant_tool + DenyLatch + deny_result）。
++
++        注意：**不改写 system_prompt**（随请求者 / 会话变化的动态内容会废掉
++        前缀缓存），所有注入统一走 _emit_hint → _append_user_hint；v0.23.3 起
++        文案里也不再出现请求者 ID，避免 openid 之类的标识被送进模型与第三方日志。
+         """
+         try:
+-            if not self._cfg("permission_hint_injection", True):
++            trigger = self._hint_trigger(event)
++            if not trigger:
+                 return
++            if event.get_extra("_mc_perm_hint_done"):
++                return  # 同一次事件只注入一轮（降级提醒也一并只注一次）
+             blocks: list[str] = []
+             # v0.21.15：本地文件类能力被禁用（异地 RCON 模式 / 目录校验未通过）时，
+             # 同样在请求阶段先告知，省得模型反复调用注定失败的查询工具。与权限无关，
+-            # 管理员也会注入；复用同一个「提示词注入」总开关。
++            # 管理员也会注入；与权限提醒共用同一套触发判定（v0.23.3 起同受
++            # permission_hint_mode 控制，且同一次事件只注入一轮）。
+             reason = ""
+             _reason_fn = getattr(self, "local_files_degraded_reason", None)
+             if callable(_reason_fn):
+@@ -1507,26 +1658,17 @@ class McControlPlugin(Star):
+                     "该用就用。若用户问起，请如实说明原因（异地 RCON 模式或服务端目录未配置/"
+                     "结构不符），并提示「关闭异地 RCON 模式或修正服务器目录即可恢复」。"
+                 )
+-            if event.get_extra("_mc_perm_hint_done"):
+-                if blocks:
+-                    self._append_user_hint(req, blocks)
+-                return
+             if self._is_admin(event):
+-                if blocks:
+-                    self._append_user_hint(req, blocks)
+-                    event.set_extra("_mc_perm_hint_done", True)
++                self._emit_hint(req, event, blocks, trigger)
+                 return
+             enabled = [t for t in COMMAND_TOOLS if self._tool_enabled(t)]
+             if not enabled:
+-                if blocks:
+-                    self._append_user_hint(req, blocks)
+-                    event.set_extra("_mc_perm_hint_done", True)
++                self._emit_hint(req, event, blocks, trigger)
+                 return
+-            sender = self._sender_id(event)
+             if self._is_whitelist_policy():
+                 hint = (
+                     "【权限前置提醒 · 由 MC 控制插件注入】\n"
+-                    f"当前请求者（ID: {sender}）**不是管理员**，命令工具策略 = 白名单："
++                    "当前请求者**不是管理员**（不在插件 admin_ids 中），命令工具策略 = 白名单："
+                     "mc_execute_command / mc_give_item / mc_broadcast / mc_workflow 会被权限闸门"
+                     "**直接拒绝**（与参数、措辞、重试次数无关，重试与换工具都无效）。\n"
+                     "遇到「发物品 / 执行指令 / 广播 / 满配枪械 / 改服务器设置」这类请求时，"
+@@ -1540,7 +1682,7 @@ class McControlPlugin(Star):
+             else:
+                 hint = (
+                     "【权限前置提醒 · 由 MC 控制插件注入】\n"
+-                    f"当前请求者（ID: {sender}）**不是管理员**，命令工具策略 = 黑名单："
++                    "当前请求者**不是管理员**，命令工具策略 = 黑名单："
+                     "命令工具本身可用，但 stop / op / ban / kick / whitelist 等危险命令与"
+                     "权限等级 ≥ 3 的服务器管理命令仍会被拒绝；"
+                     "mc_kick / mc_ban / mc_reload_plugin / mc_rescan_dictionary / "
+@@ -1548,8 +1690,7 @@ class McControlPlugin(Star):
+                     "被拒绝时请如实告知用户，不要改写参数重试，也不要换成别的工具绕过。"
+                 )
+             blocks.append(hint)
+-            self._append_user_hint(req, blocks)
+-            event.set_extra("_mc_perm_hint_done", True)
++            self._emit_hint(req, event, blocks, trigger)
+         except Exception as e:  # 提示注入失败绝不能影响正常对话
+             self.logger.warning("权限前置提醒注入失败: %s", e)
+ 
+diff --git a/metadata.yaml b/metadata.yaml
+index 119ea93..9ff4e45 100644
+--- a/metadata.yaml
++++ b/metadata.yaml
+@@ -3,7 +3,7 @@ display_name: Minecraft Server 智控台
+ short_desc: 用自然语言操控 Minecraft 服务器，整合包复杂任务一站式处理。
+ desc: 通过 RCON 用自然语言操控 Minecraft 服务器并具备高度完备的 WebUI：内置多 Agent 工作流处理整合包复杂任务；转发玩家进出/聊天/死亡/成就/对话/指令；平台指令组 mcs 支持绑定、喊话、状态查询与踢人封禁（管理员）。
+ help: 自动命令生成支持 Minecraft Java 1.13 ~ 1.21+；1.8~1.12.2 为预扁平化语法（数字 ID + data 值、ench 数字附魔、旧 execute），本插件暂不支持自动生成，会明确拒绝并说明原因，而不是生成一条必然失败的命令。使用前请先在Minecraft服务端 server.properties 中开启RCON（enable-rcon=true 并设置 rcon.port 与 rcon.password），然后在插件配置中填写连接信息与管理员ID。更换服务端时只需在插件 WebUI「设置」页改 server_dir 并保存：整合包指纹与物品词典会就地重算、无需重载插件。插件设置已按「连接/权限/播报/桥接/指令/AI工具/知识库/外观/工作流/提示词」十大分组整理，原生设置页与插件 WebUI 均可视化调整；插件 WebUI 顶栏右上角可一键切换浅色/深色主题（选择会记住，首次跟随系统偏好）；多 Agent 五个角色（分类/判断/建库/实现/纠错）的系统提示词可在插件 WebUI「提示词」页或原生配置「⑩ 多 Agent 提示词」分组中查看与编辑，保存即生效、无需重启。复杂任务请使用 mc_workflow 工具自动路由，例如数值计算（配比/产量/耗材等）、满配枪械、复杂 NBT、模组任务。遇到错误请到项目 GitHub Issues 反馈，并附上插件版本、服务端版本与加载器、你的原话与插件实际执行的命令、报错原文或截图 —— 本插件的真机验证样本目前只有 1.20.1 · Forge，其它版本的第一手反馈正是改进所缺的。命令工具有白名单/黑名单两种策略（默认白名单）：白名单下非管理员完全不能使用口头命令工具（执行指令/发物品/广播），黑名单下所有人都能用、但 stop/op/ban/kick/whitelist 等危险命令与权限等级 3/4 的管理命令仍仅管理员可用；喊话、状态、查询、绑定这类插件自带功能不受策略影响，可在 WebUI 设置页「权限与安全」下方的「命令工具 · 白名单 / 黑名单」窗口中切换。插件自带「重载即生效」补丁：在 AstrBot 插件管理页点「重载」时会深度清理模块缓存与 __pycache__（含 sys.path 方式引入的模块），插件更新重载即可应用、无需重启 AstrBot（聊天平台不再提供重载指令，重载请回 AstrBot 操作）。mcs 指令组（AstrBot 聊天平台指令，不是在游戏里输入；前缀跟随 AstrBot 唤醒词设置）：绑定/解绑/查询（自助绑定MC游戏名）、喊话 <内容>（带QQ昵称转发到服务器）、状态（mspt/tps/在线人数/运行时长/内存/CPU）、踢人 <玩家> [理由]、封禁 <玩家> [理由]、解封 <玩家>（后三者仅管理员）。
+-version: v0.23.2
++version: v0.23.3
+ author: HuangGuaKnn
+ repo: https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control
+ astrbot_version: ">=4.17.0"
+diff --git a/pages/mc_control/index.html b/pages/mc_control/index.html
+index a1bead4..c8b6284 100644
+--- a/pages/mc_control/index.html
++++ b/pages/mc_control/index.html
+@@ -942,12 +942,29 @@ try{
+       光「拦住」还不够：还要让决策 AI 明白这拦得没有商量余地。否则它会以为是自己用法不对，
+       改个参数、换个工具接着硬试。
+     </div>
+-    <div class="sw-row">
+-      <div class="sw-t"><b>权限前置提醒（注入本轮对话）</b>
+-        <span>非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里（不动系统提示词，避免影响缓存命中），从源头劝退</span></div>
+-      <label class="sw"><input type="checkbox" id="cfg_perm_hint"><span class="sl"></span></label>
++    <label class="f">权限前置提醒 · 触发时机 permission_hint_mode</label>
++    <select id="cfg_perm_hint_mode">
++      <option value="always">always —— 每次对话都注入（旧行为）</option>
++      <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
++      <option value="off">off —— 从不注入，只在被拦时告知</option>
++    </select>
++    <div class="hint" style="margin-top:2px">
++      非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里
++      （不动系统提示词，避免影响缓存命中）。<b>on_demand</b> 只在两种情况注入：
++      本轮消息命中下方话题词，或本会话近期调用过 MC 工具 —— <b>日常闲聊零打扰</b>。<br>
++      三档都<b>不影响权限闸门与会话闩锁</b>：注入只是「省一次往返」的优化，真正的安全边界始终在工具层。
+     </div>
+-    <div class="sw-row">
++    <label class="f" style="margin-top:12px">MC 话题关键词 permission_hint_keywords
++      <span class="sep" style="margin-left:6px">命中任一即视为「可能涉及 MC」；清空则回退内置词表</span></label>
++    <div class="sym-list" id="kw_list"></div>
++    <div class="sym-add">
++      <input type="text" id="kw_input" placeholder="追加自己服务器里的说法，如 开黑 / 刷怪塔" maxlength="32">
++      <button class="btn sm" id="kw_add">添加</button>
++      <button class="btn ghost sm" id="kw_reset" title="把内置词表填回来（清空也能达到同样效果）">恢复内置词表</button>
++    </div>
++    <div class="sym-msg" id="kw_msg"></div>
++    <input type="hidden" id="cfg_perm_hint_keywords">
++    <div class="sw-row" style="margin-top:14px">
+       <div class="sw-t"><b>拦截后会话闩锁</b>
+         <span>同一会话一旦被权限闸门拦下，有效期内再调命令类工具会被<b>直接短路</b>，不再触碰闸门与服务器，并提醒 AI 立刻停手</span></div>
+       <label class="sw"><input type="checkbox" id="cfg_perm_latch"><span class="sl"></span></label>
+@@ -2157,7 +2174,11 @@ const CFG_FIELDS = [
+   ["cfg_item_syntax","item_syntax_override","s"],
+   ["cfg_admin_ids","admin_ids","l"],
+   ["cfg_danger_policy","danger_command_policy","s"],
+-  ["cfg_perm_hint","permission_hint_injection","b",true],
++  // v0.23.3：前置提醒由「开关」升级为「触发时机」+ 可手动调整的话题词表。
++  // 旧键 permission_hint_injection 已被 permission_hint_mode 取代，不再在设置页暴露
++  // （后端仍兼容读取：显式 false 等价于 off）。
++  ["cfg_perm_hint_mode","permission_hint_mode","s"],
++  ["cfg_perm_hint_keywords","permission_hint_keywords","l"],
+   ["cfg_perm_latch","permission_latch","b",true],
+   ["cfg_perm_latch_ttl","permission_latch_ttl","n"],
+   ["cfg_ban_reason","ban_default_reason","s"],
+@@ -2238,6 +2259,7 @@ const CFG_FIELDS = [
+ const S_DEFAULTS = {
+   "cfg_bridge_format": "[MC] {player}：{message}",
+   "cfg_danger_policy": "whitelist",
++  "cfg_perm_hint_mode": "on_demand",
+   "cfg_kb_engine": "bm25",
+   "cfg_item_syntax": "auto",
+   "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
+@@ -2361,16 +2383,18 @@ function bindPolicyUI(){
+ // ============ 拦截即终局 · 闸门强化（v0.21.0） ============
+ function syncTerminalUI(){
+   const now = $("terminal_now");
+-  const hint = $("cfg_perm_hint"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
++  const mode = $("cfg_perm_hint_mode"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
+   if(!now) return;
+   const on = [];
+-  if(hint && hint.checked) on.push("前置提醒");
++  const mv = mode ? (mode.value || "on_demand") : "on_demand";
++  const modeLabel = { always:"前置提醒（每轮）", on_demand:"前置提醒（按需）" }[mv];
++  if(modeLabel) on.push(modeLabel);
+   if(latch && latch.checked) on.push("会话闩锁 " + (parseInt((ttl&&ttl.value)||"300",10)||300) + "s");
+   now.textContent = on.length ? ("当前生效：" + on.join(" + ")) : "当前生效：仅事后拦截";
+   now.style.color = on.length ? "var(--amber)" : "var(--muted, #888)";
+ }
+ function bindTerminalUI(){
+-  ["cfg_perm_hint","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
++  ["cfg_perm_hint_mode","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
+     const el = $(id); if(el) el.oninput = el.onchange = syncTerminalUI;
+   });
+   syncTerminalUI();
+@@ -2697,6 +2721,90 @@ function refreshBridgeHl(){
+     : "玩家在游戏内发送带符号消息即转发到会话";
+ }
+ 
++// MC 话题关键词：标签式输入（v0.23.3，与管理员 admin_ids 同一套交互）
++// 隐藏域 #cfg_perm_hint_keywords 仍以「, 」保存纯文本，沿用 CFG_FIELDS 的 l 类型收集链路。
++// 清空列表 = 让后端回退内置词表（后端语义如此），所以「恢复内置词表」= 把内置词填回来。
++let KW_STATE = [];
++let KW_DEFAULT = [];
++function initKeywords(def, keyPresent){
++  KW_DEFAULT = Array.isArray(def) ? def.slice() : [];
++  const hidden = $("cfg_perm_hint_keywords");
++  const raw = hidden ? (hidden.value || "") : "";
++  const seen = new Set();
++  let items = raw.split(/[,，|｜]/).map(x=>x.trim()).filter(Boolean).filter(x=>{
++    const k = x.toLowerCase();
++    if(seen.has(k)) return false;
++    seen.add(k); return true;
++  });
++  // v0.23.3：配置里**根本没有这个键**（新装 / 老配置尚未迁移）时，直接把内置词表填上来
++  // —— 否则列表一片空白，用户会以为「没有词可用」。
++  // 而「配置里键存在但为空」是用户自己清空的，要如实显示为空（后端语义：清空=回退内置）。
++  if(!items.length && !keyPresent && KW_DEFAULT.length) items = KW_DEFAULT.slice();
++  KW_STATE = items;
++  const inp = $("kw_input");
++  if(inp) inp.onkeydown = ev=>{ if(ev.key === "Enter"){ ev.preventDefault(); addKeyword(); } };
++  const btn = $("kw_add");
++  if(btn) btn.onclick = addKeyword;
++  const rst = $("kw_reset");
++  if(rst) rst.onclick = resetKeywords;
++  kwMsg("");
++  renderKeywords();
++}
++function renderKeywords(){
++  const box = $("kw_list");
++  if(!box) return;
++  if(!KW_STATE.length){
++    box.innerHTML = `<span class="hint">（列表为空 → 将使用内置词表；点右侧「恢复内置词表」可把内置词填回来。清空本身也是合法操作。）</span>`;
++    syncKeywords();
++    return;
++  }
++  box.innerHTML = KW_STATE.map((k,i)=>
++    `<span class="sym"><code>${esc(k)}</code>`
++    + `<button class="x" title="移除「${esc(k)}」" data-kw-del="${i}">×</button></span>`
++  ).join("");
++  box.querySelectorAll("[data-kw-del]").forEach(b=>{
++    b.onclick = ()=>{
++      const removed = KW_STATE[+b.dataset.kwDel];
++      KW_STATE.splice(+b.dataset.kwDel, 1);
++      renderKeywords();
++      kwMsg(removed ? `已移除「${removed}」，点「保存全部设置」生效` : "", false);
++    };
++  });
++  syncKeywords();
++}
++function syncKeywords(){
++  const hidden = $("cfg_perm_hint_keywords");
++  if(hidden) hidden.value = KW_STATE.join(", ");
++}
++function addKeyword(){
++  const inp = $("kw_input");
++  if(!inp) return;
++  const v = (inp.value || "").trim();
++  if(!v){ kwMsg("先输入一个说法哦，比如 开黑", true); return; }
++  if(/[,，|｜]/.test(v)){ kwMsg("一个标签只填一个词，不要带逗号或竖线（逗号是后端的分隔符）", true); return; }
++  if(v.length > 32){ kwMsg("单个关键词最多 32 个字符", true); return; }
++  if(KW_STATE.some(k=>k.toLowerCase() === v.toLowerCase())){
++    kwMsg(`「${v}」已经在列表里啦，不用重复添加`, true); return;
++  }
++  KW_STATE.push(v);
++  inp.value = "";
++  renderKeywords();
++  kwMsg(`✓ 已添加「${v}」，点「保存全部设置」生效`, false, true);
++  inp.focus();
++}
++function resetKeywords(){
++  if(!KW_DEFAULT.length){ kwMsg("没拿到内置词表，请刷新页面重试", true); return; }
++  KW_STATE = KW_DEFAULT.slice();
++  renderKeywords();
++  kwMsg(`✓ 已恢复内置的 ${KW_DEFAULT.length} 个词，点「保存全部设置」生效`, false, true);
++}
++function kwMsg(txt, isErr, isOk){
++  const el = $("kw_msg");
++  if(!el) return;
++  el.className = "sym-msg" + (isErr ? " err" : (isOk ? " ok" : ""));
++  el.textContent = txt || "";
++}
++
+ // 管理员：标签式输入（v0.21.1，与会话转发 / 触发符号一致的「逐个添加 + 单独删除」）
+ // 隐藏域 #cfg_admin_ids 仍以「, 」保存纯文本，沿用 CFG_FIELDS 的 l 类型收集链路
+ let ADM_STATE = [];
+@@ -2962,6 +3070,9 @@ async function loadSettings(){
+   initSymbols();
+   // 管理员：标签式输入（v0.21.1）
+   initAdmins();
++  // MC 话题关键词：标签式输入（v0.23.3；内置词表由接口一并下发，前端不手抄一份）
++  // 第二个参数：配置里到底有没有这个键 —— 没有就把内置词表填上来给用户看
++  initKeywords(r.hint_keywords_default, "permission_hint_keywords" in cfg);
+   // 会话级播报内容 + 全局闸门状态（v0.17.0）
+   const evMap = cfg["notify_target_events"];
+   TGT_EVENTS = {};
+diff --git a/tests/test_remote_rcon_mode.py b/tests/test_remote_rcon_mode.py
+index 66d7551..e18879d 100644
+--- a/tests/test_remote_rcon_mode.py
++++ b/tests/test_remote_rcon_mode.py
+@@ -85,13 +85,16 @@ def make_plugin(cfg: dict, data_dir: Path):
+     plug._watcher = None
+     plug._dir_check_cache = None
+     plug._admins = set()
++    plug._mc_tool_recent = {}  # v0.23.3：按需提示注入的会话记忆表
+     plug.logger = logging.getLogger("test")
+     return plug
+ 
+ 
+ class FakeEvent:
+-    def __init__(self, sender: str = "10001"):
++    def __init__(self, sender: str = "10001", text: str = ""):
+         self._sender = sender
++        self.unified_msg_origin = f"remote:FriendMessage:{sender}"  # _latch_key 用
++        self.message_str = text  # v0.23.3：按需提示注入要读本轮消息文本
+         self._extra: dict = {}
+ 
+     def get_sender_id(self) -> str:
+@@ -143,9 +146,17 @@ class HintSelf:
+ 
+ 
+ for _name in ("_inject_permission_hint", "_append_user_hint", "is_remote_mode",
+-              "server_dir_check", "local_files_degraded_reason", "_local_gate"):
++              "server_dir_check", "local_files_degraded_reason", "_local_gate",
++              # v0.23.3：按需注入的判定链（宿主是管理员视角，故不绑 _is_admin）
++              "_hint_mode", "_hint_trigger", "_hint_topic_hit", "_mc_tool_recent_hit",
++              "_mc_tool_recall_ttl", "_event_text", "_hint_keywords", "_emit_hint",
++              "_latch_key"):
+     setattr(HintSelf, _name, getattr(m.McControlPlugin, _name))
+ 
++# _sender_id 在插件里是 @staticmethod：必须原样保留静态语义 —— 直接 setattr 会把它
++# 变成实例方法，调用时凭空多出一个 self（takes 1 positional argument but 2 were given）。
++HintSelf._sender_id = staticmethod(m.McControlPlugin._sender_id)
++
+ 
+ def main() -> int:
+     logging.basicConfig(level=logging.CRITICAL)
+@@ -327,7 +338,7 @@ def main() -> int:
+         check("异地模式 → 版本探测返回空（上层显示未检测到）", p5.detect_server_version() == "")
+ 
+         hs = HintSelf(p1)
+-        ev, req = FakeEvent(), FakeReq()
++        ev, req = FakeEvent(text="帮我查一下服务器里的物品词典"), FakeReq()
+         asyncio.run(m.McControlPlugin._inject_permission_hint(hs, ev, req))
+         print("      注入片段：", req.hint_text[:78].replace(chr(10), " "))
+         check("LLM 请求阶段先告知「能力降级」", "能力降级提醒" in req.hint_text)
+@@ -337,9 +348,18 @@ def main() -> int:
+         check("提示走用户消息内容块（不改写 system_prompt）",
+               req.extra_user_content_parts and req.system_prompt == SYSTEM_PROMPT)
+ 
++        # v0.23.3：降级提醒也纳入「按需」—— 与 MC 无关的闲聊不再被塞这一段
++        req_chat = FakeReq()
++        asyncio.run(m.McControlPlugin._inject_permission_hint(
++            HintSelf(p4), FakeEvent(text="晚安，陪我聊聊天"), req_chat))
++        check("on_demand：与 MC 无关的对话不注入降级提醒",
++              "能力降级提醒" not in req_chat.hint_text
++              and not req_chat.extra_user_content_parts)
++
+         hs2 = HintSelf(p4)
+         req2 = FakeReq()
+-        asyncio.run(m.McControlPlugin._inject_permission_hint(hs2, FakeEvent(), req2))
++        asyncio.run(m.McControlPlugin._inject_permission_hint(
++            hs2, FakeEvent(text="服务器状态怎么样"), req2))
+         check("一切正常 → 不注入（不打扰）",
+               "能力降级提醒" not in req2.hint_text and not req2.extra_user_content_parts)
+ 
+diff --git a/tests/test_review_compliance.py b/tests/test_review_compliance.py
+index 768071a..fb37b18 100644
+--- a/tests/test_review_compliance.py
++++ b/tests/test_review_compliance.py
+@@ -110,9 +110,12 @@ check("提供了统一注入出口 _append_user_hint（拼到用户消息的额
+       "def _append_user_hint(" in main_src)
+ check("注入出口用的是 extra_user_content_parts，且格式是 {type: text, text: ...}",
+       'parts.append({"type": "text", "text": block})' in main_src)
+-check("四处注入调用点都改走 _append_user_hint",
+-      main_src.count("self._append_user_hint(req, blocks)") == 4,
++check("注入出口收口到 _emit_hint：_append_user_hint 只在内部调用一次（唯一出口）",
++      main_src.count("self._append_user_hint(req, blocks)") == 1,
+       f"→ 实际 {main_src.count('self._append_user_hint(req, blocks)')} 处")
++check("三处注入分支都经 _emit_hint（v0.23.3：管理员 / 无启用工具 / 权限提醒）",
++      main_src.count("self._emit_hint(") == 3,
++      f"→ 实际 {main_src.count('self._emit_hint(')} 处")
+ check("老版本 AstrBot 无该字段时宁可不提醒、也不回退写 system_prompt",
+       "extra_user_content_parts" in main_src and "跳过权限前置提醒" in main_src)
+ 
+diff --git a/tests/test_tool_guard.py b/tests/test_tool_guard.py
+index 2a4a262..35940e9 100644
+--- a/tests/test_tool_guard.py
++++ b/tests/test_tool_guard.py
+@@ -10,7 +10,7 @@
+   A. 参数误封装（{"arguments": {...}}）→ 先剥壳再判定，不再误判为权限/用法问题；
+   B. 闸门拒绝 → 终局化文案（明确「不是参数问题、重试与换工具都无效」）；
+   C. 会话闩锁 → 被拦后同会话的后续命令类调用被直接短路；
+-  D. 权限前置提醒 → 非管理员对话时提前告知，从源头劝退；
++  D. 权限前置提醒 → 按需注入（v0.23.3）：日常闲聊不打扰，仅当消息涉及 MC 或本会话刚调过 MC 工具时才提前告知；
+   E. 所有命令类工具都挂了 tolerant 装饰器（防漏挂）。
+ 
+ 运行（必须用 AstrBot 自带 python，插件依赖 astrbot 包）：
+@@ -85,9 +85,10 @@ import astrbot_plugin_Scintilla_MC_Server_Control.main as main  # noqa: E402
+ class FakeEvent:
+     """最小可用事件替身（只需要插件用到的那几个接口）。"""
+ 
+-    def __init__(self, sender="10001", umo="webchat:FriendMessage:10001"):
++    def __init__(self, sender="10001", umo="webchat:FriendMessage:10001", text=""):
+         self._sender = sender
+         self.unified_msg_origin = umo
++        self.message_str = text  # v0.23.3：按需提示注入要读本轮消息文本
+         self._extra = {}
+ 
+     def get_sender_id(self):
+@@ -108,7 +109,7 @@ class FakeSelf:
+             "permission": {
+                 "admin_ids": list(admins),
+                 "danger_command_policy": policy,
+-                "permission_hint_injection": True,
++                "permission_hint_injection": True,  # 旧键（v0.23.3 前）：模拟旧配置验证兼容路径
+                 "permission_latch": True,
+                 "permission_latch_ttl": 300,
+             }
+@@ -117,6 +118,7 @@ class FakeSelf:
+         self._admins = {str(x) for x in admins}
+         self.logger = logging.getLogger("mc-test")
+         self._deny_latch = tg.DenyLatch(ttl=300)
++        self._mc_tool_recent = {}  # v0.23.3：按需提示注入的会话记忆表
+         self._enabled = {t: True for t in COMMAND_TOOLS}
+ 
+     def _cfg(self, key, default=None):
+@@ -150,6 +152,10 @@ class FakeSelf:
+ for _name in ("_latch", "_latch_enabled", "_latch_key", "_latch_hit", "_deny",
+               "_admin_gate", "_safe_command", "_inject_permission_hint",
+               "_append_user_hint",
++              # v0.23.3：按需提示注入的整条判定链（真方法绑过来，逻辑一字不差）
++              "_hint_mode", "_mc_tool_recall_ttl", "_mark_mc_tool_used",
++              "_mc_tool_recent_hit", "_event_text", "_hint_keywords",
++              "_hint_topic_hit", "_hint_trigger", "_emit_hint",
+               # v0.23.2 第二版（GPT 核验 P0-1/P0-3）：所有执行入口都要过统一版本守门，
+               # 本文件挂真实方法才能覆盖 mc_give_item / mc_execute_command 的新调用链。
+               # 替身的 _preflatten_block_reason 恒返回 ""，故这些用例仍只验权限闸门。
+@@ -235,12 +241,13 @@ class FakeReq:
+ 
+ 
+ h_s = FakeSelf()
+-ev = FakeEvent("10001")
++ev = FakeEvent("10001", text="给我发一把钻石剑")  # 命中 MC 话题关键词
+ req = FakeReq()
+ asyncio.run(P._inject_permission_hint(h_s, ev, req))
+-check("非管理员 → 注入前置提醒", "权限前置提醒" in req.hint_text)
++check("on_demand（默认）：命中 MC 话题 → 注入前置提醒", "权限前置提醒" in req.hint_text)
+ check("提醒里点名不可用的工具", "mc_give_item" in req.hint_text)
+ check("提醒里给出替代方式", "mcs 喊话" in req.hint_text)
++check("文案里不再出现请求者 ID（v0.23.3）", "10001" not in req.hint_text)
+ check("提示挂在用户消息内容块上（不是系统提示词）",
+       len(req.extra_user_content_parts) == 1
+       and isinstance(req.extra_user_content_parts[0], dict)
+@@ -251,19 +258,72 @@ req2 = FakeReq()
+ asyncio.run(P._inject_permission_hint(h_s, ev, req2))
+ check("同一事件只注入一次（多轮工具循环不重复膨胀）",
+       "权限前置提醒" not in req2.hint_text and not req2.extra_user_content_parts)
++
++# ---- v0.23.3 核心：日常闲聊不再被注入（主人反馈的误伤场景）----
++chat_s = FakeSelf()
++req_chat = FakeReq()
++asyncio.run(P._inject_permission_hint(
++    chat_s, FakeEvent("10001", text="今天天气真好呀，陪我聊聊天～"), req_chat))
++check("on_demand：日常闲聊零注入（误伤修复）",
++      "权限前置提醒" not in req_chat.hint_text and not req_chat.extra_user_content_parts)
++
++# ---- 第一路信号：本会话刚试图调用过 MC 工具 → 后续请求补上提醒 ----
++tool_s = FakeSelf()
++ev_tool = FakeEvent("10001", umo="chat:GroupMessage:1")
++tool_s._mark_mc_tool_used(ev_tool)
++check("调用过 MC 工具 → 该会话被记住", tool_s._mc_tool_recent_hit(ev_tool) is True)
++req_tool = FakeReq()
++asyncio.run(P._inject_permission_hint(
++    tool_s, FakeEvent("10001", umo="chat:GroupMessage:1", text="那接下来呢"), req_tool))
++check("on_demand：本会话近期调用过 MC 工具 → 注入（即便本轮没提 MC）",
++      "权限前置提醒" in req_tool.hint_text)
++check("会话隔离：另一会话不受影响",
++      tool_s._mc_tool_recent_hit(FakeEvent("10001", umo="chat:GroupMessage:2")) is False)
++
++# ---- 埋点走真链路：tolerant_tool 装饰器自动记一笔 ----
++mark_s = FakeSelf()
++asyncio.run(P.mc_give_item(
++    mark_s, FakeEvent("10001", umo="chat:GroupMessage:9", text="给我发钻石"),
++    player="Steve", item="diamond"))
++check("tolerant_tool 自动埋点：工具被调用后会话即被记住",
++      mark_s._mc_tool_recent_hit(FakeEvent("10001", umo="chat:GroupMessage:9")) is True)
++
++# ---- 三档触发时机 ----
++def _set_mode(s, value):
++    """改替身配置并同步 _cfg_index（真实插件的分组索引随配置一起更新）。"""
++    s.config.setdefault("permission", {})["permission_hint_mode"] = value
++    s._cfg_index["permission_hint_mode"] = "permission"
++    return s
++
++
++always_s = _set_mode(FakeSelf(), "always")
++req_always = FakeReq()
++asyncio.run(P._inject_permission_hint(
++    always_s, FakeEvent("10001", text="陪我聊聊天"), req_always))
++check("always 档：闲聊也注入（旧行为可一键恢复）", "权限前置提醒" in req_always.hint_text)
++off_s = _set_mode(FakeSelf(), "off")
++req_off = FakeReq()
++asyncio.run(P._inject_permission_hint(
++    off_s, FakeEvent("10001", text="给我发一把钻石剑"), req_off))
++check("off 档：即便命中 MC 话题也不注入",
++      "权限前置提醒" not in req_off.hint_text and not req_off.extra_user_content_parts)
++legacy_s = FakeSelf()
++legacy_s.config["permission"]["permission_hint_injection"] = False
++check("旧键 false → 等价 off（兼容）", legacy_s._hint_mode() == "off")
++check("旧键 true（未设 mode）→ 落到 on_demand（老用户自动受益）",
++      FakeSelf()._hint_mode() == "on_demand")
++check("mode 大小写不敏感且优先于旧键", _set_mode(FakeSelf(), "ALWAYS")._hint_mode() == "always")
++check("非法 mode → 回落 on_demand", _set_mode(FakeSelf(), "乱填的值")._hint_mode() == "on_demand")
++
+ req3 = FakeReq()
+-asyncio.run(P._inject_permission_hint(h_s, FakeEvent("9001"), req3))
+-check("管理员不注入", "权限前置提醒" not in req3.hint_text
++asyncio.run(P._inject_permission_hint(
++    h_s, FakeEvent("9001", text="给我发一把钻石剑"), req3))
++check("管理员不注入权限提醒", "权限前置提醒" not in req3.hint_text
+       and not req3.extra_user_content_parts)
+-off2 = FakeSelf()
+-off2.config["permission"]["permission_hint_injection"] = False
+-req4 = FakeReq()
+-asyncio.run(P._inject_permission_hint(off2, FakeEvent("10001"), req4))
+-check("前置提醒关闭后不注入", "权限前置提醒" not in req4.hint_text
+-      and not req4.extra_user_content_parts)
+ req5 = FakeReq()
+ del req5.extra_user_content_parts  # 老版本 AstrBot 没这个字段
+-asyncio.run(P._inject_permission_hint(h_s, FakeEvent("10002"), req5))
++asyncio.run(P._inject_permission_hint(
++    h_s, FakeEvent("10002", text="给我发一把钻石剑"), req5))
+ check("老版本无 extra_user_content_parts → 宁可不提醒，也不改写 system_prompt",
+       req5.system_prompt == SYSTEM_PROMPT)
+ 
+diff --git a/tests/test_v0233_hint_config.py b/tests/test_v0233_hint_config.py
+new file mode 100644
+index 0000000..aed45ea
+--- /dev/null
++++ b/tests/test_v0233_hint_config.py
+@@ -0,0 +1,155 @@
++# -*- coding: utf-8 -*-
++"""v0.23.3 · 权限前置提醒的配置契约（触发时机 + 话题词表）。
++
++运行：
++  <python> tests/test_v0233_hint_config.py
++
++背景
++====
++v0.23.3 把「权限前置提醒」从「每轮硬塞」改成「按需触发」，并把「哪些说法算涉及 MC」
++交给用户自己定。这两件事都靠**配置项**落地，因此本文件不看行为、只钉契约：
++
++1. ``_conf_schema.json`` 里 ``permission_hint_keywords`` 的默认值
++   **必须等于**代码里的内置词表 —— 两份清单一旦漂移，这里立刻红
++   （v0.23.0 就吃过「只加 schema、漏加后端白名单」的亏，界面误报「插件未重载」）；
++2. 词表的读取语义：**配置优先、留空回退内置、纯文本也能解析、大小写不敏感**；
++3. 词表与触发判定联动：命中 → ``topic``；``always`` 档不看词表。
++"""
++from __future__ import annotations
++
++import json
++import logging
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
++
++add_sys_paths()
++
++from astrbot_plugin_Scintilla_MC_Server_Control import main as m  # noqa: E402
++from astrbot_plugin_Scintilla_MC_Server_Control.core import tool_guard as tg  # noqa: E402
++from astrbot_plugin_Scintilla_MC_Server_Control.core.web_api import McControlWebApi  # noqa: E402
++
++_fail: list[str] = []
++_pass = 0
++
++
++def check(name: str, cond: bool, detail: str = "") -> None:
++    global _pass
++    if cond:
++        _pass += 1
++        print(f"[PASS] {name}")
++    else:
++        _fail.append(name)
++        print(f"[FAIL] {name}  <- {detail}")
++
++
++class Ev:
++    """最小事件替身（只需要插件用到的那几个接口）。"""
++
++    def __init__(self, text: str = ""):
++        self.message_str = text
++        self.unified_msg_origin = "t:FriendMessage:1"
++        self._s = "10001"
++
++    def get_sender_id(self) -> str:
++        return self._s
++
++
++def make_plug(permission: dict):
++    """真插件类 + 只填必要属性（沿用 test_remote_rcon_mode 的搭法）。"""
++    plug = object.__new__(m.McControlPlugin)
++    plug.config = {"permission": dict(permission)}
++    plug._cfg_index = m.load_cfg_group_index(PLUGIN_DIR / m.CFG_SCHEMA_FNAME)
++    plug.logger = logging.getLogger("hint-cfg")
++    plug._mc_tool_recent = {}
++    plug._admins = set()
++    return plug
++
++
++def main() -> int:
++    logging.basicConfig(level=logging.CRITICAL)
++    schema = json.loads((PLUGIN_DIR / m.CFG_SCHEMA_FNAME).read_text(encoding="utf-8-sig"))
++    items = schema["permission"]["items"]
++
++    # ============================================================
++    print("=========== A. schema 默认值 ↔ 内置词表 一致性 ===========")
++    kw = items.get("permission_hint_keywords")
++    check("schema 里有 permission_hint_keywords", bool(kw))
++    check("类型为 list（前端才会渲染成可增删的列表）", (kw or {}).get("type") == "list")
++    default_kw = tuple((kw or {}).get("default") or ())
++    check("默认值非空（否则「留空回退内置」就没了意义）", bool(default_kw))
++    check("默认值 == 内置词表（防两份清单漂移）",
++          default_kw == tuple(tg.HINT_TOPIC_KEYWORDS),
++          f"→ schema {len(default_kw)} 个 / 内置 {len(tg.HINT_TOPIC_KEYWORDS)} 个")
++    check("触发时机默认 on_demand（不是旧行为 always）",
++          (items.get("permission_hint_mode") or {}).get("default") == "on_demand")
++    check("触发时机是枚举三档",
++          (items.get("permission_hint_mode") or {}).get("options") == list(tg.HINT_MODES))
++    check("后端把词表收进了 LIST_SETTING_KEYS（前端才提交得进去）",
++          "permission_hint_keywords" in getattr(McControlWebApi, "LIST_SETTING_KEYS", ()),
++          f"→ {getattr(McControlWebApi, 'LIST_SETTING_KEYS', None)}")
++    check("后端把触发时机收进了 ENUM_SETTING_KEYS",
++          "permission_hint_mode" in getattr(McControlWebApi, "ENUM_SETTING_KEYS", {}),
++          f"→ {list(getattr(McControlWebApi, 'ENUM_SETTING_KEYS', {}))}")
++
++    # ============================================================
++    print("\n=========== B. 词表读取语义 ===========")
++    base = {"permission_hint_mode": "on_demand"}
++    plug_empty = make_plug({**base, "permission_hint_keywords": []})
++    check("留空 → 回退内置词表", plug_empty._hint_keywords() == tg.HINT_TOPIC_KEYWORDS)
++    check("留空时内置词照常命中", plug_empty._hint_topic_hit(Ev("帮我看看服务器")) is True)
++
++    plug_none = make_plug(base)  # 键完全不存在（老配置）
++    check("键缺失 → 同样回退内置词表", plug_none._hint_keywords() == tg.HINT_TOPIC_KEYWORDS)
++
++    plug_c = make_plug({**base, "permission_hint_keywords": ["开黑", "刷怪塔"]})
++    check("配置优先：自定义词表原样生效", plug_c._hint_keywords() == ("开黑", "刷怪塔"))
++    check("自定义词命中 → topic", plug_c._hint_topic_hit(Ev("今晚开黑吗")) is True)
++    check("生效方式是「替换」不是「追加」（默认值已是全量词表）",
++          plug_c._hint_topic_hit(Ev("给我发一把钻石剑")) is False)
++
++    plug_s = make_plug({**base, "permission_hint_keywords": "开黑, 刷怪塔\n腐竹"})
++    check("纯文本（逗号 / 中文逗号 / 换行）也能解析",
++          plug_s._hint_keywords() == ("开黑", "刷怪塔", "腐竹"))
++
++    plug_u = make_plug({**base, "permission_hint_keywords": ["AK-47", "  ", ""]})
++    check("大小写不敏感（配置里大写、消息里小写也认）",
++          plug_u._hint_topic_hit(Ev("给我满配一把 ak-47")) is True)
++    check("忽略空白项", plug_u._hint_keywords() == ("ak-47",))
++
++    plug_bad = make_plug({**base, "permission_hint_keywords": 12345})
++    check("非法类型（非 list / str）→ 回退内置，不炸",
++          plug_bad._hint_keywords() == tg.HINT_TOPIC_KEYWORDS)
++
++    # ============================================================
++    print("\n=========== C. 与触发判定联动 ===========")
++    plug_ok = make_plug({**base, "permission_hint_keywords": ["开黑"]})
++    check("命中自定义词 → trigger = topic", plug_ok._hint_trigger(Ev("开黑")) == "topic")
++    check("闲聊 → trigger 为空（不注入）", plug_ok._hint_trigger(Ev("今天天气真好")) == "")
++    check("本会话调过 MC 工具 → trigger = recent_tool",
++          (lambda p, e: (p._mark_mc_tool_used(e), p._hint_trigger(e))[1])(
++              plug_ok, Ev("嗯嗯")) == "recent_tool")
++    plug_always = make_plug({"permission_hint_mode": "always",
++                             "permission_hint_keywords": ["开黑"]})
++    check("always 档不看词表（闲聊也注入）",
++          plug_always._hint_trigger(Ev("今天天气真好")) == "always")
++    plug_off = make_plug({"permission_hint_mode": "off",
++                          "permission_hint_keywords": ["开黑"]})
++    check("off 档一律不注入", plug_off._hint_trigger(Ev("开黑")) == "")
++
++    # ============================================================
++    print(f"\n================ 汇总 ================")
++    print(f"通过 {_pass} 项，失败 {len(_fail)} 项")
++    if _fail:
++        print("\n✗ 失败项:")
++        for f in _fail:
++            print("  -", f)
++        return 1
++    print("\n✓ 全部通过")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/ui_theme_check.py b/tests/ui_theme_check.py
+index dfccf95..64722bf 100644
+--- a/tests/ui_theme_check.py
++++ b/tests/ui_theme_check.py
+@@ -118,13 +118,22 @@ def prompts() -> dict:
+                         "content": f"你是{n}。请按流水线要求处理主人的任务。"} for r, s, n in roles]}
+ 
+ 
++#: v0.23.3：内置话题词表（假后端给几个即可，用来验证「恢复内置词表」按钮的填充链路）
++HINT_KW_DEFAULT = ["mc", "minecraft", "我的世界", "服务器", "满配", "附魔"]
++
++
+ def settings() -> dict:
+     return {
+         "ok": True, "wake_prefix": "",
++        # v0.23.3：内置话题词表随接口下发（前端「恢复内置词表」按钮的填充源）
++        "hint_keywords_default": list(HINT_KW_DEFAULT),
+         "platforms": [{"id": "aiocqhttp", "name": "QQ (aiocqhttp)"},
+                       {"id": "webchat", "name": "WebChat"}],
+         "settings": {"rcon_host": "127.0.0.1", "rcon_port": 25575, "server_dir": r"D:\Minecraft\Servers\MyPack",
+                      "admin_ids": ["Steve", "123456789"], "danger_command_policy": "whitelist",
++                     # v0.23.3：权限前置提醒的触发时机 + 话题词表（模拟真实配置里已有这两项）
++                     "permission_hint_mode": "on_demand",
++                     "permission_hint_keywords": list(HINT_KW_DEFAULT),
+                      "cmd_enabled": True, "tool_enabled": True, "kb_enabled": True, "kb_learning": True,
+                      "kb_auto_apply": False, "wf_enabled": True, "wf_tool_enabled": True,
+                      "listener_enabled": True, "bridge_enabled": True, "broadcast_targets": ["aiocqhttp:FriendMessage:123"],
