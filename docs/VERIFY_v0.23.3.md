@@ -284,3 +284,48 @@ MC   →  '给我发一把钻石剑'             trigger='topic'
 | 插件本地运行 | 已重载生效（`v0.23.3`，日志 `Loading plugin … (v0.23.3)`） |
 | 主人这份配置 | `permission_hint_mode=on_demand` + 词表 29 词（已同步，非依赖默认值） |
 | 完整 diff | `docs/v0.23.3.diff`（**65,929 字节**；本文件与 diff 均 `export-ignore`，不进发布包） |
+
+---
+
+# 【发布】v0.23.3 pre-release（2026-09-26 23:32 主人指令）
+
+> 主人原话：「好了，可以往上推了」。
+
+| 项 | 值 |
+| --- | --- |
+| 代码提交 | `c85841f`（release: v0.23.3 —— 13 files changed, +683 / −58） |
+| 核验单提交 | `9213572`（docs: 核验单 + 完整 diff） |
+| tag | `v0.23.3`（annotated，对象 `804cdf60a575e2f4e99059b360ea48e953f794d9`） |
+| 远端 HEAD | `92135729281a321fc3421e507144f30d2d53e238` |
+| Release | https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases/tag/v0.23.3 |
+| pre-release | `true`（由 CHANGELOG 小节标题的「（预发布）」触发，`release.yml` 自动标注） |
+| 附件 | `astrbot_plugin_Scintilla_MC_Server_Control_v0.23.3.zip` · **2,065,757 字节** · state=uploaded |
+
+## 本次踩到的新坑（登记进铁匠笔记）
+
+**`git push` 走本机代理时，schannel 的吊销检查会让 TLS 握手直接失败。**
+
+- 症状：`fatal: unable to access 'https://github.com/…': schannel: failed to receive handshake, SSL/TLS connection failed`
+- 现场：`http.proxy = http://127.0.0.1:7897`（端口**可连**、代理访问 GitHub API 正常）、
+  `http.sslBackend = schannel`、直连 `github.com:443` 超时（即必须走代理）。
+- **v0.22.10 那次的解法（`-c http.version=HTTP/1.1`）这次不够** —— 单独加上它仍然挂。
+- 有效组合（本次实测**两条都能通** `ls-remote`，最终采用第一条）：
+
+  ```bash
+  git -c http.schannelCheckRevoke=false -c http.version=HTTP/1.1 push origin main v0.23.3
+  # 或换 SSL 后端：
+  git -c http.sslBackend=openssl -c http.version=HTTP/1.1 push origin main v0.23.3
+  ```
+
+- 结论：**优先加 `-c http.schannelCheckRevoke=false`**（比换 SSL 后端更轻、不动环境）；
+  `http.version=HTTP/1.1` 照旧一起带上。诊断顺序建议：查 `http.proxy` → 测端口连通 →
+  测代理能否访问 GitHub API → 再动 SSL 参数。
+
+## 发布时刻的状态
+
+| 项 | 值 |
+| --- | --- |
+| 本地插件 | 已重载生效（日志 `Loading plugin … (v0.23.3)`） |
+| 主人这份配置 | `permission_hint_mode = on_demand` + 词表 **29** 词（已显式同步落盘，不依赖默认值兜底） |
+| 工作区 | 干净（临时验证脚本与配置备份都留在 AstrBot workspace，不入仓库） |
+| 未做（等主人定） | 是否上应用市场 / 是否清理 workspace 的临时脚本与 `.bak` 配置备份 |
