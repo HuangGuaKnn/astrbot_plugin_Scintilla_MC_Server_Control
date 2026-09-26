@@ -17,6 +17,7 @@ from astrbot.api.web import request, json_response
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
+from .tool_guard import HINT_MODES, HINT_TOPIC_KEYWORDS
 from .version_caps import ITEM_SYNTAX_CHOICES
 
 PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
@@ -210,6 +211,9 @@ class McControlWebApi:
         return json_response({
             "ok": True,
             "settings": flat,
+            # v0.23.3：内置话题词表（前端「恢复内置词表」按钮的填充源，
+            # 免得前端再手抄一份 33 个词、两边慢慢漂移）
+            "hint_keywords_default": list(HINT_TOPIC_KEYWORDS),
             "platforms": platforms,
             "wake_prefix": wake_prefix,
         })
@@ -268,7 +272,9 @@ class McControlWebApi:
         "permission_latch_ttl": (10, 3600),
     }
     FLOAT_RANGES = {"rcon_timeout": (0.1, 300.0), "rcon_idle_probe": (0.05, 5.0)}
-    LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets")
+    LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets",
+                         # v0.23.3：MC 话题关键词（按需注入用；默认值即内置词表）
+                         "permission_hint_keywords")
     # 会话 → 事件组列表（v0.17.0：每个会话单独配置播报内容）
     DICT_SETTING_KEYS = ("notify_target_events",)
     # 会话目标类列表：允许「私聊:123456789 / 群聊:987654321」简写，落盘前统一规范化
@@ -292,6 +298,8 @@ class McControlWebApi:
     ENUM_SETTING_KEYS = {
         # 与 _conf_schema.json / main.py 的闸门实现保持一致
         "danger_command_policy": ("whitelist", "blacklist"),
+        # v0.23.3：权限前置提醒的触发时机（默认 on_demand，日常闲聊不注入）
+        "permission_hint_mode": HINT_MODES,
         # v0.21.40：知识库检索引擎（bm25=默认 / legacy=旧版兼容）
         "knowledge_search_engine": ("bm25", "legacy"),
         # v0.22.7 新增（v0.23.0 补白名单）：直接引用 version_caps 里的合法取值，

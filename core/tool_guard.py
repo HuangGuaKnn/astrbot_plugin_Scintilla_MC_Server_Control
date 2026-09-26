@@ -32,6 +32,24 @@ MARK_LATCH = "【权限拦截 · 会话闩锁】"
 #: 工具参数问题的标记头（与权限无关，属于调用格式错误）
 MARK_PARAM = "【工具参数错误 · 非权限问题】"
 
+#: 权限前置提醒的触发时机（v0.23.3）：always / on_demand / off
+HINT_MODES: tuple[str, ...] = ("always", "on_demand", "off")
+
+#: 「近期调用过 MC 工具」的记忆窗口（秒）—— 按需注入的第一路信号
+HINT_RECALL_TTL = 600.0
+
+#: 「按需注入」的话题关键词（v0.23.3）—— 第二路信号。
+#:
+#: 只收「基本只可能出现在 MC 语境」的词：宁可少注入一次，也别吵到日常闲聊。
+#: 真正的兜底始终是闸门 —— 提示注入只是「省一次往返」的优化，漏了也无害。
+HINT_TOPIC_KEYWORDS: tuple[str, ...] = (
+    "mc", "minecraft", "我的世界", "麦块", "tacz", "rcon", "nbt",
+    "服务器", "指令", "发放", "给我发", "发一把", "发把", "发个",
+    "物品id", "词典", "模组", "整合包", "配方", "合成",
+    "附魔", "满配",
+    "广播", "喊话", "踢人", "封禁", "白名单", "在线玩家", "任务链",
+)
+
 #: 命令类工具（白名单策略下非管理员一律不可用；闩锁对它们生效）
 COMMAND_TOOLS: tuple[str, ...] = (
     "mc_execute_command",
@@ -208,6 +226,16 @@ def tolerant_tool(fn: Callable) -> Callable:
 
     @functools.wraps(fn)
     async def wrapper(self, event, *args, **kwargs):
+        # v0.23.3：只要 LLM 确实「试图调用」MC 工具就先记一笔 —— 供按需提示注入
+        # 判定用（本会话近期调用过 MC 工具 → 后续请求补上前置提醒）。
+        # 放在最前面：无论后面参数剥壳顺不顺利，这次「试图调用」都算数。
+        if tool_name.startswith("mc"):
+            _mark = getattr(self, "_mark_mc_tool_used", None)
+            if callable(_mark):
+                try:
+                    _mark(event)
+                except Exception:
+                    pass
         raw = unwrap_nested_arguments(kwargs)
         clean = {k: v for k, v in raw.items() if k in accepted}
         dropped = [k for k in raw if k not in accepted]
