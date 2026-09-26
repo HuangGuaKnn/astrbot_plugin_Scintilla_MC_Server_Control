@@ -10,7 +10,7 @@
   A. 参数误封装（{"arguments": {...}}）→ 先剥壳再判定，不再误判为权限/用法问题；
   B. 闸门拒绝 → 终局化文案（明确「不是参数问题、重试与换工具都无效」）；
   C. 会话闩锁 → 被拦后同会话的后续命令类调用被直接短路；
-  D. 权限前置提醒 → 非管理员对话时提前告知，从源头劝退；
+  D. 权限前置提醒 → 按需注入（v0.23.3）：日常闲聊不打扰，仅当消息涉及 MC 或本会话刚调过 MC 工具时才提前告知；
   E. 所有命令类工具都挂了 tolerant 装饰器（防漏挂）。
 
 运行（必须用 AstrBot 自带 python，插件依赖 astrbot 包）：
@@ -85,9 +85,10 @@ import astrbot_plugin_Scintilla_MC_Server_Control.main as main  # noqa: E402
 class FakeEvent:
     """最小可用事件替身（只需要插件用到的那几个接口）。"""
 
-    def __init__(self, sender="10001", umo="webchat:FriendMessage:10001"):
+    def __init__(self, sender="10001", umo="webchat:FriendMessage:10001", text=""):
         self._sender = sender
         self.unified_msg_origin = umo
+        self.message_str = text  # v0.23.3：按需提示注入要读本轮消息文本
         self._extra = {}
 
     def get_sender_id(self):
@@ -108,7 +109,7 @@ class FakeSelf:
             "permission": {
                 "admin_ids": list(admins),
                 "danger_command_policy": policy,
-                "permission_hint_injection": True,
+                "permission_hint_injection": True,  # 旧键（v0.23.3 前）：模拟旧配置验证兼容路径
                 "permission_latch": True,
                 "permission_latch_ttl": 300,
             }
@@ -117,6 +118,7 @@ class FakeSelf:
         self._admins = {str(x) for x in admins}
         self.logger = logging.getLogger("mc-test")
         self._deny_latch = tg.DenyLatch(ttl=300)
+        self._mc_tool_recent = {}  # v0.23.3：按需提示注入的会话记忆表
         self._enabled = {t: True for t in COMMAND_TOOLS}
 
     def _cfg(self, key, default=None):
@@ -150,6 +152,10 @@ class FakeSelf:
 for _name in ("_latch", "_latch_enabled", "_latch_key", "_latch_hit", "_deny",
               "_admin_gate", "_safe_command", "_inject_permission_hint",
               "_append_user_hint",
+              # v0.23.3：按需提示注入的整条判定链（真方法绑过来，逻辑一字不差）
+              "_hint_mode", "_mc_tool_recall_ttl", "_mark_mc_tool_used",
+              "_mc_tool_recent_hit", "_event_text", "_hint_keywords",
+              "_hint_topic_hit", "_hint_trigger", "_emit_hint",
               # v0.23.2 第二版（GPT 核验 P0-1/P0-3）：所有执行入口都要过统一版本守门，
               # 本文件挂真实方法才能覆盖 mc_give_item / mc_execute_command 的新调用链。
               # 替身的 _preflatten_block_reason 恒返回 ""，故这些用例仍只验权限闸门。
@@ -235,12 +241,13 @@ class FakeReq:
 
 
 h_s = FakeSelf()
-ev = FakeEvent("10001")
+ev = FakeEvent("10001", text="给我发一把钻石剑")  # 命中 MC 话题关键词
 req = FakeReq()
 asyncio.run(P._inject_permission_hint(h_s, ev, req))
-check("非管理员 → 注入前置提醒", "权限前置提醒" in req.hint_text)
+check("on_demand（默认）：命中 MC 话题 → 注入前置提醒", "权限前置提醒" in req.hint_text)
 check("提醒里点名不可用的工具", "mc_give_item" in req.hint_text)
 check("提醒里给出替代方式", "mcs 喊话" in req.hint_text)
+check("文案里不再出现请求者 ID（v0.23.3）", "10001" not in req.hint_text)
 check("提示挂在用户消息内容块上（不是系统提示词）",
       len(req.extra_user_content_parts) == 1
       and isinstance(req.extra_user_content_parts[0], dict)
@@ -251,19 +258,72 @@ req2 = FakeReq()
 asyncio.run(P._inject_permission_hint(h_s, ev, req2))
 check("同一事件只注入一次（多轮工具循环不重复膨胀）",
       "权限前置提醒" not in req2.hint_text and not req2.extra_user_content_parts)
+
+# ---- v0.23.3 核心：日常闲聊不再被注入（主人反馈的误伤场景）----
+chat_s = FakeSelf()
+req_chat = FakeReq()
+asyncio.run(P._inject_permission_hint(
+    chat_s, FakeEvent("10001", text="今天天气真好呀，陪我聊聊天～"), req_chat))
+check("on_demand：日常闲聊零注入（误伤修复）",
+      "权限前置提醒" not in req_chat.hint_text and not req_chat.extra_user_content_parts)
+
+# ---- 第一路信号：本会话刚试图调用过 MC 工具 → 后续请求补上提醒 ----
+tool_s = FakeSelf()
+ev_tool = FakeEvent("10001", umo="chat:GroupMessage:1")
+tool_s._mark_mc_tool_used(ev_tool)
+check("调用过 MC 工具 → 该会话被记住", tool_s._mc_tool_recent_hit(ev_tool) is True)
+req_tool = FakeReq()
+asyncio.run(P._inject_permission_hint(
+    tool_s, FakeEvent("10001", umo="chat:GroupMessage:1", text="那接下来呢"), req_tool))
+check("on_demand：本会话近期调用过 MC 工具 → 注入（即便本轮没提 MC）",
+      "权限前置提醒" in req_tool.hint_text)
+check("会话隔离：另一会话不受影响",
+      tool_s._mc_tool_recent_hit(FakeEvent("10001", umo="chat:GroupMessage:2")) is False)
+
+# ---- 埋点走真链路：tolerant_tool 装饰器自动记一笔 ----
+mark_s = FakeSelf()
+asyncio.run(P.mc_give_item(
+    mark_s, FakeEvent("10001", umo="chat:GroupMessage:9", text="给我发钻石"),
+    player="Steve", item="diamond"))
+check("tolerant_tool 自动埋点：工具被调用后会话即被记住",
+      mark_s._mc_tool_recent_hit(FakeEvent("10001", umo="chat:GroupMessage:9")) is True)
+
+# ---- 三档触发时机 ----
+def _set_mode(s, value):
+    """改替身配置并同步 _cfg_index（真实插件的分组索引随配置一起更新）。"""
+    s.config.setdefault("permission", {})["permission_hint_mode"] = value
+    s._cfg_index["permission_hint_mode"] = "permission"
+    return s
+
+
+always_s = _set_mode(FakeSelf(), "always")
+req_always = FakeReq()
+asyncio.run(P._inject_permission_hint(
+    always_s, FakeEvent("10001", text="陪我聊聊天"), req_always))
+check("always 档：闲聊也注入（旧行为可一键恢复）", "权限前置提醒" in req_always.hint_text)
+off_s = _set_mode(FakeSelf(), "off")
+req_off = FakeReq()
+asyncio.run(P._inject_permission_hint(
+    off_s, FakeEvent("10001", text="给我发一把钻石剑"), req_off))
+check("off 档：即便命中 MC 话题也不注入",
+      "权限前置提醒" not in req_off.hint_text and not req_off.extra_user_content_parts)
+legacy_s = FakeSelf()
+legacy_s.config["permission"]["permission_hint_injection"] = False
+check("旧键 false → 等价 off（兼容）", legacy_s._hint_mode() == "off")
+check("旧键 true（未设 mode）→ 落到 on_demand（老用户自动受益）",
+      FakeSelf()._hint_mode() == "on_demand")
+check("mode 大小写不敏感且优先于旧键", _set_mode(FakeSelf(), "ALWAYS")._hint_mode() == "always")
+check("非法 mode → 回落 on_demand", _set_mode(FakeSelf(), "乱填的值")._hint_mode() == "on_demand")
+
 req3 = FakeReq()
-asyncio.run(P._inject_permission_hint(h_s, FakeEvent("9001"), req3))
-check("管理员不注入", "权限前置提醒" not in req3.hint_text
+asyncio.run(P._inject_permission_hint(
+    h_s, FakeEvent("9001", text="给我发一把钻石剑"), req3))
+check("管理员不注入权限提醒", "权限前置提醒" not in req3.hint_text
       and not req3.extra_user_content_parts)
-off2 = FakeSelf()
-off2.config["permission"]["permission_hint_injection"] = False
-req4 = FakeReq()
-asyncio.run(P._inject_permission_hint(off2, FakeEvent("10001"), req4))
-check("前置提醒关闭后不注入", "权限前置提醒" not in req4.hint_text
-      and not req4.extra_user_content_parts)
 req5 = FakeReq()
 del req5.extra_user_content_parts  # 老版本 AstrBot 没这个字段
-asyncio.run(P._inject_permission_hint(h_s, FakeEvent("10002"), req5))
+asyncio.run(P._inject_permission_hint(
+    h_s, FakeEvent("10002", text="给我发一把钻石剑"), req5))
 check("老版本无 extra_user_content_parts → 宁可不提醒，也不改写 system_prompt",
       req5.system_prompt == SYSTEM_PROMPT)
 

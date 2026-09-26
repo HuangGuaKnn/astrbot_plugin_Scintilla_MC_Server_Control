@@ -118,13 +118,22 @@ def prompts() -> dict:
                         "content": f"你是{n}。请按流水线要求处理主人的任务。"} for r, s, n in roles]}
 
 
+#: v0.23.3：内置话题词表（假后端给几个即可，用来验证「恢复内置词表」按钮的填充链路）
+HINT_KW_DEFAULT = ["mc", "minecraft", "我的世界", "服务器", "满配", "附魔"]
+
+
 def settings() -> dict:
     return {
         "ok": True, "wake_prefix": "",
+        # v0.23.3：内置话题词表随接口下发（前端「恢复内置词表」按钮的填充源）
+        "hint_keywords_default": list(HINT_KW_DEFAULT),
         "platforms": [{"id": "aiocqhttp", "name": "QQ (aiocqhttp)"},
                       {"id": "webchat", "name": "WebChat"}],
         "settings": {"rcon_host": "127.0.0.1", "rcon_port": 25575, "server_dir": r"D:\Minecraft\Servers\MyPack",
                      "admin_ids": ["Steve", "123456789"], "danger_command_policy": "whitelist",
+                     # v0.23.3：权限前置提醒的触发时机 + 话题词表（模拟真实配置里已有这两项）
+                     "permission_hint_mode": "on_demand",
+                     "permission_hint_keywords": list(HINT_KW_DEFAULT),
                      "cmd_enabled": True, "tool_enabled": True, "kb_enabled": True, "kb_learning": True,
                      "kb_auto_apply": False, "wf_enabled": True, "wf_tool_enabled": True,
                      "listener_enabled": True, "bridge_enabled": True, "broadcast_targets": ["aiocqhttp:FriendMessage:123"],

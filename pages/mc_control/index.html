@@ -942,12 +942,29 @@ try{
       光「拦住」还不够：还要让决策 AI 明白这拦得没有商量余地。否则它会以为是自己用法不对，
       改个参数、换个工具接着硬试。
     </div>
-    <div class="sw-row">
-      <div class="sw-t"><b>权限前置提醒（注入本轮对话）</b>
-        <span>非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里（不动系统提示词，避免影响缓存命中），从源头劝退</span></div>
-      <label class="sw"><input type="checkbox" id="cfg_perm_hint"><span class="sl"></span></label>
+    <label class="f">权限前置提醒 · 触发时机 permission_hint_mode</label>
+    <select id="cfg_perm_hint_mode">
+      <option value="always">always —— 每次对话都注入（旧行为）</option>
+      <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
+      <option value="off">off —— 从不注入，只在被拦时告知</option>
+    </select>
+    <div class="hint" style="margin-top:2px">
+      非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里
+      （不动系统提示词，避免影响缓存命中）。<b>on_demand</b> 只在两种情况注入：
+      本轮消息命中下方话题词，或本会话近期调用过 MC 工具 —— <b>日常闲聊零打扰</b>。<br>
+      三档都<b>不影响权限闸门与会话闩锁</b>：注入只是「省一次往返」的优化，真正的安全边界始终在工具层。
     </div>
-    <div class="sw-row">
+    <label class="f" style="margin-top:12px">MC 话题关键词 permission_hint_keywords
+      <span class="sep" style="margin-left:6px">命中任一即视为「可能涉及 MC」；清空则回退内置词表</span></label>
+    <div class="sym-list" id="kw_list"></div>
+    <div class="sym-add">
+      <input type="text" id="kw_input" placeholder="追加自己服务器里的说法，如 开黑 / 刷怪塔" maxlength="32">
+      <button class="btn sm" id="kw_add">添加</button>
+      <button class="btn ghost sm" id="kw_reset" title="把内置词表填回来（清空也能达到同样效果）">恢复内置词表</button>
+    </div>
+    <div class="sym-msg" id="kw_msg"></div>
+    <input type="hidden" id="cfg_perm_hint_keywords">
+    <div class="sw-row" style="margin-top:14px">
       <div class="sw-t"><b>拦截后会话闩锁</b>
         <span>同一会话一旦被权限闸门拦下，有效期内再调命令类工具会被<b>直接短路</b>，不再触碰闸门与服务器，并提醒 AI 立刻停手</span></div>
       <label class="sw"><input type="checkbox" id="cfg_perm_latch"><span class="sl"></span></label>
@@ -2157,7 +2174,11 @@ const CFG_FIELDS = [
   ["cfg_item_syntax","item_syntax_override","s"],
   ["cfg_admin_ids","admin_ids","l"],
   ["cfg_danger_policy","danger_command_policy","s"],
-  ["cfg_perm_hint","permission_hint_injection","b",true],
+  // v0.23.3：前置提醒由「开关」升级为「触发时机」+ 可手动调整的话题词表。
+  // 旧键 permission_hint_injection 已被 permission_hint_mode 取代，不再在设置页暴露
+  // （后端仍兼容读取：显式 false 等价于 off）。
+  ["cfg_perm_hint_mode","permission_hint_mode","s"],
+  ["cfg_perm_hint_keywords","permission_hint_keywords","l"],
   ["cfg_perm_latch","permission_latch","b",true],
   ["cfg_perm_latch_ttl","permission_latch_ttl","n"],
   ["cfg_ban_reason","ban_default_reason","s"],
@@ -2238,6 +2259,7 @@ const CFG_FIELDS = [
 const S_DEFAULTS = {
   "cfg_bridge_format": "[MC] {player}：{message}",
   "cfg_danger_policy": "whitelist",
+  "cfg_perm_hint_mode": "on_demand",
   "cfg_kb_engine": "bm25",
   "cfg_item_syntax": "auto",
   "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
@@ -2361,16 +2383,18 @@ function bindPolicyUI(){
 // ============ 拦截即终局 · 闸门强化（v0.21.0） ============
 function syncTerminalUI(){
   const now = $("terminal_now");
-  const hint = $("cfg_perm_hint"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
+  const mode = $("cfg_perm_hint_mode"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
   if(!now) return;
   const on = [];
-  if(hint && hint.checked) on.push("前置提醒");
+  const mv = mode ? (mode.value || "on_demand") : "on_demand";
+  const modeLabel = { always:"前置提醒（每轮）", on_demand:"前置提醒（按需）" }[mv];
+  if(modeLabel) on.push(modeLabel);
   if(latch && latch.checked) on.push("会话闩锁 " + (parseInt((ttl&&ttl.value)||"300",10)||300) + "s");
   now.textContent = on.length ? ("当前生效：" + on.join(" + ")) : "当前生效：仅事后拦截";
   now.style.color = on.length ? "var(--amber)" : "var(--muted, #888)";
 }
 function bindTerminalUI(){
-  ["cfg_perm_hint","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
+  ["cfg_perm_hint_mode","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
     const el = $(id); if(el) el.oninput = el.onchange = syncTerminalUI;
   });
   syncTerminalUI();
@@ -2697,6 +2721,90 @@ function refreshBridgeHl(){
     : "玩家在游戏内发送带符号消息即转发到会话";
 }
 
+// MC 话题关键词：标签式输入（v0.23.3，与管理员 admin_ids 同一套交互）
+// 隐藏域 #cfg_perm_hint_keywords 仍以「, 」保存纯文本，沿用 CFG_FIELDS 的 l 类型收集链路。
+// 清空列表 = 让后端回退内置词表（后端语义如此），所以「恢复内置词表」= 把内置词填回来。
+let KW_STATE = [];
+let KW_DEFAULT = [];
+function initKeywords(def, keyPresent){
+  KW_DEFAULT = Array.isArray(def) ? def.slice() : [];
+  const hidden = $("cfg_perm_hint_keywords");
+  const raw = hidden ? (hidden.value || "") : "";
+  const seen = new Set();
+  let items = raw.split(/[,，|｜]/).map(x=>x.trim()).filter(Boolean).filter(x=>{
+    const k = x.toLowerCase();
+    if(seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  // v0.23.3：配置里**根本没有这个键**（新装 / 老配置尚未迁移）时，直接把内置词表填上来
+  // —— 否则列表一片空白，用户会以为「没有词可用」。
+  // 而「配置里键存在但为空」是用户自己清空的，要如实显示为空（后端语义：清空=回退内置）。
+  if(!items.length && !keyPresent && KW_DEFAULT.length) items = KW_DEFAULT.slice();
+  KW_STATE = items;
+  const inp = $("kw_input");
+  if(inp) inp.onkeydown = ev=>{ if(ev.key === "Enter"){ ev.preventDefault(); addKeyword(); } };
+  const btn = $("kw_add");
+  if(btn) btn.onclick = addKeyword;
+  const rst = $("kw_reset");
+  if(rst) rst.onclick = resetKeywords;
+  kwMsg("");
+  renderKeywords();
+}
+function renderKeywords(){
+  const box = $("kw_list");
+  if(!box) return;
+  if(!KW_STATE.length){
+    box.innerHTML = `<span class="hint">（列表为空 → 将使用内置词表；点右侧「恢复内置词表」可把内置词填回来。清空本身也是合法操作。）</span>`;
+    syncKeywords();
+    return;
+  }
+  box.innerHTML = KW_STATE.map((k,i)=>
+    `<span class="sym"><code>${esc(k)}</code>`
+    + `<button class="x" title="移除「${esc(k)}」" data-kw-del="${i}">×</button></span>`
+  ).join("");
+  box.querySelectorAll("[data-kw-del]").forEach(b=>{
+    b.onclick = ()=>{
+      const removed = KW_STATE[+b.dataset.kwDel];
+      KW_STATE.splice(+b.dataset.kwDel, 1);
+      renderKeywords();
+      kwMsg(removed ? `已移除「${removed}」，点「保存全部设置」生效` : "", false);
+    };
+  });
+  syncKeywords();
+}
+function syncKeywords(){
+  const hidden = $("cfg_perm_hint_keywords");
+  if(hidden) hidden.value = KW_STATE.join(", ");
+}
+function addKeyword(){
+  const inp = $("kw_input");
+  if(!inp) return;
+  const v = (inp.value || "").trim();
+  if(!v){ kwMsg("先输入一个说法哦，比如 开黑", true); return; }
+  if(/[,，|｜]/.test(v)){ kwMsg("一个标签只填一个词，不要带逗号或竖线（逗号是后端的分隔符）", true); return; }
+  if(v.length > 32){ kwMsg("单个关键词最多 32 个字符", true); return; }
+  if(KW_STATE.some(k=>k.toLowerCase() === v.toLowerCase())){
+    kwMsg(`「${v}」已经在列表里啦，不用重复添加`, true); return;
+  }
+  KW_STATE.push(v);
+  inp.value = "";
+  renderKeywords();
+  kwMsg(`✓ 已添加「${v}」，点「保存全部设置」生效`, false, true);
+  inp.focus();
+}
+function resetKeywords(){
+  if(!KW_DEFAULT.length){ kwMsg("没拿到内置词表，请刷新页面重试", true); return; }
+  KW_STATE = KW_DEFAULT.slice();
+  renderKeywords();
+  kwMsg(`✓ 已恢复内置的 ${KW_DEFAULT.length} 个词，点「保存全部设置」生效`, false, true);
+}
+function kwMsg(txt, isErr, isOk){
+  const el = $("kw_msg");
+  if(!el) return;
+  el.className = "sym-msg" + (isErr ? " err" : (isOk ? " ok" : ""));
+  el.textContent = txt || "";
+}
+
 // 管理员：标签式输入（v0.21.1，与会话转发 / 触发符号一致的「逐个添加 + 单独删除」）
 // 隐藏域 #cfg_admin_ids 仍以「, 」保存纯文本，沿用 CFG_FIELDS 的 l 类型收集链路
 let ADM_STATE = [];
@@ -2962,6 +3070,9 @@ async function loadSettings(){
   initSymbols();
   // 管理员：标签式输入（v0.21.1）
   initAdmins();
+  // MC 话题关键词：标签式输入（v0.23.3；内置词表由接口一并下发，前端不手抄一份）
+  // 第二个参数：配置里到底有没有这个键 —— 没有就把内置词表填上来给用户看
+  initKeywords(r.hint_keywords_default, "permission_hint_keywords" in cfg);
   // 会话级播报内容 + 全局闸门状态（v0.17.0）
   const evMap = cfg["notify_target_events"];
   TGT_EVENTS = {};

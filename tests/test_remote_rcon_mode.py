@@ -85,13 +85,16 @@ def make_plugin(cfg: dict, data_dir: Path):
     plug._watcher = None
     plug._dir_check_cache = None
     plug._admins = set()
+    plug._mc_tool_recent = {}  # v0.23.3：按需提示注入的会话记忆表
     plug.logger = logging.getLogger("test")
     return plug
 
 
 class FakeEvent:
-    def __init__(self, sender: str = "10001"):
+    def __init__(self, sender: str = "10001", text: str = ""):
         self._sender = sender
+        self.unified_msg_origin = f"remote:FriendMessage:{sender}"  # _latch_key 用
+        self.message_str = text  # v0.23.3：按需提示注入要读本轮消息文本
         self._extra: dict = {}
 
     def get_sender_id(self) -> str:
@@ -143,8 +146,16 @@ class HintSelf:
 
 
 for _name in ("_inject_permission_hint", "_append_user_hint", "is_remote_mode",
-              "server_dir_check", "local_files_degraded_reason", "_local_gate"):
+              "server_dir_check", "local_files_degraded_reason", "_local_gate",
+              # v0.23.3：按需注入的判定链（宿主是管理员视角，故不绑 _is_admin）
+              "_hint_mode", "_hint_trigger", "_hint_topic_hit", "_mc_tool_recent_hit",
+              "_mc_tool_recall_ttl", "_event_text", "_hint_keywords", "_emit_hint",
+              "_latch_key"):
     setattr(HintSelf, _name, getattr(m.McControlPlugin, _name))
+
+# _sender_id 在插件里是 @staticmethod：必须原样保留静态语义 —— 直接 setattr 会把它
+# 变成实例方法，调用时凭空多出一个 self（takes 1 positional argument but 2 were given）。
+HintSelf._sender_id = staticmethod(m.McControlPlugin._sender_id)
 
 
 def main() -> int:
@@ -327,7 +338,7 @@ def main() -> int:
         check("异地模式 → 版本探测返回空（上层显示未检测到）", p5.detect_server_version() == "")
 
         hs = HintSelf(p1)
-        ev, req = FakeEvent(), FakeReq()
+        ev, req = FakeEvent(text="帮我查一下服务器里的物品词典"), FakeReq()
         asyncio.run(m.McControlPlugin._inject_permission_hint(hs, ev, req))
         print("      注入片段：", req.hint_text[:78].replace(chr(10), " "))
         check("LLM 请求阶段先告知「能力降级」", "能力降级提醒" in req.hint_text)
@@ -337,9 +348,18 @@ def main() -> int:
         check("提示走用户消息内容块（不改写 system_prompt）",
               req.extra_user_content_parts and req.system_prompt == SYSTEM_PROMPT)
 
+        # v0.23.3：降级提醒也纳入「按需」—— 与 MC 无关的闲聊不再被塞这一段
+        req_chat = FakeReq()
+        asyncio.run(m.McControlPlugin._inject_permission_hint(
+            HintSelf(p4), FakeEvent(text="晚安，陪我聊聊天"), req_chat))
+        check("on_demand：与 MC 无关的对话不注入降级提醒",
+              "能力降级提醒" not in req_chat.hint_text
+              and not req_chat.extra_user_content_parts)
+
         hs2 = HintSelf(p4)
         req2 = FakeReq()
-        asyncio.run(m.McControlPlugin._inject_permission_hint(hs2, FakeEvent(), req2))
+        asyncio.run(m.McControlPlugin._inject_permission_hint(
+            hs2, FakeEvent(text="服务器状态怎么样"), req2))
         check("一切正常 → 不注入（不打扰）",
               "能力降级提醒" not in req2.hint_text and not req2.extra_user_content_parts)
 
