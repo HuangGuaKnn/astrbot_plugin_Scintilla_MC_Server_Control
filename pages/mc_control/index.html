@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="dark" class="theme-pending">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Minecraft Server 智控台</title>
+<style>
+/* v0.23.4：主题裁定前短暂遮挡，避免「深↔浅」切换被眼睛看到。
+   安全兜底：纯 CSS 动画，500ms 后无论如何都会自动显示（JS 出错也不会黑屏）。 */
+@keyframes mc-theme-reveal { to { opacity: 1 } }
+html.theme-pending body { opacity: 0; animation: mc-theme-reveal .16s ease-out .5s forwards; }
+</style>
 <style>
 :root{
   --bg:#0e1013; --panel:#15181e; --panel2:#1a1e26; --panel3:#20252f;
@@ -517,16 +523,194 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 @media(max-width:560px){.tgt-add{grid-template-columns:1fr 84px}.tgt-add button{grid-column:1/-1}}
 </style>
 <script>
-/* 主题引导（v0.21.13）：必须在首次绘制前跑，否则刷新时会闪一下深色。
-   优先级：localStorage 里主人手动选的 → 系统 prefers-color-scheme → 深色。 */
+/* 主题引导（v0.21.13 / v0.23.4）：必须在首次绘制前跑，否则刷新时会闪。
+   优先级：localStorage / cookie 里主人手动选的 → 【iframe 内保持初值】 → 系统偏好。
+
+   v0.23.4 消除闪烁：本页是深色工作台设计，<html> 的初值就是 dark。
+   在 AstrBot 的 iframe 里本地存储整个不可用（SecurityError），此时**不要**急着
+   回退系统偏好 —— 那会让深色用户先闪一下浅色、再被后端纠正回来（实测 2 次闪）。
+   正确做法是保持初值，把裁定权交给紧随业务脚本的 bridge 尽早同步（见 earlyThemeSync）。
+   独立窗口拿不到 bridge，才用系统偏好兜底。 */
 try{
-  var _th = localStorage.getItem("mcctrl_theme");
+  var _th = null;
+  try{ _th = localStorage.getItem("mcctrl_theme"); }catch(e){}
   if(_th !== "light" && _th !== "dark"){
-    _th = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+    // 注意：不透明源 iframe 里连读 document.cookie 都会抛 SecurityError，必须自包 try
+    try{
+      var _m = document.cookie.match(/(?:^|;\s*)mcctrl_theme=(light|dark)/);
+      _th = _m ? _m[1] : null;
+    }catch(e){ _th = null; }
   }
-  document.documentElement.dataset.theme = _th;
-}catch(e){}
+  var _inFrame = (function(){ try{ return window.self !== window.top; }catch(e){ return true; } })();
+  if(_th === "light" || _th === "dark"){
+    document.documentElement.dataset.theme = _th;
+  }else if(!_inFrame){
+    // 独立窗口没有 bridge 可问，用系统偏好兜底
+    _th = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+    document.documentElement.dataset.theme = _th;
+  }
+  // iframe 内且无本地存档：保持 <html data-theme="dark"> 初值不动，避免闪
+  // （揭幕交给紧随其后的 earlyThemeSync；纯 CSS 动画保证 500ms 兜底显示）
+  if(_th === "light" || _th === "dark" || !_inFrame){
+    document.documentElement.classList.remove("theme-pending");
+  }
+}catch(e){ document.documentElement.classList.remove("theme-pending"); }
 </script>
+<style>
+/* ===== 视觉重构：Scintilla Control Room =====
+   只调整呈现层，不改变现有 id、事件绑定与 API。页面用一套更有层次的
+   「深色工作台 + 玻璃边缘 + 单一高亮色」语言，让状态、动作和说明各就各位。 */
+:root{
+  --bg:#080d14; --panel:#111923; --panel2:#16212e; --panel3:#1d2b3b;
+  --border:#263548; --border2:#3a5069; --text:#eef4fa; --dim:#a7b5c7; --faint:#718197;
+  --amber:#f3bb52; --cyan:#65c9ff; --ok:#59d99a; --bad:#ff8063; --warn:#e9aa45; --violet:#b8a2ff;
+  --bar-bg:rgba(8,13,20,.84); --bar-bg2:rgba(8,13,20,.92);
+  --shadow:0 24px 80px rgba(0,0,0,.34); --r:16px;
+}
+:root[data-theme="light"]{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#f8fafc; --panel3:#edf2f7;
+  --border:#e1e7ef; --border2:#c7d3e0; --text:#18212f; --dim:#48576b; --faint:#637182;
+  --amber:#9a6800; --cyan:#126fa9; --ok:#177c54; --bad:#c84b2e; --warn:#95670f; --violet:#6756c4;
+  --bar-bg:rgba(255,255,255,.88); --bar-bg2:rgba(255,255,255,.94);
+  --shadow:0 20px 54px rgba(31,52,78,.12);
+}
+body{
+  background-color:var(--bg);
+  background-image:radial-gradient(900px 420px at 8% -8%,rgba(101,201,255,.09),transparent 62%),
+    radial-gradient(760px 420px at 94% 8%,rgba(243,187,82,.07),transparent 60%);
+  letter-spacing:.01em;
+}
+:root[data-theme="light"] body{
+  background-image:radial-gradient(900px 420px at 8% -8%,rgba(18,111,169,.07),transparent 62%),
+    radial-gradient(760px 420px at 94% 8%,rgba(173,119,14,.06),transparent 60%);
+}
+.topbar{
+  padding:15px clamp(18px,3vw,42px); gap:15px; border-bottom-color:rgba(128,151,180,.18);
+  background-image:linear-gradient(180deg,rgba(17,25,35,.94),rgba(8,13,20,.78));
+  box-shadow:0 8px 26px rgba(0,0,0,.12);
+}
+:root[data-theme="light"] .topbar{background-image:linear-gradient(180deg,rgba(255,255,255,.97),rgba(248,250,252,.88))}
+.brand{gap:12px}.brand-mark{width:36px;height:36px;border-radius:11px;border-color:rgba(255,255,255,.2);box-shadow:0 6px 18px rgba(0,0,0,.25)}
+.brand-name{font-size:16px;letter-spacing:0}.brand-sub{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.ver{border-radius:999px;padding:2px 8px;letter-spacing:.02em}.conn{font-size:11px}.mode-tag,.themebtn,.winbtn{border-radius:999px;padding:5px 12px}
+.tabs{padding:7px clamp(14px,3vw,42px);gap:6px;background:var(--bar-bg);border-bottom-color:rgba(128,151,180,.18)}
+.tab{border:1px solid transparent;border-bottom:0;border-radius:10px;padding:9px 14px;gap:8px;font-size:12.5px}
+.tab:hover{background:var(--hover);color:var(--text)}
+.tab.active{background:rgba(101,201,255,.10);border-color:rgba(101,201,255,.2);color:var(--cyan);box-shadow:inset 0 -2px 0 var(--cyan)}
+.tab .cnt{padding:1px 7px;border-radius:999px}
+main{max-width:1400px;padding:28px clamp(16px,3vw,42px) 64px}
+.page{animation:fade .3s cubic-bezier(.2,.8,.2,1)}
+.grid{gap:16px}.card{border-radius:var(--r);padding:20px 22px;background-color:var(--panel);background-image:linear-gradient(145deg,rgba(255,255,255,.025),transparent 48%);box-shadow:0 8px 30px rgba(0,0,0,.08)}
+:root[data-theme="light"] .card{background-image:linear-gradient(145deg,rgba(18,111,169,.018),transparent 52%);box-shadow:0 8px 28px rgba(31,52,78,.045)}
+.card h3{font-size:11px;letter-spacing:.11em;margin-bottom:16px;color:var(--faint)}.card h3 .dot{width:8px;height:8px;box-shadow:0 0 0 4px rgba(243,187,82,.09)}
+.stat{border-radius:14px;padding:16px 17px;background-color:var(--panel);background-image:linear-gradient(135deg,rgba(101,201,255,.07),transparent 60%);box-shadow:0 8px 24px rgba(0,0,0,.1)}
+.stat .l{font-size:10px;letter-spacing:.08em;text-transform:uppercase}.stat .n{font-size:25px;letter-spacing:-.8px;margin-top:3px}.stat .s{font-size:10.5px}.stat .bar{height:3px}
+.btn{border-radius:10px;padding:7px 14px}.btn.primary{box-shadow:0 7px 18px rgba(243,187,82,.16)}.btn.ok{box-shadow:0 7px 18px rgba(89,217,154,.13)}
+input[type=text],input[type=password],input[type=number],select,textarea,.search{border-radius:10px;background-color:var(--panel2);padding:9px 12px}
+.badge{border-radius:999px;padding:3px 10px;letter-spacing:.02em}.entry,.pre,.tgt,.pr-item{border-radius:12px;background-color:var(--panel2)}
+.ev,.wf{padding:11px 3px;border-bottom-color:rgba(128,151,180,.18)}.ev .ts,.wf .ts{font-variant-numeric:tabular-nums}
+.savebar{border-radius:14px;padding:12px 16px;box-shadow:0 10px 30px rgba(0,0,0,.1)}
+
+/* 首页欢迎区：把「能做什么」和「下一步」放在状态卡之前。 */
+.overview-hero{position:relative;display:grid;grid-template-columns:minmax(0,1.45fr) minmax(260px,.75fr);gap:24px;align-items:stretch;overflow:hidden;margin-bottom:20px;padding:28px 30px;border:1px solid rgba(101,201,255,.22);border-radius:22px;background-color:#101c2a;background-image:linear-gradient(115deg,rgba(101,201,255,.13),transparent 48%),linear-gradient(300deg,rgba(243,187,82,.12),transparent 42%);box-shadow:var(--shadow)}
+:root[data-theme="light"] .overview-hero{background-color:#fff;background-image:linear-gradient(115deg,rgba(18,111,169,.09),transparent 48%),linear-gradient(300deg,rgba(173,119,14,.08),transparent 42%);border-color:rgba(18,111,169,.18)}
+.overview-hero::after{content:"";position:absolute;width:310px;height:310px;right:-110px;top:-160px;border:1px solid rgba(101,201,255,.2);border-radius:50%;box-shadow:0 0 0 26px rgba(101,201,255,.025),0 0 0 52px rgba(101,201,255,.018);pointer-events:none}
+.hero-kicker{display:flex;align-items:center;gap:8px;color:var(--cyan);font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.hero-kicker i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 5px rgba(89,217,154,.12),0 0 14px rgba(89,217,154,.6)}
+.hero-copy h1{max-width:650px;margin:9px 0 9px;font-size:clamp(24px,3vw,36px);line-height:1.18;letter-spacing:-.045em}.hero-copy p{max-width:650px;color:var(--dim);font-size:13px;line-height:1.8}.hero-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:19px}.hero-actions .btn{padding:8px 15px}
+.hero-side{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:16px 18px;border:1px solid rgba(255,255,255,.1);border-radius:16px;background:rgba(8,13,20,.22);backdrop-filter:blur(12px)}
+:root[data-theme="light"] .hero-side{background:rgba(255,255,255,.62);border-color:rgba(24,33,47,.08)}
+.hero-side-label{font-size:10px;color:var(--faint);letter-spacing:.1em;text-transform:uppercase}.hero-side-title{font-size:17px;font-weight:800}.hero-side-copy{color:var(--dim);font-size:11px;line-height:1.65}.hero-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}.hero-pills span{padding:4px 8px;border:1px solid var(--border2);border-radius:999px;color:var(--dim);font-size:10px;background:rgba(255,255,255,.03)}
+.section-lead{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:26px 2px 11px}.section-lead h2{font-size:14px;letter-spacing:-.01em}.section-lead p{color:var(--faint);font-size:11px}
+#ov_modules{position:relative}
+#ov_modules .stat:first-child{border-top:2px solid var(--cyan)}#ov_modules .stat:nth-child(2){border-top:2px solid var(--violet)}#ov_modules .stat:nth-child(3){border-top:2px solid var(--amber)}#ov_modules .stat:nth-child(4){border-top:2px solid var(--ok)}
+
+/* 设置页：先给用户一张可点击的地图，再进入高密度字段。 */
+.settings-index{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0 0 22px;padding:9px 11px;border:1px solid var(--border);border-radius:13px;background-color:var(--panel2);background-image:linear-gradient(90deg,rgba(101,201,255,.05),transparent 55%)}
+.settings-index-label{margin:0 4px 0 2px;color:var(--faint);font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+.settings-index button{padding:5px 10px;border:1px solid var(--border2);border-radius:999px;color:var(--dim);font-size:11px;transition:.15s}
+.settings-index button:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(101,201,255,.08)}
+.setting-subhead{display:flex;align-items:center;gap:9px;margin:17px 0 1px;padding-top:2px;color:var(--dim);font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+.setting-subhead::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 4px rgba(101,201,255,.09)}
+.setting-subhead em{color:var(--faint);font-size:10px;font-style:normal;font-weight:500;letter-spacing:0;text-transform:none}
+.settings-callout{margin-top:20px;padding:13px 14px;border:1px solid rgba(243,187,82,.24);border-radius:12px;background:linear-gradient(135deg,rgba(243,187,82,.09),rgba(243,187,82,.025));}
+.settings-callout-title{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}.settings-callout-title b{font-size:10px;color:var(--amber);border:1px solid rgba(243,187,82,.35);border-radius:999px;padding:2px 7px}
+.settings-callout p{margin-top:5px;color:var(--dim);font-size:11px;line-height:1.7}.settings-callout-points{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.settings-callout-points span{padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.05);color:var(--faint);font-size:10px}
+.settings-security-summary{margin-top:18px;padding-top:14px;border-top:1px dashed var(--border2)}
+.settings-summary-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px;color:var(--dim);font-size:11px;font-weight:800}
+.settings-summary-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed rgba(128,151,180,.18);font-size:10.5px;color:var(--faint)}
+.settings-summary-row:last-child{border-bottom:0}.settings-summary-row code{font-family:var(--mono);font-size:10.5px;color:var(--text)}
+#page_settings .set-sec{scroll-margin-top:calc(var(--topbar-h,57px) + var(--tabs-h,39px) + 8px);padding-top:2px}
+#page_settings #card_policy{border-left:3px solid var(--cyan);background-image:linear-gradient(110deg,rgba(101,201,255,.06),transparent 42%)}
+#page_settings #card_terminal{border-left:3px solid var(--amber);background-image:linear-gradient(110deg,rgba(243,187,82,.065),transparent 42%)}
+@media(max-width:780px){.overview-hero{grid-template-columns:1fr;padding:23px}.hero-side{max-width:none}.section-lead{align-items:flex-start;flex-direction:column;gap:3px}}
+@media(max-width:640px){html,body{overflow-x:hidden}.topbar{padding:12px 14px}.tabs{position:relative;top:auto;padding:6px 10px}.brand-sub{display:none}.top-right{width:auto;min-width:0;margin-left:auto!important;justify-content:flex-end;gap:7px}.conn #conn_txt{display:none}.conn{gap:0}.mode-tag{display:none}.themebtn{padding-inline:8px}.brand-name{font-size:13px}.ver{padding-inline:7px}main{padding:20px 14px 48px}.card{padding:17px}.stat{padding:14px}.overview-hero{width:100%;min-width:0;max-width:100%;border-radius:18px;margin-bottom:16px}.hero-copy,.hero-side{width:100%;min-width:0}.hero-copy h1,.hero-copy p{max-width:100%}.hero-copy h1{font-size:27px;overflow-wrap:anywhere}.hero-copy p{font-size:12px;overflow-wrap:anywhere}.hero-actions{width:100%;gap:8px}.hero-actions .btn{flex:1;justify-content:center;min-width:0;white-space:normal;font-size:11px;padding-inline:7px}.savebar{position:relative;top:auto}.settings-index{align-items:flex-start;padding:10px}.settings-index-label{width:100%;margin-bottom:1px}.settings-index button{flex:1 1 auto}.setting-subhead{margin-top:15px}#page_settings .set-sec{scroll-margin-top:16px}}
+
+/* 尊重系统的「减少动态」偏好，保留状态颜色与交互反馈但移除位移动画。 */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:0s!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:0s!important}
+}
+
+/* ===== v0.23.3 视觉同步层 ===== */
+:where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+:where(button,a):focus:not(:focus-visible){outline:none}
+details>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;border-radius:8px}
+.tabs{top:var(--topbar-h,57px)}
+.savebar{top:calc(var(--topbar-h,57px) + var(--tabs-h,39px))}
+html{scroll-behavior:smooth}
+#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,57px) + var(--tabs-h,39px) + 12px)}
+
+/* 最新版 RCON 进阶区：保留原 details/id/字段，只提升折叠入口和状态层级。 */
+details.adv-fold{margin-top:18px;padding:13px 0 0;border-top:1px solid var(--border)}
+details.adv-fold>summary{display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-height:34px;padding:7px 10px;border:1px solid var(--border2);border-radius:11px;background:linear-gradient(110deg,rgba(101,201,255,.08),transparent 62%);color:var(--text)}
+details.adv-fold>summary::before{font-size:10px;color:var(--cyan)}
+details.adv-fold>summary::after{font-size:10px;margin-left:0;opacity:.7}
+details.adv-fold[open]>summary{border-color:rgba(101,201,255,.42);box-shadow:0 0 0 3px rgba(101,201,255,.06)}
+details.adv-fold .adv-sum{margin-left:auto;padding:3px 8px;border:1px solid var(--border2);border-radius:999px;line-height:1.3;color:var(--dim)}
+details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.45);background:rgba(233,170,69,.08)}
+#adv_rcon>label.f{margin-top:16px}#adv_rcon .frow{align-items:flex-start}
+#ver_caps_line,#rcon_runtime_line{padding:8px 10px;border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:9px;background:rgba(101,201,255,.045);line-height:1.65}
+#rcon_runtime_line:empty,#ver_caps_line:empty{display:none}
+#card_terminal #cfg_perm_hint_mode{border-color:rgba(243,187,82,.35);background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%)}
+#kw_list{min-height:42px;padding:8px 10px;border-radius:11px;background:linear-gradient(135deg,rgba(101,201,255,.045),transparent 60%)}
+#kw_list .sym{border-radius:999px;padding-left:10px;background:var(--panel3);border-color:rgba(101,201,255,.26)}
+#kw_list .sym code{font-family:var(--sans);font-size:11px}#kw_list .sym .x{border-radius:999px}
+#kw_input{min-width:0}#kw_reset{white-space:nowrap}
+#rcon_runtime_line>.rcon-reset-result{display:inline-block;margin-left:7px;padding:2px 8px;border:1px solid var(--border2);border-radius:999px;background:var(--panel2);font-size:11px;line-height:1.45}
+#rcon_runtime_line>.rcon-reset-result.repeat{animation:rcon-reset-shake .32s ease-in-out}
+@keyframes rcon-reset-shake{0%,100%{transform:translateX(0)}25%,75%{transform:translateX(-3px)}50%{transform:translateX(3px)}}
+
+/* 连接字段、状态卡和安全摘要之间留出可读层级。 */
+.setting-subhead{display:flex;align-items:center;gap:9px;margin:17px 0 1px;padding-top:2px;color:var(--dim);font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+.setting-subhead::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 4px rgba(101,201,255,.09)}
+.setting-subhead em{color:var(--faint);font-size:10px;font-style:normal;font-weight:500;letter-spacing:0;text-transform:none}
+.settings-callout{margin-top:20px;padding:13px 14px;border:1px solid rgba(243,187,82,.24);border-radius:12px;background:linear-gradient(135deg,rgba(243,187,82,.09),rgba(243,187,82,.025))}
+.settings-callout-title{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}.settings-callout-title b{font-size:10px;color:var(--amber);border:1px solid rgba(243,187,82,.35);border-radius:999px;padding:2px 7px}
+.settings-callout p{margin-top:5px;color:var(--dim);font-size:11px;line-height:1.7}.settings-callout-points{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.settings-callout-points span{padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.05);color:var(--faint);font-size:10px}
+.settings-security-summary{margin-top:18px;padding-top:14px;border-top:1px dashed var(--border2)}
+.settings-summary-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px;color:var(--dim);font-size:11px;font-weight:800}
+.settings-summary-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed rgba(128,151,180,.18);font-size:10.5px;color:var(--faint)}.settings-summary-row:last-child{border-bottom:0}.settings-summary-row code{font-family:var(--mono);font-size:10.5px;color:var(--text)}
+
+@media(max-width:720px){
+  .topbar{padding:12px 14px}.tabs{top:var(--topbar-h,51px);padding:0 10px}.savebar{top:calc(var(--topbar-h,51px) + var(--tabs-h,39px))}
+  #adv_rcon .frow{flex-direction:column}#adv_rcon .frow>*{width:100%;max-width:none!important}
+}
+@media(max-width:640px){
+  html,body{overflow-x:hidden}.tabs{position:relative;top:auto}.savebar{position:sticky;top:8px;z-index:40;padding:11px 12px}.savebar .muted{display:-webkit-box;min-width:0;flex:1;font-size:10.5px;line-height:1.5;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.savebar .notice{flex:1 1 100%;margin-left:0!important;font-size:11px}
+  .overview-hero{width:100%;min-width:0;max-width:100%;border-radius:18px;margin-bottom:16px}.hero-copy,.hero-side{width:100%;min-width:0}.hero-copy h1,.hero-copy p{max-width:100%}.hero-copy h1{font-size:27px;overflow-wrap:anywhere}.hero-copy p{font-size:12px;overflow-wrap:anywhere}
+  .card{padding:17px}.stat{padding:14px}.frow{flex-direction:column}.frow>*{width:100%;max-width:none!important}.sym-add{max-width:none;flex-wrap:wrap}.sym-add input{min-width:0;flex:1 1 180px}.sym-add .btn{flex:0 0 auto}#kw_input{flex-basis:100%}#kw_add,#kw_reset{flex:1}#ver_caps_line,#rcon_runtime_line{font-size:10.5px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:0s!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:0s!important}}
+
+/* ===== 修复：深色模式下原生下拉列表「白底白字」 =====
+   <select> 的框体吃 CSS，但展开的选项列表由浏览器用系统主题原生渲染，
+   不继承 color/background，于是深色页里出现白底 + 浅色字。
+   两味药：color-scheme 让原生控件整体跟随主题；option 规则兜底各处差异。 */
+:root{color-scheme:dark}
+[data-theme="light"]{color-scheme:light}
+select option,select optgroup{background-color:var(--panel2);color:var(--text)}
+select option:checked,select option:hover{background-color:var(--panel3);color:var(--text)}
+
+</style>
 </head>
 <body>
 <!-- ===== 顶栏 ===== -->
@@ -536,7 +720,7 @@ try{
     <div>
       <div style="display:flex;align-items:center;gap:8px">
         <span class="brand-name">Minecraft Server 智控台</span>
-        <span class="ver" id="ver">v?.?.?</span>
+        <span class="ver" id="ver">v0.23.3</span>
       </div>
       <div class="brand-sub">RCON 控制 · 知识库 · 多Agent 工作流 · 提示词 · 事件播报</div>
     </div>
@@ -563,6 +747,20 @@ try{
 
 <!-- ================= 概览 ================= -->
 <div class="page active" id="page_overview">
+<section class="overview-hero">
+    <div class="hero-copy">
+      <div class="hero-kicker"><i></i> SCINTILLA CONTROL ROOM</div>
+      <h1>把服务器管理，变成一眼就懂的控制台。</h1>
+      <p>从 RCON 状态、在线玩家到知识库与 Agent 工作流，重要信息集中在这里。先看运行状态，再决定下一步动作。</p>
+    </div>
+    <div class="hero-side">
+      <div class="hero-side-label">今日控制面</div>
+      <div class="hero-side-title">实时运行 · 清晰可控</div>
+      <div class="hero-side-copy">用事件流追踪服务器变化，用知识库和工作流减少重复操作。</div>
+      <div class="hero-pills"><span>RCON</span><span>事件播报</span><span>知识库</span><span>Agent</span></div>
+    </div>
+  </section>
+  <div class="section-lead"><div><h2>运行概览</h2><p>核心模块与服务端连接状态</p></div><span class="muted">数据会随页面刷新同步</span></div>
   <div class="grid g4" id="ov_modules"></div>
   <div style="height:14px"></div>
   <div class="grid g2">
@@ -831,12 +1029,14 @@ try{
         <input type="text" id="cfg_server_dir" placeholder="C:\...\Server">
         <div class="hint" id="sd_hint">读取服务器日志、mods/ 或 plugins/ 目录的根路径；服务器事件转发、词典与知识库均依赖它。保存时会做结构校验（<code>logs/</code>、<code>libraries/</code>、<code>server.properties</code>、<code>eula.txt</code>、启动脚本、服务端 jar 任一即可），不像服务端根目录会拒绝保存。</div>
       </div>
+      <div class="setting-subhead"><span>连接参数</span><em>服务端地址与凭据</em></div>
       <div class="frow" style="margin-top:12px">
         <div style="flex:1"><label class="f" style="margin-top:0">RCON 地址</label><input type="text" id="cfg_rcon_host" placeholder="127.0.0.1"></div>
         <div style="max-width:110px"><label class="f" style="margin-top:0">端口</label><input type="number" id="cfg_rcon_port" placeholder="25575"></div>
       </div>
       <label class="f">RCON 密码</label>
       <input type="password" id="cfg_rcon_password" placeholder="••••••••">
+      <div class="setting-subhead"><span>响应边界</span><em>决定长命令何时算完成</em></div>
       <details class="adv-fold" id="adv_rcon">
         <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-sum" id="adv_rcon_sum"></span></summary>
         <label class="f" style="margin-top:12px">RCON 超时（秒）</label>
@@ -875,7 +1075,7 @@ try{
       </details>
 
       <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
-      <div class="hint" id="rcon_runtime_line" style="margin-top:8px"></div>
+      <div class="hint" id="rcon_runtime_line" role="status" aria-live="polite" aria-atomic="true" style="margin-top:8px"></div>
       <div class="btnrow" style="margin-top:6px">
         <button class="btn ghost sm" type="button" id="btn_rcon_reset">↻ 重建 RCON 连接（回到配置方式）</button>
       </div>
@@ -899,6 +1099,18 @@ try{
       <label class="f">封禁默认理由 ban_default_reason</label>
       <input type="text" id="cfg_ban_reason" placeholder="违反服务器规则，由管理员封禁">
       <div class="hint">mcs 封禁 未填写理由时使用</div>
+<div class="settings-callout">
+        <div class="settings-callout-title"><span>安全边界</span><b>管理员优先</b></div>
+        <p>危险命令始终需要管理员身份；下方策略只决定普通用户能否调用命令工具。</p>
+        <div class="settings-callout-points"><span>① 添加管理员</span><span>② 选择策略</span><span>③ 保存并热应用</span></div>
+      </div>
+      <div class="settings-security-summary">
+        <div class="settings-summary-head"><span>始终受保护的操作</span><span class="badge amb">仅管理员</span></div>
+        <div class="settings-summary-row"><code>stop / op</code><span>服务器与权限管理</span></div>
+        <div class="settings-summary-row"><code>ban / kick</code><span>玩家处置</span></div>
+        <div class="settings-summary-row"><code>whitelist</code><span>白名单变更</span></div>
+        <div class="settings-summary-row"><code>权限等级 3 / 4</code><span>高权限服务端命令</span></div>
+      </div>
     </div>
   </div>
 
@@ -3553,9 +3765,12 @@ function bind(){
   bindTargets();
 }
 
-// ============ 主题切换（v0.21.13）============
-// 按钮放顶栏右上角；选择存 localStorage，刷新与下次打开都记得。
-// 页面本身是 <html data-theme="..."> 驱动，JS 只负责改这个属性 + 同步按钮文案。
+// ============ 主题切换（v0.21.13 / v0.23.4）============
+// 按钮放顶栏右上角。页面本身是 <html data-theme="..."> 驱动，JS 只负责改这个属性 + 同步按钮文案。
+//
+// v0.23.4 修复「每次进来都变回浅色」：AstrBot 的插件页嵌在 iframe 里，
+// 该环境下 localStorage 可能整个抛 SecurityError（catch 一吞就静默回退系统偏好），
+// 于是改为三级存储 —— localStorage（快）→ cookie（次选）→ 后端（权威，重启也在）。
 const THEME_KEY = "mcctrl_theme";
 function applyTheme(t){
   t = (t === "light") ? "light" : "dark";
@@ -3564,13 +3779,75 @@ function applyTheme(t){
   if(ico) ico.textContent = (t === "light") ? "☾" : "☀";
   if(txt) txt.textContent = (t === "light") ? "深色" : "浅色";   // 写「点一下会变成什么」
 }
+function saveThemeLocal(t){
+  try{ localStorage.setItem(THEME_KEY, t); }catch(e){}
+  try{ document.cookie = THEME_KEY + "=" + t + ";path=/;max-age=31536000;SameSite=Lax"; }catch(e){}
+}
 function toggleTheme(){
   const nxt = (document.documentElement.dataset.theme === "light") ? "dark" : "light";
-  try{ localStorage.setItem(THEME_KEY, nxt); }catch(e){}
+  saveThemeLocal(nxt);
   applyTheme(nxt);
+  // 本地存不住时（iframe / 不透明源）以后端为准
+  try{ callPost("ui/theme/save", {theme: nxt}).catch(()=>{}); }catch(e){}
 }
 applyTheme(document.documentElement.dataset.theme);   // 脚本在 body 末尾，按钮已存在，先同步一次文案
 window.toggleTheme = toggleTheme;                     // 本页脚本在 IIFE 里，内联 onclick 必须走 window
+
+// v0.23.4 消除闪烁：不等 boot()（那个要等 selectApi 判定 mode，bridge 握手慢时
+// 会拖上几百毫秒甚至 3 秒兜底），这里立刻抢先问一次后端主题。
+// bridge.apiGet 多数情况可直接调用；万一不行再退到 ready()。
+function readLocalTheme_(){
+  try{ const v = localStorage.getItem(THEME_KEY); if(v === "light" || v === "dark") return v; }catch(e){}
+  try{
+    const m = document.cookie.match(/(?:^|;\s*)mcctrl_theme=(light|dark)/);
+    if(m) return m[1];
+  }catch(e){}
+  return null;
+}
+(function earlyThemeSync(){
+  if(!bridge || !inIframe()) return;         // 独立窗口靠本地存储即可
+  if(readLocalTheme_()) return;              // 本地有权威值，不打扰后端
+  const soft = fn => Promise.resolve().then(fn).catch(() => null);
+  soft(() => bridge.apiGet(P + "ui/theme"))
+    .then(r => (r && (r.theme === "light" || r.theme === "dark"))
+      ? r.theme
+      : soft(() => bridge.ready()).then(() => soft(() => bridge.apiGet(P + "ui/theme")))
+          .then(r2 => r2 && r2.theme))
+    .then(t => {
+      if((t === "light" || t === "dark") && t !== document.documentElement.dataset.theme){
+        applyTheme(t);
+        saveThemeLocal(t);
+      }
+    })
+    .catch(()=>{})
+    .then(()=>{ document.documentElement.classList.remove("theme-pending"); });   // 揭幕
+})();
+
+// v0.23.4：本地存储拿不到有效值时，问后端要权威主题。
+// 注意：必须等 selectApi() 定下 mode 之后再调（见 boot）——
+// 否则 mode 还是 "unknown"，会走 directApi，而在 AstrBot 的 iframe（不透明源）
+// 里 fetch 是发不出去的，只有 bridge 可用。
+async function syncThemeFromBackend(){
+  const cur = document.documentElement.dataset.theme;
+  let local = null;
+  try{ local = localStorage.getItem(THEME_KEY); }catch(e){}
+  if(!local){
+    // 同上：不透明源 iframe 里读 document.cookie 也会抛，必须自包 try
+    try{
+      const m = document.cookie.match(/(?:^|;\s*)mcctrl_theme=(light|dark)/);
+      local = m ? m[1] : null;
+    }catch(e){ local = null; }
+  }
+  if(local === "light" || local === "dark") return;   // 本地有存档，无需打扰后端
+  try{
+    const r = await callGet("ui/theme");
+    const t = r && r.theme;
+    if((t === "light" || t === "dark") && t !== cur){
+      applyTheme(t);
+      saveThemeLocal(t);
+    }
+  }catch(e){ console.warn("[mc_control] 读取后端主题偏好失败，沿用系统偏好:", e); }
+}
 
 // ============ 初始化 ============
 // v0.20.1 修复：必须等 DOM 解析完成再 bind —— 本页两个 modal（#fp_modal / #bind_modal）
@@ -3594,6 +3871,7 @@ function boot(){
     loadWorkflow();
     loadSettings();
     loadColors();
+    syncThemeFromBackend();   // v0.23.4：mode 已定，此时走 bridge 才发得出去
   });
 }
 if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
@@ -3673,5 +3951,39 @@ else boot();
   </div>
 </div>
 
+<script>
+/* v0.23.3 visual feedback: coalesce only the result spans generated by resetRcon().
+   The API call, runtime renderer, and original event binding remain untouched. */
+(function(){
+  function startRconNoticeObserver(){
+    var host = document.getElementById("rcon_runtime_line");
+    if(!host || !window.MutationObserver) return;
+    var last = "", internal = false;
+    function sync(){
+      if(internal) return;
+      var notes = Array.prototype.filter.call(host.children, function(node){
+        var text = (node.textContent || "").trim();
+        return !node.classList.contains("badge") && /^[\u2713\u2717]/.test(text);
+      });
+      if(!notes.length) return;
+      var latest = notes[notes.length - 1], message = (latest.textContent || "").trim();
+      internal = true;
+      notes.slice(0, -1).forEach(function(node){ node.remove(); });
+      latest.classList.add("rcon-reset-result");
+      if(message === last){
+        latest.classList.remove("repeat");
+        void latest.offsetWidth;
+        latest.classList.add("repeat");
+      }
+      last = message;
+      internal = false;
+    }
+    new MutationObserver(sync).observe(host, {childList:true, subtree:true});
+    sync();
+  }
+  startRconNoticeObserver();
+})();
+</script>
 </body>
 </html>
+
