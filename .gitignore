@@ -17,6 +17,7 @@ tests/_log*.txt
 _backup/
 *.bak
 *.bak_*
+*.bak-*
 plugin_config*.json
 
 # ---- AstrBot 运行产物 / 本地一次性跑测脚本 ----

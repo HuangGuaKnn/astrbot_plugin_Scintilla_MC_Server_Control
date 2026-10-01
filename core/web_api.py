@@ -91,6 +91,8 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/server/broadcast", self.broadcast, ["POST"], "服务器广播")
         reg(f"{PAGE_PREFIX}/colors", self.get_colors, ["GET"], "读取文本颜色")
         reg(f"{PAGE_PREFIX}/colors/save", self.save_colors, ["POST"], "保存文本颜色")
+        reg(f"{PAGE_PREFIX}/ui/theme", self.get_ui_theme, ["GET"], "读取界面主题偏好")
+        reg(f"{PAGE_PREFIX}/ui/theme/save", self.save_ui_theme, ["POST"], "保存界面主题偏好")
 
     # ================= 工具 =================
 
@@ -1020,6 +1022,69 @@ class McControlWebApi:
         if isinstance(raw, (list, tuple)):
             return [str(x) for x in raw if str(x).strip()]
         return [p for p in re.split(r"[,，;；\s]+", str(raw or "")) if p.strip()]
+
+    # ================= 界面主题偏好 =================
+    #
+    # v0.23.4 新增。为什么不用 localStorage？
+    # AstrBot 的插件页是嵌在 iframe 里的（bridge 通信），这套环境下页面可能拿到的是
+    # 不透明源（opaque origin）或每次都是全新的存储分区 —— localStorage / cookie
+    # 全部抛 SecurityError，前端 catch 吞掉后只能回退「跟随系统偏好」，
+    # 于是用户每次进来都被打回浅色（2026-10-01 实测复现）。
+    # 故把主题偏好落到插件数据目录，由后端做权威存储；前端仍会尽力用本地存储做
+    # 首帧加速，本地拿不到就以本接口为准。
+    UI_PREF_NAME = "mc_control_ui.json"
+    UI_THEMES = ("light", "dark")
+
+    def _ui_pref_path(self) -> Path:
+        """界面偏好文件路径（优先 AstrBot 数据目录，取不到则退回插件 data/）。"""
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            base = Path(get_astrbot_data_path()) / "config"
+        except Exception:                                     # noqa: BLE001
+            base = Path(__file__).resolve().parents[1] / "data"
+        return base / self.UI_PREF_NAME
+
+    def _read_ui_pref(self) -> dict:
+        try:
+            p = self._ui_pref_path()
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:                                     # noqa: BLE001
+            pass
+        return {}
+
+    async def get_ui_theme(self):
+        """读取界面主题偏好。返回的 theme 为 null 表示「没存过，请前端自行跟随系统」。"""
+        theme = self._read_ui_pref().get("theme")
+        return json_response({
+            "ok": True,
+            "theme": theme if theme in self.UI_THEMES else None,
+        })
+
+    async def save_ui_theme(self):
+        """保存界面主题偏好（light / dark）。传入 null 或空串 = 清除，回到跟随系统。"""
+        data = await request.json() or {}
+        raw = data.get("theme", None)
+        theme = str(raw).strip().lower() if raw is not None else ""
+        if theme and theme not in self.UI_THEMES:
+            return json_response({
+                "ok": False,
+                "error": f"未知的主题：{raw!r}，可选：{', '.join(self.UI_THEMES)}",
+            })
+        pref = self._read_ui_pref()
+        if theme:
+            pref["theme"] = theme
+        else:
+            pref.pop("theme", None)
+        try:
+            p = self._ui_pref_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(pref, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:                                # noqa: BLE001
+            return json_response({"ok": False, "error": f"写入主题偏好失败：{e}"})
+        return json_response({"ok": True, "theme": theme or None})
 
     async def get_colors(self):
         """读取三项文本颜色 + 渐变色设置（多锚点列表 + 输出格式）。"""
