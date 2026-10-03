@@ -13,6 +13,9 @@
 /docs/VERIFY_*.md export-ignore
 /docs/CONSULT_*.md export-ignore
 /docs/*.diff export-ignore
+# 实施单（v0.22.6 的两份）此前被漏掉：第四轮复核实打实 git archive 解包，
+# 发现它们一直被跟踪、也一直躺在发布包里 —— 用户包里没有它们的位置。
+/docs/*实施单*.md export-ignore
 
 # 开发自测脚本：v0.23.1 的插件市场审核报告里，审查员点名
 # 「subprocess 仅出现在随包附带的开发自测脚本（run_v022*.py）中且只执行本地测试文件」——

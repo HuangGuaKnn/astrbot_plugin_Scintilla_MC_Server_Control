@@ -130,15 +130,22 @@ def _make_text_part(text: str):
     代码滞后」的坑），但插件不能要求用户升级到哪个版本，所以：
 
       * 取得到官方 `TextPart`（v4.27+ 都有）→ 用它，新旧核心都能消费；
-      * 取不到（更老的版本没有该模块）→ 退回 dict，那种版本的核心自带 dict 兼容分支。
+      * 取不到（更老的版本没有该模块）→ 退回 dict，那种版本的核心自带 dict 兼容分支；
+      * **官方类在、但构造失败** → 返回 `None`（调用方丢弃这一块并留日志）。
 
-    两条路都安全，**这条路不允许再出现「把裸 dict 丢给只认对象的核心」**。
+    两条回退路都安全，**这条路不允许再出现「把裸 dict 丢给只认对象的核心」**。
+
+    v0.23.5 第四轮：第三种情况以前也是「退回裸 dict」，但那恰恰是最危险的一格 ——
+    「官方类存在却构造失败」说明这个核心的 `TextPart` 形状与插件预期不符，它很可能
+    就是「只认对象」的那种版本；此时塞 dict 等于把本函数要修的那个 issue 原样复现
+    （整轮 LLM 请求全挂）。宁可少挂一条提示块：权限闸门本身仍然拦得住命令，
+    而「所有 LLM 能力全挂」是不可接受的代价（GPT 第四轮）。
     """
     if TextPart is not None:
         try:
             return TextPart(text=text)
-        except Exception:  # 零件构造失败也绝不能影响这一轮对话
-            pass
+        except Exception:  # 构造失败 → 交给调用方丢弃并留日志（绝不退回裸 dict）
+            return None
     return {"type": "text", "text": text}
 
 
@@ -403,6 +410,7 @@ class McControlPlugin(Star):
                 kid = ident["fingerprint"]
                 self._kbman = KnowledgePresetManager(
                     str(kdir), kid, server_dir, search_engine=self._kb_engine(),
+                    on_write=self._kb_touch_vectors,
                     semantic_enabled=self._kb_semantic(),
                     rerank_enabled=self._kb_rerank(),
                 )
@@ -1118,6 +1126,11 @@ class McControlPlugin(Star):
             kb.on_first_write = man.bind_active_if_needed
             kb.embed_fn = getattr(man, "embed_fn", None)
             kb.rerank_fn = getattr(man, "rerank_fn", None)
+            # v0.23.5 第四轮：写入即补算向量的脏信号出口。
+            # 挂在这里（而不是在 WebUI 的六个写接口里各补一次）的理由：
+            # 「切换预设 / 重建 KB」都要经过本函数，钩子跟着 KB 实例走，
+            # 任何调用方（Agent 工具 / WebUI / 将来的新入口）都不会漏。
+            kb.on_write = self._kb_touch_vectors
         self._knowledge = kb
 
     async def _kb_build_semantic(self, force: bool = False) -> dict:
@@ -1277,6 +1290,7 @@ class McControlPlugin(Star):
                     try:
                         self._kbman = KnowledgePresetManager(
                             str(kdir), kid, server_dir, search_engine=self._kb_engine(),
+                            on_write=self._kb_touch_vectors,
                             semantic_enabled=self._kb_semantic(),
                             rerank_enabled=self._kb_rerank(),
                         )
@@ -1828,6 +1842,17 @@ class McControlPlugin(Star):
             return
         for block in blocks:
             parts.append(_make_text_part(block))
+        # v0.23.5 第四轮：官方 `TextPart` 存在但构造失败的块会返回 None
+        # （详见 `_make_text_part` 的说明）。当场剔除：None 和裸 dict 一样，
+        # 都不是核心能消费的东西。就地过滤 `parts` 而不是重建列表 ——
+        # 这一列里可能还有其它插件 / 核心先前塞进来的元素。
+        if any(p is None for p in parts):
+            dropped = sum(1 for p in parts if p is None)
+            parts[:] = [p for p in parts if p is not None]
+            self.logger.warning(
+                "用户提示块构造失败，已跳过 %d 块（退回裸 dict 会炸掉整轮 LLM 请求）",
+                dropped,
+            )
 
     @filter.on_llm_request()
     async def _inject_permission_hint(
