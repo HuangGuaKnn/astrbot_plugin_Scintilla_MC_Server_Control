@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -39,6 +40,14 @@ MAX_READ_BYTES = 1024 * 1024
 #: 允许滞后的上限。积压超过它说明消费已追不上产出，直接跳到文件尾部并记一条日志 ——
 #: 丢的是历史事件，换来的是「绝不 OOM、也绝不让待处理数据越滚越大」。
 MAX_LAG_BYTES = 8 * 1024 * 1024
+
+#: v0.23.5 第三轮：文件头指纹的取样字节数。**读不满就不给指纹**（见 `_head_sig`）——
+#: 新文件刚写到一半时，「读多少算多少」会让同一份文件头每轮算出不同指纹，
+#: 于是每轮都判一次轮转、从头重读，把已经播报过的事件再播一遍。
+HEAD_BYTES = 256
+#: v0.23.5 第三轮：内容锚点长度（见 `__init__` 的 `_anchor`）。太小容易偶合，
+#: 太大则每轮多读几个字节 —— 64 字节足够，且必然覆盖到换行边界。
+ANCHOR_BYTES = 64
 
 # 事件类型常量
 EVENT_CHAT = "chat"
@@ -153,9 +162,30 @@ class LogWatcher:
         # _head = 文件头 256 字节的指纹：尺寸恰好相同的换文件也能认出来。
         self._sig: tuple[int, int] | None = None
         self._head: str = ""
+        # v0.23.5 第三轮：**内容锚点**。头指纹只能认「尺寸恰好相同」或「换了文件」，
+        # 认不出「同一 inode 原地重写、新内容比旧 offset 更长」—— 那种情况下 _pos
+        # 之后的字节全是新的，从旧位置续读就是错位内容，而外表毫无异常。
+        # 这里记下「上一次消费掉的最后 64 字节」及其偏移：每轮 poll 回读同一位置
+        # 比对，字节不一致 = 那段内容被重写过 → 轮转。
+        self._anchor: bytes = b""
+        self._anchor_at: int = -1
+        # 超长单行的余部处置：跳过一次读取上限后，下一轮从断点读到换行为止的残余
+        # 不能当成新行解析（那是半截行），这里标记「丢弃到下一个换行为止」。
+        self._skip_to_newline: bool = False
         # 健康度留痕（见 health()）：轮询连续失败次数 + 最近一条错误
         self.error_count: int = 0
         self.last_error: str = ""
+        # v0.23.5 第三轮：文件缺失轮数 / 文件在不在 / 最近一次真正读到内容的时刻。
+        # 「文件暂时不在」是轮转窗口里的正常现象，不该记 error；但「一直不在」
+        # 必须看得见 —— 否则界面绿灯、pos 不动、事件安静地消失。
+        self.missing_polls: int = 0
+        self.file_present: bool = True
+        self.last_read_at: float = 0.0
+        # 放弃等待的监听任务（stop() 超时时留下）。丢引用会让半途的任务被 GC 掉，
+        # 留着还能在 health() / 诊断里看见「有个没退出的」。
+        self._orphaned: set[asyncio.Task] = set()
+        # 最近一次 stat 到的文件大小（health() 用它算 lag_bytes）
+        self._last_size: int = 0
 
     async def start(self) -> None:
         """从日志文件末尾开始监听（不回溯历史日志）。"""
@@ -168,6 +198,12 @@ class LogWatcher:
             self._pos = 0
         self._sig = self._file_sig()
         self._head = self._head_sig()
+        # v0.23.5 第三轮：锚点/跳过标记随之重置。重新开监听是从**文件尾**起步，
+        # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
+        self._anchor, self._anchor_at = b"", -1
+        self._skip_to_newline = False
+        self.file_present = self.log_path.exists()
+        self.missing_polls = 0
         # 探测日志编码（UTF-8 / GBK），避免固定 UTF-8 导致中文乱码
         try:
             self._enc = self._sniff_encoding()
@@ -180,29 +216,50 @@ class LogWatcher:
         """停止监听。
 
         v0.23.5 外部复核：`await self._task` 此前没有超时 —— 若监听协程恰好卡在
-        文件 IO 上不理会取消，terminate() 就会一直挂在这里。现在限时等待。
+        文件 IO 上不理会取消，terminate() 就会一直挂在这里。
+
+        v0.23.5 第三轮：**换掉 `wait_for`**。`wait_for` 的超时会被「吞掉取消」的
+        子任务骗过：`Task.cancel()` 发现自己在等一个 future 时会把取消**委托**给被
+        等的任务（CPython `Task.cancel` 的 `_fut_waiter` 分支），子任务吞掉
+        `CancelledError` 后父任务再也看不到取消，`timeouts.timeout` 于是永远转不成
+        `TimeoutError`。实测（3.12.12）：子任务吞一次取消，`wait_for(t, 0.05)` 会一路
+        等到子任务自己结束才返回（0.35s），返回的还是子任务的值 —— 即 5 秒的超时
+        承诺是纸面的。`asyncio.wait` 才是「无论如何按时返回」的原语：它不取消、不等待
+        收尾，超时就把任务留在 pending 里交给调用方处置。
         """
         self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await asyncio.wait_for(self._task, timeout=STOP_TIMEOUT)
-            except asyncio.CancelledError:
-                pass
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "日志监听任务在 %.1fs 内未退出，已放弃等待（进程退出时会一并回收）",
-                    STOP_TIMEOUT,
-                )
-            except Exception as e:                       # noqa: BLE001
-                logger.warning("日志监听任务停止时异常（已忽略）：%s", e)
-            self._task = None
+        task, self._task = self._task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            _done, pending = await asyncio.wait({task}, timeout=STOP_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                           # noqa: BLE001
+            logger.warning("日志监听任务停止时异常（已忽略）：%s", e)
+            return
+        if pending:
+            # 保住引用：让它继续跑完（_running 已置 False，它下一轮会自己退出），
+            # 但**别丢引用** —— 半途被 GC 掉的任务连痕迹都不剩，诊断时查无此人。
+            self._orphaned.add(task)
+            task.add_done_callback(self._orphaned.discard)
+            logger.warning(
+                "日志监听任务在 %.1fs 内未退出，已放弃等待（多半卡在文件 IO 上）；"
+                "任务本身会在本轮读取返回后自行退出（进程退出时会一并回收）",
+                STOP_TIMEOUT,
+            )
 
     def health(self) -> dict:
         """监听健康度（v0.23.5 外部复核）。
 
         「日志还好不好读」此前完全不可见：文件被删、编码认错、轮询一直抛异常，
         界面与工具都只会安静地少播报几条事件。这里把位置、编码、错误计数摊开。
+
+        v0.23.5 第三轮补：`file_present` / `missing_polls` / `lag_bytes` ——
+        文件「一直不在」和「一直追不上」是两种不同的坏法，此前在健康度里都看不见
+        （pos 停着、error_count 是 0、界面绿灯）。文件暂缺属轮转窗口的正常现象，
+        所以走 missing_polls 计数而不是 error_count。
         """
         return {
             "running": bool(
@@ -213,6 +270,11 @@ class LogWatcher:
             "encoding": self._enc or "",
             "error_count": int(self.error_count),
             "last_error": self.last_error,
+            "file_present": bool(self.file_present),
+            "missing_polls": int(self.missing_polls),
+            "lag_bytes": max(0, int(self._last_size) - int(self._pos)),
+            "last_read_at": float(self.last_read_at),
+            "orphaned_tasks": len(self._orphaned),
         }
 
     def _file_sig(self) -> tuple[int, int] | None:
@@ -224,11 +286,19 @@ class LogWatcher:
         return (int(getattr(st, "st_ino", 0) or 0), int(st.st_size))
 
     def _head_sig(self) -> str:
-        """文件头 256 字节的指纹，用来识别「尺寸恰好相同的换文件」。"""
+        """文件头 256 字节的指纹，用来识别「尺寸恰好相同的换文件」。
+
+        v0.23.5 第三轮：**读满 HEAD_BYTES 才给指纹**（读不满返回空串）。此前是
+        「读多少算多少」：新文件刚写到一半时，同一份文件头会算出不同的指纹，于是
+        每轮都判一次轮转、从头重读一遍，把已经播报过的事件再播一遍。读不满就不比，
+        那段时间由 inode / 长度 / 内容锚点三条判据顶着。
+        """
         try:
             with open(self.log_path, "rb") as f:
-                head = f.read(256)
+                head = f.read(HEAD_BYTES)
         except OSError:
+            return ""
+        if len(head) < HEAD_BYTES:
             return ""
         return hash(head).to_bytes(8, "big", signed=True).hex()
 
@@ -251,27 +321,64 @@ class LogWatcher:
 
     async def _poll(self) -> None:
         if not self.log_path.exists():
+            # v0.23.5 第三轮：文件暂时不在，是轮转窗口里的**正常现象**（旧文件已删、
+            # 新文件还没建），所以不记 error；但计数要落进 health()，让「一直不在」
+            # 看得见 —— 此前这种情况就是安静地 return，界面绿灯、pos 不动、事件消失。
+            self.file_present = False
+            self.missing_polls += 1
             return
+        self.file_present = True
+        self.missing_polls = 0
         try:
             st = self.log_path.stat()
-        except OSError:
+        except OSError as e:
+            self.error_count += 1
+            self.last_error = f"{type(e).__name__}: {e}"
             return
         size = st.st_size
+        self._last_size = size
         sig = (int(getattr(st, "st_ino", 0) or 0), size)
         head = ""
         # v0.23.5 外部复核：轮转判定不能只看「文件变短」。服主把旧日志挪走、新开的
         # 服务端恰好写到同样长度时 size 不变，_pos 停在旧位置 → 从此读到的都是错位
-        # 内容（甚至一直读到文件尾就不再产出），而外表毫无异常。三种情况都算轮转：
-        #   ① 文件变短（经典轮转）② st_ino 变了（换了个文件）③ 尺寸相同但文件头指纹变了
+        # 内容（甚至一直读到文件尾就不再产出），而外表毫无异常。
+        #
+        # v0.23.5 第三轮：补上第四种判据，并放宽头指纹的适用条件。此前头指纹只在
+        # `size == _pos` 时才比，于是「**同一 inode 原地重写、新内容比旧 offset 更长**」
+        # 整类漏掉：既不判轮转、又从旧 _pos 续读错位字节（服主手动清空 latest.log
+        # 后服务端继续写、日志被外部工具重排，都落进这一类）。四种情况都算轮转：
+        #   ① 文件变短 ② st_ino 变了 ③ 文件头指纹变了 ④ 旧 offset 前的内容锚点变了
         rotated = size < self._pos
         if not rotated and self._sig is not None and sig[0] != self._sig[0]:
             rotated = True
-        if not rotated and size == self._pos and self._head:
+        # ④ 锚点比对（主力判据）：回读「上次消费掉的最后 ANCHOR_BYTES 字节」，
+        #    字节不一致 = 那段内容被重写过。正常追加绝不会动 _pos 之前的内容，
+        #    所以这条既灵敏又不误报；代价是每轮多一次 64 字节的读。
+        anchor_ok = (
+            bool(self._anchor)
+            and self._anchor_at >= 0
+            and self._pos == self._anchor_at + len(self._anchor)
+            and size >= self._pos
+        )
+        if not rotated and anchor_ok:
+            try:
+                with open(self.log_path, "rb") as f:
+                    f.seek(self._anchor_at)
+                    now_anchor = f.read(len(self._anchor))
+            except OSError:
+                now_anchor = None
+            if now_anchor is not None and now_anchor != self._anchor:
+                rotated = True
+        # ③ 头指纹：不再要求 size == _pos。正常追加时文件头永不改变，而这次读取
+        #    本来每轮都要做（下面刷新 self._head 用的是同一次调用），等于零额外成本。
+        if not rotated and self._head:
             head = self._head_sig()
             rotated = bool(head) and head != self._head
         if rotated:
             # latest.log 被重建 → 从头读取（重新嗅探编码）
             self._pos = 0
+            self._anchor, self._anchor_at = b"", -1
+            self._skip_to_newline = False
             try:
                 self._enc = self._sniff_encoding()
             except Exception:
@@ -295,6 +402,9 @@ class LogWatcher:
                 lag / 1048576.0, MAX_LAG_BYTES // 1048576,
             )
             self._pos = size
+            # 跳过去的这段没被消费，锚点对它没有意义（留着会误判一次轮转）
+            self._anchor, self._anchor_at = b"", -1
+            self._skip_to_newline = False
             return
         try:
             # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
@@ -302,10 +412,27 @@ class LogWatcher:
             with open(self.log_path, "rb") as f:
                 f.seek(self._pos)
                 data = f.read(MAX_READ_BYTES)
-        except OSError:
+        except OSError as e:
+            # 打开/读取失败是**真错误**（权限、被独占、盘掉了）→ 留痕，
+            # 别再像以前那样安静地 return 让监听看起来一切正常。
+            self.error_count += 1
+            self.last_error = f"{type(e).__name__}: {e}"
             return
         if not data:
             return
+        if self._skip_to_newline:
+            # v0.23.5 第三轮：上一轮判定为超长单行、已丢掉前半段 → 这里继续丢到
+            # 下一个换行（含）为止。否则下一轮从断点读到的**半截行**会被当成一条
+            # 新日志去跑正则（撞上事件正则的概率低，但语义是错的）。
+            nl = data.find(b"\n")
+            if nl == -1:
+                self._pos += len(data)
+                return
+            self._pos += nl + 1
+            self._skip_to_newline = False
+            data = data[nl + 1:]
+            if not data:
+                return
         # 只消费完整行；末尾可能未写完的半行留待下次读取
         if not data.endswith(b"\n"):
             cut = data.rfind(b"\n")
@@ -315,13 +442,21 @@ class LogWatcher:
                 # 监听循环从此再无产出，而且外表看不出任何异常。
                 if len(data) >= MAX_READ_BYTES:
                     logger.warning(
-                        "日志出现 %d 字节的无换行片段（疑似超长单行），已整段跳过",
+                        "日志出现 %d 字节的无换行片段（疑似超长单行），已整段跳过；"
+                        "该行余部会在下一个换行处一并丢弃",
                         len(data),
                     )
                     self._pos += len(data)
+                    # 余部显式丢弃（见上面的 `_skip_to_newline` 分支）
+                    self._skip_to_newline = True
                 return
             data = data[: cut + 1]
         self._pos += len(data)
+        # v0.23.5 第三轮：记下刚消费掉的最后一段当**内容锚点**，下轮回读比对 ——
+        # 用来认「既不换 inode、也不变短」的原地重写（见上面判据 ④）。
+        self._anchor = data[-ANCHOR_BYTES:]
+        self._anchor_at = self._pos - len(self._anchor)
+        self.last_read_at = time.monotonic()
         for line in self._decode_chunk(data).splitlines():
             if not line.strip():
                 continue

@@ -31,6 +31,13 @@ try:
 except ImportError:  # 可选依赖：仅「mcs 状态」的进程指标（内存/CPU/时长）需要
     psutil = None
 
+try:
+    # AstrBot 官方的文本内容块：`ProviderRequest.extra_user_content_parts` 的元素类型。
+    # v0.23.5（GitHub issue 修复）起优先用它，理由见 `_make_text_part`。
+    from astrbot.core.agent.message import TextPart
+except Exception:  # 老版本没有该模块 —— 退回 dict（那种核心自带 dict 兼容分支）
+    TextPart = None  # type: ignore[assignment]
+
 from .core.bg_tasks import BackgroundTasks
 from .core.command_result import (
     STATUS_LABEL,
@@ -106,6 +113,33 @@ def load_cfg_group_index(schema_path: Path) -> dict:
                 for key in items:
                     index[key] = gname
     return index
+
+
+def _make_text_part(text: str):
+    """构造「用户消息额外内容块」里的一枚文本块。
+
+    v0.23.5（GitHub issue #反馈的修复）：AstrBot 4.27.x 的
+    `ProviderRequest.assemble_context()` 会对 `extra_user_content_parts` 里的每个元素
+    **无条件**调用 `part.model_dump_for_context()`。插件此前塞进去的是裸 dict
+    （`{"type": "text", "text": ...}`）—— dict 没有这个方法，于是一次**普通对话**就在
+    核心流水线 `agent_sub_stages.internal` 里抛
+    `'dict' object has no attribute 'model_dump_for_context'`，
+    **所有走 LLM 的请求全部失败**（`mcs` 指令本身正常，只有 LLM 能力全挂）。
+
+    核心 master 分支已经补上 `isinstance(part, dict)` 兼容分支（「文档支持 dict、
+    代码滞后」的坑），但插件不能要求用户升级到哪个版本，所以：
+
+      * 取得到官方 `TextPart`（v4.27+ 都有）→ 用它，新旧核心都能消费；
+      * 取不到（更老的版本没有该模块）→ 退回 dict，那种版本的核心自带 dict 兼容分支。
+
+    两条路都安全，**这条路不允许再出现「把裸 dict 丢给只认对象的核心」**。
+    """
+    if TextPart is not None:
+        try:
+            return TextPart(text=text)
+        except Exception:  # 零件构造失败也绝不能影响这一轮对话
+            pass
+    return {"type": "text", "text": text}
 
 
 # 危险命令与权限等级判定已移到 core/java_commands.py（数据来源：中文 Minecraft Wiki
@@ -401,7 +435,13 @@ class McControlPlugin(Star):
                 if self._kb_semantic():
                     self._inject_embed_fn()
                     # v0.23.x：不阻塞启动，但登记进任务册 —— 卸载时会跟着取消
-                    self._spawn_bg(self.KB_VECTORS_TASK, self._kb_build_semantic(), policy="skip")
+                    # v0.23.5 第三轮：改走统一的「轮次」入口（delay=0：启动不攒批）。
+                    # 这样启动补算期间来的写入会被收尾复查带走，不再白丢。
+                    self._spawn_bg(
+                        self.KB_VECTORS_TASK,
+                        self._kb_vector_rounds(delay=0.0),
+                        policy="skip",
+                    )
                 # v0.21.42：精排开关开着就注入重排序调用（无需预计算，注完即用）
                 if self._kb_rerank():
                     self._inject_rerank_fn()
@@ -480,6 +520,12 @@ class McControlPlugin(Star):
     # 与同一个 .vec.npz。现在收敛成同一个常量，谁再写错名字也不可能不一致。
     # （知识库内部另有 `_vectors_lock` 兜底，双保险。）
     KB_VECTORS_TASK = "kb_semantic"
+
+    # v0.23.5 第三轮：向量索引的「有写入、还没被任何一轮构建带走」脏标记。
+    # 语义通道关闭时永远为 False。写入方**先置位再排程**，构建方每轮收尾复查
+    # （见 `_kb_touch_vectors` / `_kb_vector_rounds`）—— 这是「排程被 skip 丢弃的
+    # 请求不会白丢」的那一半保险。
+    _vec_pending: bool = False
 
     def _spawn_bg(self, name: str, coro, *, policy: str = "replace",
                   cancel_on_shutdown: bool = True):
@@ -1092,20 +1138,48 @@ class McControlPlugin(Star):
 
         「攒一下再算」的理由：批量导入 / 连续纠错时会连着触发很多次，
         每次立刻烧一次嵌入调用既费额度又没必要 —— 加个小延迟合并。
+
+        v0.23.5 第三轮：**脏标记 + 自动补跑**。此前只有 `policy="skip"` 去重：
+        构建期间（启动补算、或上一轮 debounce 还在跑）来的写入请求会被直接丢弃，
+        而构建结束后没有任何补偿 —— 那条新知识要等「下一次写入」或「下次启动」
+        才补上向量，中间一直缺。现在先把标记立起来（`_vec_pending`）再尝试排程：
+        排程被 skip 掉也没关系，正在跑的那一轮会在收尾前看到标记、自己再跑一圈。
         """
         if not self._kb_semantic():
             return
+        # 先置标记、再 spawn：这个顺序保证「排程被丢弃」不会把这次写入一起丢掉
+        # （正在跑的那一轮收尾时会复查标记；已经返回的那一轮会把这次正常排上）。
+        self._vec_pending = True
         # policy="skip"：已有一轮在排队/进行中就把这次丢弃，等它把这批一起带走。
         # v0.23.5 外部复核：名字必须与启动补算一致（`KB_VECTORS_TASK`）才谈得上去重 ——
         # 此前这里用 "kb_vec_debounce"、启动用 "kb_semantic"，登记册按名字配对，
         # 于是两条路径能同时改同一份 SemanticIndex 与同一个 .vec.npz。
-        self._spawn_bg(self.KB_VECTORS_TASK, self._kb_debounced_vectors(), policy="skip")
+        self._spawn_bg(self.KB_VECTORS_TASK, self._kb_vector_rounds(), policy="skip")
 
-    async def _kb_debounced_vectors(self) -> None:
-        """延后一小会儿再算，让连续的写入合并成一轮。"""
+    async def _kb_vector_rounds(self, delay: float = 2.0, force: bool = False) -> None:
+        """向量补算的**唯一**执行入口（启动补算 / 写入补算 / 换模型整库重算共用）。
+
+        - ``delay``：先把这一小会儿的连续写入攒成一批（启动时传 0，不用等）。
+        - ``force``：只在**第一轮**整库重算（换嵌入模型用），补跑轮次回到增量。
+        - 每跑完一轮复查 ``_vec_pending``：期间有新写入就再跑一轮，直到追平。
+          ``build_vectors()`` 是按「当前条目表的 missing()」算的，所以下一轮天然
+          覆盖新条目，不需要记住具体是哪条脏了。
+        - 落盘告警不再被吞：``build_vectors()`` 返回的 ``save_warning`` 进日志。
+        """
         try:
-            await asyncio.sleep(2.0)
-            await self._kb_build_semantic()
+            if delay:
+                await asyncio.sleep(delay)
+            while True:
+                # 先复位、再构建：构建期间来的写入会把标记重新立起来 → 再跑一轮。
+                self._vec_pending = False
+                res = await self._kb_build_semantic(force=force)
+                force = False
+                if isinstance(res, dict) and res.get("save_warning"):
+                    self.logger.warning(
+                        "知识库向量索引落盘告警：%s", res["save_warning"],
+                    )
+                if not self._vec_pending:
+                    break
         except Exception as e:
             self.logger.debug("知识库向量补算调度异常（已忽略）: %s", e)
 
@@ -1740,6 +1814,9 @@ class McControlPlugin(Star):
 
         老版本 AstrBot 没有该字段时**宁可不提醒**（权限闸门本身仍然拦得住），
         也绝不回退去改写 system_prompt。
+
+        v0.23.5：元素改由 `_make_text_part()` 构造（优先官方 `TextPart`）——
+        详见该函数的说明，这是 GitHub issue 反馈的那次「所有 LLM 请求全挂」的修复。
         """
         if not blocks:
             return
@@ -1750,7 +1827,7 @@ class McControlPlugin(Star):
             )
             return
         for block in blocks:
-            parts.append({"type": "text", "text": block})
+            parts.append(_make_text_part(block))
 
     @filter.on_llm_request()
     async def _inject_permission_hint(
@@ -3558,7 +3635,17 @@ class McControlPlugin(Star):
         if not self._knowledge.state.learning:
             return "知识库学习已关闭，不会写入任何知识。"
         entry = self._knowledge.save_entry(topic, content, source="llm_learn")
+        # v0.23.5 第三轮：落盘结果要当场看。磁盘满 / 只读 / 目录被删时，条目只在
+        # 内存里 —— 重启即失，而工具却回「✓ 已沉淀」，用户会以为知识已经记住了。
+        save_ok = bool(getattr(self._knowledge, "last_save_ok", True))
+        save_err = getattr(self._knowledge, "last_save_error", "")
         self._kb_touch_vectors()
+        if not save_ok:
+            return (
+                f"⚠ 知识【{entry['topic']}】只写进了**内存**，落盘失败"
+                f"（{save_err or '未知原因'}）—— 重启后会丢失，"
+                f"请检查数据目录权限 / 磁盘空间后重试。\n{content}"
+            )
         if entry["status"] == "pending":
             return (
                 f"⏳ 知识已提交【{entry['topic']}】待管理员审批（自动应用已关闭）。\n"
@@ -3597,7 +3684,16 @@ class McControlPlugin(Star):
         entry = self._knowledge.correct_entry(topic, correction)
         if entry is None:
             return f"知识库中不存在「{topic}」，请用 mc_save_knowledge 新增。"
+        save_ok = bool(getattr(self._knowledge, "last_save_ok", True))
+        save_err = getattr(self._knowledge, "last_save_error", "")
         self._kb_touch_vectors()
+        if not save_ok:
+            # 同上：没落盘的「已纠正」比不纠正更坏 —— 重启后错误条目原样复活，
+            # 而用户以为已经修过了。
+            return (
+                f"⚠ 纠正【{entry['topic']}】只写进了**内存**，落盘失败"
+                f"（{save_err or '未知原因'}）—— 重启后会丢失。\n{correction}"
+            )
         return (
             f"✓ 知识已纠正【{entry['topic']}】（状态: {entry['status']}）\n"
             f"{correction}"

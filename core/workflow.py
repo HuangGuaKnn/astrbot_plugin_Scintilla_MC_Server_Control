@@ -389,6 +389,8 @@ class MCWorkflow:
                 request, kb_text, dict_text, umo=umo
             )
             created = []
+            #: v0.23.5 第三轮：写进了内存但**没落盘**的条目（重启即失 → 不能报成功）
+            unsaved: list[str] = []
             if eng and eng.get("templates"):
                 for tpl in eng["templates"]:
                     topic = str(tpl.get("topic", "")).strip()
@@ -396,7 +398,14 @@ class MCWorkflow:
                     if topic and content and kb is not None:
                         try:
                             kb.save_entry(topic, content, source="agent_engineer")
-                            created.append(topic)
+                            if getattr(kb, "last_save_ok", True):
+                                created.append(topic)
+                            else:
+                                unsaved.append(topic)
+                                self.logger.warning(
+                                    "模板写库未落盘 %s: %s", topic,
+                                    getattr(kb, "last_save_error", ""),
+                                )
                         except Exception as e:
                             self.logger.warning("模板写库失败 %s: %s", topic, e)
                 if created:
@@ -409,6 +418,11 @@ class MCWorkflow:
                                 for x in eng["templates"]
                             ]
                         )
+                    )
+                if unsaved:
+                    kb_text = (
+                        f"{kb_text}\n\n【⚠ 以下模板只写进了内存、未落盘（重启后会丢失）】\n"
+                        + "\n".join(f"- {t}" for t in unsaved)
                     )
             self.logger.info("模板工程师产出: %s", created or eng)
 
@@ -482,7 +496,15 @@ class MCWorkflow:
                 if topic and content and kb is not None:
                     try:
                         kb.save_entry(topic, content, source="agent_corrector")
-                        fixed.append(topic)
+                        if getattr(kb, "last_save_ok", True):
+                            fixed.append(topic)
+                        else:
+                            # v0.23.5 第三轮：没落盘的纠正不算「已修正」—— 否则报告
+                            # 说修好了，重启后错误条目原样复活。
+                            self.logger.warning(
+                                "纠错写库未落盘 %s: %s", topic,
+                                getattr(kb, "last_save_error", ""),
+                            )
                     except Exception as e:
                         self.logger.warning("纠错写库失败 %s: %s", topic, e)
             if fixed:

@@ -101,6 +101,50 @@
 - **提示词 / 配色两个配置写接口丢了落盘结果**（外部复核补充）：`save_prompts` / `reset_prompt` / `save_colors`
   同样在写配置，却没挂 `save_warning`，界面永远显示「已保存」，重启后改动凭空消失 —— 与知识库那三条同一类问题，
   当时只改了 `save_settings` 与知识库端点。现在三个接口都回 `save_warning`，前端「提示词」「外观」两处也接上同一套告警渲染。
+- **知识库开关状态接口把外部值直传 `set()`**（外部复核补充，本批**第 9 个落点** —— 提交标题与本节记「七处」，
+  逐条数是 9 处）：`core/web_api.py::update_kb_state` 此前用裸 `bool(value)` 解析，而 `bool("false")` 是 `True`
+  —— 非前端客户端提交字符串「关」，反而把知识库开关**打开**（与布尔设置项同一类 fail-open）。
+  现在走严格解析（JSON 布尔 / 0·1（含浮点）/ `true|false` 词表，无法判定即报错，缺省与空串 = 本次不动），
+  并补 `_state_save_warning(kb)`：开关状态落盘失败不再假装保存成功。
+  > 自查漏报：这一处此前**一条断言都没有**（全 `tests/` 搜不到 `update_kb_state` / `_state_save_warning`），
+  > 也没写进 CHANGELOG —— 两条都在本轮补掉（见「测试」）。
+  > 补断言时又顺手逮到一处小的：`_state_save_warning(kb)` 直接取 `kb.state`，没有 `state` 属性的对象会让接口
+  > `AttributeError`（隔壁 `_kb_save_warning` 是防着的）—— 已按同一口径改成
+  > `getattr(kb, "state", None)`：告警是锦上添花，不能反过来把接口炸了。
+
+### 修复（第三轮复核：判据不可靠 + 失败被当成成功）
+
+> 一句话：这一轮收的不是「哪根线接错了」，而是**判据本身站不住**（靠三档特征猜日志轮转、
+> 靠 `wait_for` 的纸面超时）以及**失败被包装成成功**（落盘失败照样回 `ok:True`）。
+
+- **日志轮转的第四档：内容锚点**（复核 A）：判据此前只有「文件变短 / `st_ino` 变 / 尺寸相同且文件头指纹变」
+  三档 —— 「同一 inode 原地重写、新内容比旧 offset 更长」整类漏网：`size > _pos` 成立、读位置却停在旧内容
+  的半截上，从此读到的全是**错位字节**。现在补第四档**内容锚点**（回读上次已消费掉的最长 64 字节，对不上
+  即判轮转）。新用例刻意把样本做成「躲过另外三档」：inode 不变、文件头前 300 字节不变、长度反而更长。
+- **日志监听：一直读不到、以及在读什么都看不见**（复核 B）：文件始终不在 / 读取始终失败，此前只是一遍遍
+  安静重试；`health()` 现在补上**在场标志、连续缺失轮数、滞后字节数** —— 概览页与工具问得出
+  「它到底在看哪个文件、落后多少」。
+- **超长单行的余部被当成新行**（复核 B）：单行超过 `MAX_LINE_CHARS` 时截断，剩下的半截此前会在下一轮
+  被当成一条**新行**解析（可能凭空造出半个事件）。现在余部**丢弃到下一个换行**为止。
+- **`stop()` 的超时是纸面的**（复核 C）：`asyncio.wait_for` 在「被等待的任务吞掉取消」时会一直等下去 ——
+  `Task.cancel()` 只是把取消**委托**给被等的任务，它不理会就永远不返回，5 秒的承诺形同虚设。
+  改用 `asyncio.wait`（留引用、超时即放手），被放弃的任务显式收尾。
+- **知识库：等待嵌入期间被删掉的条目会变成幽灵向量**（复核 D）：提交向量索引前条目已被删，索引里仍写进
+  它的 topic → `search()` 走到 `_entry_view` 直接 `KeyError`，**整次检索报错**；写入后的补算被
+  `policy="skip"` 丢掉时也没有补偿。现在**提交前复检** + 脏标记补跑。
+- **落盘失败不再假成功**（复核 E）：向量索引 / 知识条目 / 预设注册表三处，写盘失败必须同时出现在
+  **工具结果、日志、接口响应与状态**里（`save_health()`、`save_ok`）—— 此前是「内存里成功即成功」，
+  用户看到的是「已保存」，重启后回退。
+- **注入内容块必须是核心认得的对象（GitHub issue 反馈）**：插件 v0.23.3 + AstrBot v4.27.5 上，
+  `mcs` 指令一切正常，但**所有走 LLM 的能力全挂** —— 一句「mc 服务器状态」就报
+  `Error occurred while processing agent: 'dict' object has no attribute 'model_dump_for_context'`，
+  且报错位置在核心的 `agent_sub_stages.internal`，极容易被当成上游的锅。根因：AstrBot 4.27.x 的
+  `ProviderRequest.assemble_context()` 会对 `extra_user_content_parts` 里每个元素**无条件**调用
+  `part.model_dump_for_context()`，而插件从 v0.21.0 起塞进去的是裸 dict；该字段文档写着「支持 dict 或
+  ContentPart 对象」，核心 master 分支之后才补上 `isinstance(part, dict)` 兼容分支 —— **文档先行、代码滞后**。
+  现在注入点统一走新构造器 `_make_text_part()`：取得到官方 `TextPart` 就用它，只有更老的版本（没有该模块）
+  才退回 dict（那种核心自带 dict 兼容分支）。两条路都不许再出现「把裸 dict 丢给只认对象的核心」。
+  另外 `docs/faq.md` 补了第 12 条排查条目（现象 → 原因 → 升级建议），免得下一个用户又被那句报错带偏。
 
 ### 重构
 
@@ -163,19 +207,25 @@
 
 ### 测试
 
-- 新增 8 个回归用例、**355 项断言**：
+- 新增 10 个回归用例、**436 项断言**（现跑现抄）：
   `test_v0235_bool_parse.py`（61）、`test_v0235_unknown_command_denied.py`（44）、
-  `test_v0235_say_limits.py`（46）、`test_bg_tasks_shutdown.py`（46）、
+  `test_v0235_say_limits.py`（46）、`test_bg_tasks_shutdown.py`（45）、
   `test_v0235_save_failure_visible.py`（39）、`test_v0235_input_and_log_limits.py`（35）、
   `test_v0235_password_writeonly.py`（28）、
-  `test_v0235_review_round2.py`（56，第二批复核：配置键闭环 + 日志轮转/健康度/超时 + 热重载凭证 + 收口留档）。
-- 全量 **39 个 `test_*.py` + 14 个 `ui_*.py` 全部通过**（本机 Edge 通道），`compileall` 通过。
-- 全量 **38 个 `test_*.py` + 14 个 `ui_*.py` 全部通过**（本机 Edge 通道），`compileall` 通过。
+  `test_v0235_review_round2.py`（58，第二批复核：配置键闭环 + 日志轮转/健康度/超时 + 热重载凭证 + 收口留档）、
+  `test_v0235_review_round3.py`（63，第三批复核：轮转第四档内容锚点 + 健康度补项 + `stop()` 超时语义 + 幽灵向量 + 落盘失败不许假成功 + **第 9 个落点的端到端复现**（`set_state` 吃字符串「false」不许变成「开」））、
+  `test_v0235_upstream_content_part.py`（17，GitHub issue 回归：复刻 4.27.5 的无条件消费逻辑，**修复前当场变红**）。
+- **`test_bg_tasks_shutdown.py` 补「通过 N 项」自报汇总**：该文件此前只在失败时记账，核对断言数得人工数行
+  —— 上一份核验单里「记 46、实跑 45」那 1 项之差就是这么来的；现在现跑现抄，数字对不上就是它自己的错。
+- 全量 **41 个 `test_*.py` + 14 个 `ui_*.py` 全部通过**（本机 Edge 通道），`compileall` 通过。
   全套不只跑新增用例：`test_review_compliance.py` 曾在 ⑦ 的整改中拦下「误用标准库 `logging`」，
   本轮又靠全套抓出 `test_help_and_reload.py` 里一条**加了喊话配置项后失效的项数断言** ——
   「新写的测试全绿」从来不等于「没碰坏别的」。
 - `test_review_compliance.py` 新增一条上架护栏：后台任务模块的日志器必须来自 `astrbot.api`
   （v0.22.1 市场审核驳回项），并同步把「能力降级提示注入」的预期计数修正为 3。
+- `test_review_compliance.py` 的注入点护栏跟着修法走：从「`parts.append({"type": "text", ...})` 字符串在位」
+  改为「统一走 `_make_text_part()`，且裸 dict 写法不再出现」—— 护栏不钉死实现细节，
+  只钉死**那条不许退回去的红线**（裸 dict 丢给只认对象的核心 = 所有 LLM 请求全挂）。
 
 ## [v0.23.4] - 2026-10-01（预发布）
 
