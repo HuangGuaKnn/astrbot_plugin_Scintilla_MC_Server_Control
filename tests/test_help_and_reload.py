@@ -178,7 +178,8 @@ F2, _ = build(
 notfound = F2()._schedule_hot_reload("不存在的插件")
 print("  实体缺失分支 →", notfound)
 
-async def full():
+async def full(deny_bg: bool = False):
+    """跑一次全量重载分支；``deny_bg=True`` 模拟「已有一次重载在排队」。"""
     F3, _ = build(
         "    def _plugin_manager(self): return object()\n" +
         "\n".join("    " + l for l in fn_src.splitlines()) + "\n",
@@ -188,13 +189,33 @@ async def full():
     f = F3()
     f.logger = type("L", (), {"info": lambda *a: None, "warning": lambda *a: None})()
     f.__class__.logger = f.logger
-    return f._schedule_hot_reload(None)
+    # v0.23.x：_schedule_hot_reload 现在经 self._spawn_bg() 登记后台任务。
+    # 本用例是 ast 抽真源码塞进裸 Fake 类执行的，新协作者在此补桩；
+    # 顺带把这段变成正向断言 —— 热重载确实进了任务册（策略 skip）。
+    seen = []
+
+    def _record_bg(name, coro, policy="replace", **kw):
+        seen.append((name, policy, kw.get("cancel_on_shutdown", True)))
+        coro.close()          # 只验证「登记了」，不真跑重载
+        return None if deny_bg else object()   # 非 None = 登记成功
+
+    f._spawn_bg = _record_bg
+    return f._schedule_hot_reload(None), seen
 
 
-ok_msg = asyncio.run(full())
+ok_msg, seen = asyncio.run(full())
 print("  全量重载分支 →", ok_msg)
 check("缺失插件文案不再提 mcs 热重载", "mcs 热重载" not in notfound and "插件名留空" in notfound)
 check("全量重载提示仍告知无需重启", "无需重启 AstrBot" in ok_msg)
+check("热重载已登记进后台任务册（v0.23.x 收口）", seen == [("hot_reload", "skip", False)], seen)
+check("热重载带收口豁免（重载中会触发 terminate，不能被取消）",
+      seen and seen[0][2] is False, seen)
+
+# 已有一次在排队 → skip 丢弃了本次，文案不得谎报「已安排」
+dup_msg, dup_seen = asyncio.run(full(deny_bg=True))
+print("  已有重载在排队 →", dup_msg)
+check("重复排重载时不谎报「已安排」",
+      "已安排" not in dup_msg and "排队" in dup_msg, dup_msg)
 
 print("\n=========== 6. 面向用户文案全局扫描 ===========")
 targets = [MAIN, PLUGIN / "core" / "web_api.py", SCHEMA,

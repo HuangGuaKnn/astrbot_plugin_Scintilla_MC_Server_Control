@@ -26,6 +26,20 @@ import re
 from pathlib import Path
 from typing import Awaitable, Callable
 
+# 规范要求：插件日志器必须来自 astrbot.api（不得使用标准库 logging）。
+from astrbot.api import logger
+
+# ---- v0.23.5：读取上限 ----
+# 原先这里 `data = f.read()` 是**无上限**的：整合包把日志刷屏或甩出一段崩溃堆栈时，
+# 一次轮询就会把整段积压读进内存（几十 MB 也照读），而 Windows 上日志被独占写入、
+# 读得越慢积压越多，正反馈。
+#
+#: 单次读取上限。一次最多读这么多，读不完下次接着读；下面的截断逻辑保证只消费完整行。
+MAX_READ_BYTES = 1024 * 1024
+#: 允许滞后的上限。积压超过它说明消费已追不上产出，直接跳到文件尾部并记一条日志 ——
+#: 丢的是历史事件，换来的是「绝不 OOM、也绝不让待处理数据越滚越大」。
+MAX_LAG_BYTES = 8 * 1024 * 1024
+
 # 事件类型常量
 EVENT_CHAT = "chat"
 EVENT_WHISPER = "whisper"
@@ -177,11 +191,25 @@ class LogWatcher:
                 pass
         if size == self._pos:
             return
+        # v0.23.5：滞后保护。上面的读取上限让每次最多前进 1 MiB —— 若消费速度
+        # 长期低于产出速度（模组刷屏），积压会无限增长、_pos 越落越远。
+        # 超过上限就直接追到尾部：宁可漏掉这段的播报事件，也不能让内存里
+        # 挂着一个永远清不完的待处理区。
+        lag = size - self._pos
+        if lag > MAX_LAG_BYTES:
+            logger.warning(
+                "日志积压 %.1f MiB 超过上限（%d MiB），跳过历史直接追到文件尾部；"
+                "这段的播报事件会缺失",
+                lag / 1048576.0, MAX_LAG_BYTES // 1048576,
+            )
+            self._pos = size
+            return
         try:
-            # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）
+            # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
+            # 读多少有上限，见 MAX_READ_BYTES。
             with open(self.log_path, "rb") as f:
                 f.seek(self._pos)
-                data = f.read()
+                data = f.read(MAX_READ_BYTES)
         except OSError:
             return
         if not data:
@@ -190,6 +218,15 @@ class LogWatcher:
         if not data.endswith(b"\n"):
             cut = data.rfind(b"\n")
             if cut == -1:
+                # 整段一个换行都没有 = 超长单行（某些模组会把整段堆栈挤成一行）。
+                # 这里**绝不能**让 _pos 原地不动：读满上限却又不前进 = 永久卡死，
+                # 监听循环从此再无产出，而且外表看不出任何异常。
+                if len(data) >= MAX_READ_BYTES:
+                    logger.warning(
+                        "日志出现 %d 字节的无换行片段（疑似超长单行），已整段跳过",
+                        len(data),
+                    )
+                    self._pos += len(data)
                 return
             data = data[: cut + 1]
         self._pos += len(data)

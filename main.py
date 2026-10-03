@@ -30,6 +30,7 @@ try:
 except ImportError:  # 可选依赖：仅「mcs 状态」的进程指标（内存/CPU/时长）需要
     psutil = None
 
+from .core.bg_tasks import BackgroundTasks
 from .core.command_result import (
     STATUS_LABEL,
     CommandResult,
@@ -287,6 +288,11 @@ class McControlPlugin(Star):
         #: （锁对象在无事件循环时创建是安全的：Python 3.10+ 起 asyncio.Lock 不再绑定
         #:   创建时的循环，会在首次 await 时才取当前循环。）
         self._rcon_lock = asyncio.Lock()
+        #: v0.23.x：后台任务登记册 —— 统一持有 / 去重 / 记异常 / 收口。
+        #: 老写法「create_task 丢出去不持引用」会让任务活过 terminate()：热重载后
+        #: 事件循环还在，它们继续往会话发通知、写向量、跑流水线，变成一个握着
+        #: 已卸载插件的幽灵任务（详见 core/bg_tasks.py 顶部说明）。
+        self._bg = BackgroundTasks(getattr(self, "logger", None))
         self._watcher: LogWatcher | None = None
         self._dictionary: ItemDictionary | None = None
         self._knowledge: ModKnowledgeBase | None = None
@@ -392,7 +398,8 @@ class McControlPlugin(Star):
                 # v0.21.41：语义通道开着就后台补算向量（不阻塞启动；失败不影响其它功能）
                 if self._kb_semantic():
                     self._inject_embed_fn()
-                    asyncio.create_task(self._kb_build_semantic())
+                    # v0.23.x：不阻塞启动，但登记进任务册 —— 卸载时会跟着取消
+                    self._spawn_bg("kb_semantic", self._kb_build_semantic(), policy="skip")
                 # v0.21.42：精排开关开着就注入重排序调用（无需预计算，注完即用）
                 if self._kb_rerank():
                     self._inject_rerank_fn()
@@ -438,6 +445,15 @@ class McControlPlugin(Star):
                 )
 
     async def terminate(self):
+        # v0.23.x：后台任务先收口 —— 取消 + 等待。
+        # 顺序有意放在最前：先把「四处乱跑的后台任务」停掉，再拆 watcher / RCON，
+        # 否则收尾期间还会有任务伸手去用已经关掉的连接。
+        try:
+            n = await self._bg.shutdown()
+            if n:
+                self.logger.info("后台任务收口：已取消 %d 个在跑任务", n)
+        except Exception as e:
+            self.logger.warning("后台任务收口异常（已忽略）: %s", e)
         if self._watcher:
             await self._watcher.stop()
             self._watcher = None
@@ -450,6 +466,19 @@ class McControlPlugin(Star):
             self._rcon = None
 
     # ================= 内部工具 =================
+
+    def _spawn_bg(self, name: str, coro, *, policy: str = "replace",
+                  cancel_on_shutdown: bool = True):
+        """把后台协程登记进任务册（全仓统一入口，别再裸 create_task）。
+
+        ``policy`` 语义见 core/bg_tasks.py：replace / skip / parallel。
+        ``cancel_on_shutdown=False`` 是「收口豁免」，只给热重载那种
+        「自己会结束、且做的事恰好会触发 terminate」的一次性任务用。
+        无事件循环或插件已收口时安全丢弃（协程会被 close，不产生
+        "coroutine was never awaited" 警告），此时返回 None。
+        """
+        return self._bg.spawn(name, coro, policy=policy,
+                              cancel_on_shutdown=cancel_on_shutdown)
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         """读取配置项：优先分组内，回退旧版平铺位置（兼容未迁移的配置）。"""
@@ -525,25 +554,42 @@ class McControlPlugin(Star):
         return len(moved)
 
     def _save_config(self) -> bool:
-        """落盘当前配置（优先走 AstrBotConfig.save_config）。"""
+        """落盘当前配置（优先走 AstrBotConfig.save_config）。
+
+        v0.23.5：返回值此前被两个调用点直接丢掉，且回退分支连日志都没有 ——
+        失败时调用方一无所知。现在把最近一次结果记在实例上（_last_cfg_save_ok
+        / _last_cfg_save_error），供 WebUI 保存后核对「到底落盘了没」。
+        """
         saver = getattr(self.config, "save_config", None)
         if callable(saver):
             try:
                 saver()
+                self._last_cfg_save_ok = True
+                self._last_cfg_save_error = ""
                 return True
             except Exception as e:
                 try:
                     self.logger.warning("配置保存失败：%s", e)
                 except Exception:
                     pass
+                self._last_cfg_save_ok = False
+                self._last_cfg_save_error = f"save_config() 抛出：{e}"
         try:
             path = self._cfg_path()
             data = json.dumps(self.config, ensure_ascii=False, indent=4)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(data, encoding="utf-8")
             tmp.replace(path)
+            self._last_cfg_save_ok = True
+            self._last_cfg_save_error = ""
             return True
-        except Exception:
+        except Exception as e:                       # noqa: BLE001
+            self._last_cfg_save_ok = False
+            self._last_cfg_save_error = f"回退写盘失败：{e}"
+            try:
+                self.logger.warning("配置回退写盘失败：%s", e)
+            except Exception:
+                pass
             return False
 
     def _set_cfg_batch(self, values: dict) -> list:
@@ -1035,13 +1081,10 @@ class McControlPlugin(Star):
         """
         if not self._kb_semantic():
             return
-        try:
-            task = getattr(self, "_kb_vec_task", None)
-            if task is not None and not task.done():
-                return            # 已有一轮在排队/进行中，等它把这批一起带走
-            self._kb_vec_task = asyncio.create_task(self._kb_debounced_vectors())
-        except Exception:
-            pass
+        # policy="skip"：已有一轮在排队/进行中就把这次丢弃，等它把这批一起带走。
+        # （登记册取代了原先手搓的 _kb_vec_task 判空 —— 顺带把「并发跑同一个
+        #   SemanticIndex」的口子堵上，force 重建不会再踹掉正在算的那一轮。）
+        self._spawn_bg("kb_vec_debounce", self._kb_debounced_vectors(), policy="skip")
 
     async def _kb_debounced_vectors(self) -> None:
         """延后一小会儿再算，让连续的写入合并成一轮。"""
@@ -1426,6 +1469,34 @@ class McControlPlugin(Star):
             return latched
         return self._deny(event, f"「{action}」属于管理操作，仅管理员可用。", tool=tool)
 
+    # ---- v0.23.5：LLM 工具入参的长度上限 ----
+    # 此前**没有任何统一限制**：LLM 偶发把整段对话 / 一整个文件塞进 command 或
+    # message 时，会原样拼进 RCON 报文发给服务器（服务器侧被截断或卡住），
+    # 而插件这边既不拦也不提示。这里在**进入权限闸门之前**先做一次粗筛。
+    #
+    # 取值理由：
+    #  · 命令 8000 —— 带整套 NBT 的 give / summon 可以相当长，需留足空间。
+    #    原版命令的理论上限远大于此，这里挡的是「明显不是一条命令」的输入。
+    #  · 广播 / 反馈 500 —— 游戏内聊天栏一行约 256 字符，全屏标题更短；
+    #    再长的内容玩家根本看不到，只会白占一个 RCON 报文。
+    MAX_COMMAND_CHARS = 8000
+    MAX_MESSAGE_CHARS = 500
+
+    @staticmethod
+    def _too_long(value: str, limit: int, label: str) -> str | None:
+        """入参超长则返回给 LLM 的拒绝文案，否则返回 None（v0.23.5）。
+
+        只做长度粗筛，不改动任何既有语义：合法输入一律 None，
+        后续权限闸门与版本守门照旧执行。
+        """
+        n = len(value or "")
+        if n <= limit:
+            return None
+        return (
+            f"{label}过长（{n} 字符，上限 {limit}）。请缩短后重试；"
+            "需要复杂 NBT 或批量操作用 mc_workflow。"
+        )
+
     async def _safe_command(
         self, event: AstrMessageEvent, command: str, tool: str = "mc_execute_command"
     ) -> str | None:
@@ -1444,7 +1515,10 @@ class McControlPlugin(Star):
                 return latched
         policy = str(self._cfg("danger_command_policy", "whitelist") or "whitelist")
         is_admin = self._is_admin(event)
-        denied = check_command_policy(command, policy=policy, is_admin=is_admin)
+        # v0.23.5：未知命令（模组 / 整合包自定义）默认拒绝 —— 认不出就不放行
+        allow_unknown = bool(self._cfg("allow_unknown_commands", False))
+        denied = check_command_policy(command, policy=policy, is_admin=is_admin,
+                                      allow_unknown=allow_unknown)
         if denied:
             return self._deny(event, denied, tool=tool, command=command)
         return None
@@ -1885,6 +1959,13 @@ class McControlPlugin(Star):
         """
         if not self._tool_enabled("mc_execute_command"):
             return "该功能已在插件配置中停用。"
+        # v0.23.5：入参粗筛，放在权限闸门之前（省一次无谓的闸门与 RCON 往返）
+        too_long = self._too_long(command, self.MAX_COMMAND_CHARS, "命令")
+        if too_long:
+            return too_long
+        too_long = self._too_long(feedback, self.MAX_MESSAGE_CHARS, "反馈文案")
+        if too_long:
+            return too_long
         denied = await self._safe_command(event, command, tool="mc_execute_command")
         if denied:
             return denied
@@ -1980,6 +2061,9 @@ class McControlPlugin(Star):
             return "该功能已在插件配置中停用。"
         if not str(message or "").strip():
             return "请提供要广播的内容。"
+        too_long = self._too_long(message, self.MAX_MESSAGE_CHARS, "广播内容")
+        if too_long:
+            return too_long
         if not self._is_admin(event):
             latched = self._latch_hit(event, "mc_broadcast")
             if latched:
@@ -2554,9 +2638,22 @@ class McControlPlugin(Star):
                 self.logger.warning("[热重载] 执行失败: %s", e)
 
         try:
-            asyncio.get_running_loop().create_task(_runner())
+            asyncio.get_running_loop()
         except RuntimeError:
             return "当前没有可用的 asyncio 事件循环，热重载已放弃。"
+        # v0.23.x：登记在册（policy="skip" —— 连点两次不会排两次重载）。
+        # cancel_on_shutdown=False 是关键：_runner 内部 await pm.reload()，而 AstrBot
+        # 的原生 reload 流程本身就会调用本插件的 terminate()（terminate → unbind →
+        # load）。收口时把它取消，等于把重载从中间掐断，插件会停在半加载状态 ——
+        # 比幽灵任务严重得多。它是一次性短任务，自行结束即归于无事。
+        task = self._spawn_bg("hot_reload", _runner(), policy="skip",
+                              cancel_on_shutdown=False)
+        if task is None:
+            # skip 丢弃了本次请求 —— 这时绝不能说「已安排」，那是谎报
+            return (
+                "已经有一次重载在排队了，这次没重复排～ 等它跑完再试哦。"
+                "（热重载大约 1 秒完成，之后新代码立即生效）"
+            )
         return (
             f"已安排重载 {label}：{mode} → 重新导入。约 1 秒后完成，"
             "之后新代码立即生效（无需重启 AstrBot）♡"

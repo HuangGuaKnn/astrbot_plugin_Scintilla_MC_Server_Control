@@ -1141,6 +1141,14 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       被拒绝时不只是「拦住」，还会让决策 AI 明白这是权限判定、不是用法问题（详见下方
       <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
     </div>
+    <!-- v0.23.5：未知命令闸门。只在黑名单策略下生效，因此跟着策略显隐（见 syncPolicyUI） -->
+    <div class="sw-row" id="row_allow_unknown" style="margin-top:14px">
+      <div class="sw-t"><b>允许未知命令</b>
+        <span>不在已知命令表里的模组 / 整合包自定义命令。<b>默认关闭 = 一律拒绝</b>：
+          这类命令无法判定权限等级，危险命令清单也认不出它们 ——
+          「认不出来就放行」等于把改世界、发物品这整类模组能力对所有玩家敞开</span></div>
+      <label class="sw"><input type="checkbox" id="cfg_allow_unknown"><span class="sl"></span></label>
+    </div>
     <select id="cfg_danger_policy" hidden>
       <option value="whitelist">whitelist</option>
       <option value="blacklist">blacklist</option>
@@ -1902,7 +1910,9 @@ async function saveEntryDetail(){
     return;
   }
   closeEntryDetail();
-  setNotice($("kb_notice"), `✓ 已保存条目「${topic}」`);
+  // v0.23.5：落盘失败时别报"✓ 已保存" —— 内存写进去了，磁盘没写成功，重启就没了
+  if(!showSaveWarn(r, $("kb_notice")))
+    setNotice($("kb_notice"), `✓ 已保存条目「${topic}」`);
   await kbReload();
 }
 // ============ 知识库预设（v0.18.0） ============
@@ -2369,15 +2379,31 @@ function bindPrompts(){
 }
 
 // ============ 设置页 ============
-// 字段表：[控件id, 配置键, 类型(b=布尔/s=文本/n=数字/l=列表), 布尔默认值]
+// 字段表：[控件id, 配置键, 类型(b=布尔/s=文本/n=数字/l=列表/p=只写密码), 布尔默认值]
 // —— 与后端 _conf_schema.json 的配置键一一对应（少量键由「会话目标选择器 / 符号标签控件」维护）
+// v0.23.5：只写字段（密码）的「是否已配置」。后端在 settings 响应里给，
+// 前端只拿它渲染占位提示，永远不拿它拼出密码内容。
+let PWD_CONFIGURED = false;
+const PWD_PLACEHOLDER_ON  = "已配置 —— 留空则保持不变";
+const PWD_PLACEHOLDER_OFF = "尚未配置 —— 请填写服务端 rcon.password";
+// 刷新密码框提示；justSaved=true 表示这次是保存成功后调的（提交过新值即算已配置）
+function syncPwdPlaceholder(justSaved){
+  const el = $("cfg_rcon_password");
+  if(!el) return;
+  if(justSaved && el.value.trim()) PWD_CONFIGURED = true;
+  el.value = "";
+  el.placeholder = PWD_CONFIGURED ? PWD_PLACEHOLDER_ON : PWD_PLACEHOLDER_OFF;
+}
+
 const CFG_FIELDS = [
   // 基础 · 连接与安全
   ["cfg_remote_rcon_mode","remote_rcon_mode","b",false],
   ["cfg_server_dir","server_dir","s"],
   ["cfg_rcon_host","rcon_host","s"],
   ["cfg_rcon_port","rcon_port","n"],
-  ["cfg_rcon_password","rcon_password","s"],
+  // v0.23.5：rcon_password 用只写类型 p —— 后端不回传密文（只回「是否已配置」），
+  // 前端也绝不回填；留空 = 保持原值，填了才提交。
+  ["cfg_rcon_password","rcon_password","p"],
   ["cfg_rcon_timeout","rcon_timeout","n"],
   ["cfg_rcon_end_mode","rcon_end_mode","s"],
   ["cfg_rcon_probe_command","rcon_probe_command","s"],
@@ -2386,6 +2412,8 @@ const CFG_FIELDS = [
   ["cfg_item_syntax","item_syntax_override","s"],
   ["cfg_admin_ids","admin_ids","l"],
   ["cfg_danger_policy","danger_command_policy","s"],
+  // v0.23.5：黑名单下未知命令（模组 / 整合包自定义）默认拒绝；此项可恢复旧行为
+  ["cfg_allow_unknown","allow_unknown_commands","b",false],
   // v0.23.3：前置提醒由「开关」升级为「触发时机」+ 可手动调整的话题词表。
   // 旧键 permission_hint_injection 已被 permission_hint_mode 取代，不再在设置页暴露
   // （后端仍兼容读取：显式 false 等价于 off）。
@@ -2575,6 +2603,9 @@ function syncPolicyUI(){
     const card = r.closest(".pm");
     if(card) card.classList.toggle("on", r.checked);
   });
+  // v0.23.5：未知命令闸门只在黑名单下生效 → 白名单时整行隐藏，免得摆个没用的开关
+  const rowAU = $("row_allow_unknown");
+  if(rowAU) rowAU.style.display = (v === "blacklist") ? "" : "none";
   const now = $("policy_now");
   if(now){
     now.textContent = "当前生效：" + (v === "whitelist" ? "白名单" : "黑名单");
@@ -3204,6 +3235,7 @@ async function loadSettings(){
   let cfg = (OV&&OV.config)||{};
   const r = await callGet("settings").catch(()=>({ok:false}));
   if(r.ok && r.settings) cfg = { ...cfg, ...r.settings };
+  if(r.ok && typeof r.rcon_password_configured === "boolean") PWD_CONFIGURED = r.rcon_password_configured;
   // mcs 指令组前缀跟随 AstrBot 唤醒词设置（不写死反斜杠；纯反斜杠唤醒词后端会按「无前缀」返回）
   const wpEl = $("cmd_prefix_tip");
   if(wpEl){
@@ -3225,6 +3257,12 @@ async function loadSettings(){
     const v = cfg[key];
     if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : !!v;
     else if(ty==="l") el.value = Array.isArray(v) ? v.join(", ") : (v==null?"":String(v));
+    else if(ty==="p"){
+      // v0.23.5 只写字段：后端从不回传密文，这里也绝不写入任何值 ——
+      // 免得把凭据摊在输入框里，也免得把占位的那串点当成真密码。
+      syncPwdPlaceholder(false);
+      continue;
+    }
     else {
       const val = (v===undefined||v===null||v==="") ? (S_DEFAULTS[id]||"") : v;
       ensureProviderOption(el, val);   // v0.21.43：下拉先补位，避免 el.value 静默失败把配置清空
@@ -3314,6 +3352,18 @@ async function loadSettings(){
   // 就能看见新结论（「来源：手动声明」会立刻亮出来）。
   refreshVersionCaps();
 }
+// v0.23.5：落盘失败告警。后端的写接口遇到「内存改成功、磁盘没写成功」时会回
+// save_warning —— 这类失败最阴：功能当下照用，只有重启后才暴露"改动全没了"。
+// 所以凡是有写操作的地方，拿到响应就顺手过一遍这里。
+function saveWarnText(r){
+  return (r && r.save_warning) ? String(r.save_warning) : "";
+}
+function showSaveWarn(r, el){
+  const w = saveWarnText(r);
+  if(w && el) setNotice(el, "⚠ " + w, true);
+  return w;
+}
+
 function collectSettings(){
   const s = {};
   for(const [id,key,ty] of CFG_FIELDS){
@@ -3322,6 +3372,12 @@ function collectSettings(){
     if(ty==="b") s[key] = el.checked;
     else if(ty==="l") s[key] = el.value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
     else if(ty==="n"){ const x = parseFloat(el.value); if(!isNaN(x)) s[key] = x; }
+    else if(ty==="p"){
+      // v0.23.5 只写字段：留空 = 保持原值（**不提交该键**），填了才提交。
+      // 后端同样会跳过空值，这里不提交只是让回包的 ignored 更干净。
+      const pv = el.value.trim();
+      if(pv) s[key] = pv;
+    }
     else s[key] = el.value.trim() || S_DEFAULTS[id] || "";
   }
   // 会话目标由选择器维护；未改动时原样回传，避免被空值覆盖
@@ -3335,6 +3391,9 @@ async function saveSettings(){
   setSaveNotice("保存中…");
   const r = await callPost("settings/save", { settings }).catch(()=>({ok:false,error:"请求失败"}));
   if(r.ok){
+    // v0.23.5：保存成功后清空密码框 —— 提交过新值就切成「已配置」提示，
+    // 没提交过则维持原状（后端返回的 configured 会在下次渲染时校正）。
+    syncPwdPlaceholder(true);
     // v0.17.1：插件未热重载时后端会静默忽略新键（保存看着成功、实际不生效）→ 明确提示
     const applied = r.applied || {};
     const ignored = Array.isArray(r.ignored) ? r.ignored : [];
@@ -3344,7 +3403,10 @@ async function saveSettings(){
       setSaveNotice("⚠ 有 " + lost.length + " 项后端未接受（" + lost.slice(0,3).join("、")
         + "）：插件可能未重载，请到 AstrBot「插件管理」重载本插件后重新保存", true);
     }else{
-      setSaveNotice("✓ " + (r.notice||"设置已保存"));
+      // v0.23.5：落盘失败时后端把 ⚠ 塞进了 notice 并回 config_saved=false ——
+      // 那种情况不能再在前面加个"✓"，直接按错误态显示。
+      const cfgSaved = (r.config_saved !== false);
+      setSaveNotice((cfgSaved ? "✓ " : "") + (r.notice || "设置已保存"), !cfgSaved);
     }
     await loadSettings();
     loadWorkflow();
@@ -3687,14 +3749,18 @@ function bind(){
     const topic = $("new_topic").value.trim(), content = $("new_content").value.trim();
     if(!topic || !content){ setNotice($("kb_notice"), "主题和内容不能为空", true); return; }
     const r = await callPost("kb/entry", { topic, content });
-    if(r.ok){ setNotice($("kb_notice"), "✓ 已写入知识库"); $("new_topic").value=""; $("new_content").value=""; kbReload(); }
+    if(r.ok){
+      if(!showSaveWarn(r, $("kb_notice"))) setNotice($("kb_notice"), "✓ 已写入知识库");
+      $("new_topic").value=""; $("new_content").value=""; kbReload();
+    }
     else setNotice($("kb_notice"), r.error||"写入失败", true);
   };
   $("btn_clear").onclick = async ()=>{
     const btn = $("btn_clear");
     armConfirm(btn, "清空全部", async ()=>{
       const r = await callPost("kb/clear");
-      setNotice($("kb_notice"), r.ok?"✓ 已清空":(r.error||"清空失败"), !r.ok);
+      if(!showSaveWarn(r, $("kb_notice")))
+        setNotice($("kb_notice"), r.ok?"✓ 已清空":(r.error||"清空失败"), !r.ok);
       if(r.ok) kbReload();
     });
   };
@@ -3749,11 +3815,23 @@ function bind(){
   document.addEventListener("click", async e=>{
     const b = e.target.closest("[data-act]"); if(!b) return;
     const { act, topic } = b.dataset;
-    if(act==="toggle"){ await callPost("kb/toggle",{topic,enabled:b.dataset.en==="1"}); kbReload(); }
+    // v0.23.5：这五个写操作原本**完全不看响应** —— 落盘失败时界面照样显示操作成功。
+    // 现在统一把后端回的 save_warning 摆到知识库提示条上（内存生效 ≠ 落盘成功）。
+    if(act==="toggle"){
+      const r = await callPost("kb/toggle",{topic,enabled:b.dataset.en==="1"}).catch(()=>({ok:false}));
+      showSaveWarn(r, $("kb_notice")); kbReload();
+    }
     else if(act==="view"){ openEntryDetail(topic); }
-    else if(act==="del"){ armConfirm(b, "删除", async ()=>{ await callPost("kb/delete",{topic}); kbReload(); }); }
-    else if(act==="approve"){ await callPost("kb/approve",{topic,approve:true}); kbReload(); }
-    else if(act==="deny"){ armConfirm(b, "拒绝", async ()=>{ await callPost("kb/approve",{topic,approve:false}); kbReload(); }); }
+    else if(act==="del"){ armConfirm(b, "删除", async ()=>{
+      const r = await callPost("kb/delete",{topic}).catch(()=>({ok:false}));
+      showSaveWarn(r, $("kb_notice")); kbReload(); }); }
+    else if(act==="approve"){
+      const r = await callPost("kb/approve",{topic,approve:true}).catch(()=>({ok:false}));
+      showSaveWarn(r, $("kb_notice")); kbReload();
+    }
+    else if(act==="deny"){ armConfirm(b, "拒绝", async ()=>{
+      const r = await callPost("kb/approve",{topic,approve:false}).catch(()=>({ok:false}));
+      showSaveWarn(r, $("kb_notice")); kbReload(); }); }
   });
   $("sw_wf_enabled").onchange = ()=>saveWfSwitch("agent_workflow_enabled", $("sw_wf_enabled"), $("wf_notice"));
   $("sw_wf_tool").onchange = ()=>saveWfSwitch("enable_mc_workflow", $("sw_wf_tool"), $("wf_notice"));
