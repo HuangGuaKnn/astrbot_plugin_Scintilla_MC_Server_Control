@@ -1843,6 +1843,7 @@ async function loadKnowledge(){
   $("pending_card").style.display = pend.length?"block":"none";
   $("pend_cnt").textContent = pend.length+" 条";
   $("pending_list").innerHTML = pend.length ? pend.map(e=>entryHTML(e,true)).join("") : `<div class="empty">暂无待审批</div>`;
+  renderKbSaveHealth(r);          // v0.23.5 第四轮：落盘健康度（有问题才显示）
   renderKbList();
 }
 function renderKbList(){
@@ -3391,6 +3392,20 @@ function showSaveWarn(r, el){
   const w = saveWarnText(r);
   if(w && el) setNotice(el, "⚠ " + w, true);
   return w;
+}
+// v0.23.5 第四轮：写接口的告警只活在那一次响应里，刷个页面就没了 ——
+// 「上次落盘到底成没成功」必须能随时看见。后端 GET /state 现在带回
+// save_health（知识库整库）与 state_save_warning（开关状态那一份），
+// 这里在加载知识库页时过一遍：只有真有问题才说话，正常时一个字都不加。
+function renderKbSaveHealth(r){
+  const el = $("kb_notice"); if(!el) return;
+  const h = r && r.save_health;
+  if(h && h.ok === false){
+    setNotice(el, "⚠ 上次知识库落盘失败" + (h.at ? "（"+h.at+"）" : "") + "："
+              + (h.error || "未知原因") + " —— 内存里的改动重启后会丢。", true);
+    return;
+  }
+  if(r && r.state_save_warning){ setNotice(el, "⚠ " + r.state_save_warning, true); }
 }
 
 function collectSettings(){

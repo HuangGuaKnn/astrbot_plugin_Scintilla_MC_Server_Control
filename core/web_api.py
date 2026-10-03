@@ -202,6 +202,13 @@ class McControlWebApi:
             "entries": kb.list_entries(),
             "pending": kb.pending_entries(),
             "server_id": kb.server_id,
+            # v0.23.5 第四轮：落盘健康度也要随 GET 给出去。写接口回包里的
+            # `save_warning` 刷新一次页面就没了 —— 「最近一次落盘失败」此前
+            # 在 GET 里完全看不见（GPT 第四轮）。
+            "save_health": kb.save_health(),
+            # 开关状态那一份（knowledge_state.json）的告警：与写接口**同一判据**，
+            # 不另写一份（判据只允许一处实现）
+            "state_save_warning": self._state_save_warning(kb),
         }
         if man is not None:
             payload["presets"] = man.list_presets()

@@ -8,10 +8,12 @@
 顺序：① 静态（编译 / schema / 版本一致性）→ ② 单元与回归 → ③ WebUI 真浏览器链路。
 任一步失败即退出码 1，方便直接挂到发版前置检查上。
 """
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -34,6 +36,69 @@ def _looks_like_astrbot_python(exe: Path) -> bool:
         return (exe.parent.parent / "app" / "astrbot").is_dir()
     except OSError:
         return False
+
+
+def _is_internal_doc(p: str) -> bool:
+    """docs/ 下属于「内部核验 / 交接」的文件：留在仓库备查，但不该进用户包。"""
+    if not p.startswith("docs/"):
+        return False
+    name = p[len("docs/"):]
+    return (name.startswith("VERIFY_") or name.startswith("CONSULT_")
+            or name.endswith(".diff") or "实施单" in name)
+
+
+def check_export_ignore() -> list:
+    """发布包卫生：**把发布包真的打出来看**（`git archive HEAD` → tar → 列名单）。
+
+    为什么不用 `git check-attr` 逐条问：gitattributes 的属性**不递归** ——
+    `/tests/ export-ignore` 只落在目录本身，问 `tests/xxx.py` 一律得到 unspecified
+    （第四轮实测），照着写只会得到一堆假阴性。而 `git archive` 正是发版流程里生成附件的
+    那一条命令：**它说包里有谁，才算数**。
+
+    第四轮复核的意义在这条上最直白：旧检查只断言「.gitattributes 里有 /tests/ 字样」，
+    而实打实解包发现 `docs/v0.22.6_实施单补充*.md` 一直被跟踪、也一直躺在发布包里。
+    现在两头都看：**该挡的必须不在**（测试 / 开发脚本 / 内部核验文档），
+    **该留的必须还在**（补一条 export-ignore 顺手挡掉用户文件，同样是发布事故）。
+    """
+    out: list = []
+    if not (ROOT / ".gitattributes").exists():
+        print("[WARN] 没有 .gitattributes —— 发布包会带上测试与内部文档")
+        return out
+    try:
+        r = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
+                           cwd=str(ROOT), capture_output=True)   # 二进制，别加 text=True
+    except Exception:                                            # noqa: BLE001
+        print("[WARN] 没有 git（或不是仓库）—— 跳过发布包卫生实测")
+        return out
+    if r.returncode != 0:
+        print("[WARN] git archive HEAD 不可用 —— 跳过发布包卫生实测")
+        return out
+    try:
+        # 中文文件名按 UTF-8 解（别让它落到系统 locale 上）
+        names = tarfile.open(fileobj=io.BytesIO(r.stdout),
+                             encoding="utf-8", errors="replace").getnames()
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[WARN] 解包发布包失败：{e}")
+        return out
+    files = [n for n in names if not n.endswith("/")]
+    leaked = [n for n in files if n.startswith("tests/")
+              or (n.startswith("run_") and n.endswith(".py")) or _is_internal_doc(n)]
+    must_keep = ["main.py", "metadata.yaml", "_conf_schema.json",
+                 "docs/configure.md", "docs/faq.md", "docs/usage.md", "docs/gallery.md"]
+    missing = [m for m in must_keep if m not in files]
+    if not any(n.startswith("docs/images/") for n in files):
+        missing.append("docs/images/*")
+    if leaked:
+        print(f"[FAIL] 发布包里混进不该带的东西：{leaked[:6]}"
+              + (f" …共 {len(leaked)} 个" if len(leaked) > 6 else ""))
+        out.append("发布包卫生：漏挡内部文件")
+    if missing:
+        print(f"[FAIL] 发布包里少了用户要的东西：{missing}")
+        out.append("发布包卫生：误挡用户可见文件")
+    if not leaked and not missing:
+        print(f"[PASS] 发布包卫生：实测 git archive 共 {len(files)} 个文件 —— "
+              f"测试 / 开发脚本 / 内部核验文档 0 个，用户可见文件齐全")
+    return out
 
 
 def pick_python() -> str:
@@ -84,12 +149,9 @@ def static_checks() -> list[str]:
         print(f"[FAIL] metadata.yaml：{e}")
         fails.append("metadata.yaml")
 
-    # 发布包卫生：不该进包的东西（tests/ 与开发脚本由 .gitattributes 的 export-ignore 控制）
-    ga = (ROOT / ".gitattributes")
-    if ga.exists() and "/tests/" in ga.read_text(encoding="utf-8"):
-        print("[PASS] .gitattributes 已排除 tests/（发布包不带测试）")
-    else:
-        print("[WARN] .gitattributes 未排除 tests/ —— 发布包会带上测试目录")
+    # 发布包卫生：不该进包的东西由 .gitattributes 的 export-ignore 控制。
+    # v0.23.5 第四轮：从「查文本关键词」升级为**逐条问 git 本人**（见 check_export_ignore）。
+    fails.extend(check_export_ignore())
     return fails
 
 
