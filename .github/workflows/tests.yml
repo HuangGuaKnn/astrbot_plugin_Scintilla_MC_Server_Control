@@ -6,6 +6,11 @@ name: tests
 #   · ui-render   —— 同目录里的**渲染 / 度量类**（像素阈值、配色）→ 观察期不阻断
 # 本机权威环境仍是 Windows + 系统 Edge（`python tests\ui_xxx_check.py`）；
 # CI 上没有 Edge，改走 PIRIKA_UI_CHANNEL=bundled（playwright 自带 Chromium）。
+#
+# v0.23.5 第五轮：三档归类（硬门禁 / 观察期 / 取证脚本）**唯一来源**是
+# `tests/_ui_manifest.py` —— 本文件不再手写名单（写死就得在发版流程里再抄一遍，
+# 两份清单迟早分叉）。回归与静态检查也统一走 `run_release_verify.py`，
+# 与发版前置（release.yml）跑同一个脚本、同一套逐文件超时。
 on:
   push:
     branches: [main]
@@ -26,16 +31,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install psutil astrbot
-      - name: 语法检查（compileall）
-        run: python -m compileall -q main.py core pages tests || exit 1
-      - name: 跑回归测试
-        run: |
-          fail=0
-          for f in tests/test_*.py; do
-            echo "======== $f"
-            python "$f" || fail=1
-          done
-          exit $fail
+      - name: 语法检查 + 回归测试（与发版前置同一套）
+        # run_release_verify.py = 静态（编译 / schema / 元数据 / UI 归类守卫 / 发布包卫生）
+        # + 全部 tests/test_*.py，逐文件超时；--no-ui 交给 ui-contract job 去跑
+        run: python run_release_verify.py --no-ui
 
   ui-contract:
     # 外部审查（第 4 轮）后按主人拍板的方案 B 拆分：**契约类**进硬门禁。
@@ -46,14 +45,9 @@ jobs:
     timeout-minutes: 30
     env:
       PIRIKA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
-      # 两份清单**必须显式列名**：新写的 ui_*_check.py 若没被归类，下面的守工会红 ——
-      # 不许「新用例默认漂进软门禁」，那正是这一轮要修的那类洞。
-      HARD_UI: >-
-        ui_broadcast_order_check ui_fp_notice_check ui_kb_detail_check
-        ui_rcon_adv_fold_check ui_remote_blur_check ui_settings_structure_check
-        ui_theme_check ui_theme_persist_check ui_version_override_check
-      SOFT_UI: >-
-        ui_card_layout_check ui_kb_fold_check ui_select_option_check ui_sw_wrap_check
+      # 两份清单（HARD_UI / SOFT_UI）的**唯一来源**是 tests/_ui_manifest.py，
+      # 由下面「归类清单」一步现算进环境变量 —— 不许在这里手写名单：
+      # 写死就只能在发版流程里再抄一遍，两份清单迟早分叉（GPT 第五轮）。
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -64,17 +58,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install psutil astrbot playwright
           python -m playwright install --with-deps chromium
-      - name: 清单守卫（每个 ui_*_check.py 都必须被归类）
-        run: |
-          miss=0
-          for f in tests/ui_*_check.py; do
-            b="$(basename "$f" .py)"
-            case " $HARD_UI $SOFT_UI " in
-              *" $b "*) ;;
-              *) echo "::error::未归类的 UI 用例：$b（硬门禁还是观察期？显式写进 HARD_UI / SOFT_UI）"; miss=1 ;;
-            esac
-          done
-          exit $miss
+      - name: 归类清单（唯一来源：tests/_ui_manifest.py）
+        run: python run_release_verify.py --emit-env >> "$GITHUB_ENV"
+      - name: 清单守卫（每个 ui_*.py 都必须被归类）
+        # 覆盖的是**全部** ui_*.py（不只是 *_check.py）：ui_theme_flash_trace.py
+        # 当年就是因为不叫 _check 而绕过了这道守卫（GPT 第五轮）。
+        run: python run_release_verify.py --guard
       - name: 跑 UI 契约类用例（硬门禁）
         run: |
           fail=0
@@ -101,13 +90,14 @@ jobs:
     timeout-minutes: 30
     env:
       PIRIKA_UI_CHANNEL: bundled
-      SOFT_UI: >-
-        ui_card_layout_check ui_kb_fold_check ui_select_option_check ui_sw_wrap_check
+      # SOFT_UI 同样来自 tests/_ui_manifest.py（下面的「归类清单」一步现算）
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: 归类清单（唯一来源：tests/_ui_manifest.py）
+        run: python run_release_verify.py --emit-env >> "$GITHUB_ENV"
       - name: 安装依赖与浏览器
         run: |
           python -m pip install --upgrade pip
