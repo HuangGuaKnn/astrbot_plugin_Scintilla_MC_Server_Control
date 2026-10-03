@@ -10,6 +10,7 @@ name: release
 # 不加「（预发布）」则是正式版。
 #
 # 外部审查 D4 已修：发布前必须**测试全绿**（verify job），publish 依赖它。
+# v0.23.5 第五轮：verify 扩到**与 CI 同一套**（含 UI 契约类硬门禁），见 verify job 注释。
 on:
   push:
     tags: ["v*"]
@@ -24,27 +25,29 @@ jobs:
     #   · 也不能去查「这个 SHA 的 tests 跑过没」—— tag 常常紧跟 push，那个 run 可能还在排队，
     #     查到的多半是「进行中」，要么误拦、要么得写轮询等待，脆弱。
     # 所以把同一套用例在原地重跑：结果只取决于**这个 commit 本身**，与 CI 先后顺序无关。
+    #
+    # v0.23.5 第五轮（GPT 复核）：这里原先只跑 `compileall` + `tests/test_*.py` ——
+    # **UI 契约类用例（tests/ui_*_check.py 里的硬门禁）一条都没跑**，于是「打个 tag
+    # 直接发版」可以绕过整个 UI 契约层（tests.yml 就算红了也拦不住发版）。
+    # 现在改跑 `run_release_verify.py`：静态 + 回归 + UI 契约类，与 CI 同一份清单、
+    # 同一套逐文件超时；清单来自 tests/_ui_manifest.py（唯一来源，不再各抄一份）。
     runs-on: ubuntu-latest
+    env:
+      SCINTILLA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 安装依赖
-        # psutil：插件可选依赖；astrbot：tests/_paths.py 用它反推 AstrBot 运行目录
+      - name: 安装依赖与浏览器
+        # psutil：插件可选依赖；astrbot：tests/_paths.py 用它反推 AstrBot 运行目录；
+        # playwright + chromium：UI 契约类用例要用（与 tests.yml 的 ui-contract 同款）
         run: |
           python -m pip install --upgrade pip
-          python -m pip install psutil astrbot
-      - name: 语法检查（compileall）
-        run: python -m compileall -q main.py core pages tests || exit 1
-      - name: 回归测试（与 tests.yml 同一套）
-        run: |
-          fail=0
-          for f in tests/test_*.py; do
-            echo "======== $f"
-            python "$f" || fail=1
-          done
-          exit $fail
+          python -m pip install psutil astrbot playwright
+          python -m playwright install --with-deps chromium
+      - name: 发布前验证（静态 + 回归 + UI 契约类，与 CI 同一套）
+        run: python run_release_verify.py
       - name: 校验标签与 metadata.yaml 版本是否一致
         # 放在 verify 而不是 publish：能便宜地失败的事就早失败，别等打完包再发现版本号写错。
         run: |

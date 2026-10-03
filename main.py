@@ -1132,6 +1132,12 @@ class McControlPlugin(Star):
             # 任何调用方（Agent 工具 / WebUI / 将来的新入口）都不会漏。
             kb.on_write = self._kb_touch_vectors
         self._knowledge = kb
+        # v0.23.5 第五轮：切换 / 复制 / 移动预设之后，新实例可能带着「条目在、向量不在」
+        # 的缺口（copy/move 只搬条目表，switch 只是换了实例）—— 既没有写入、也不是启动，
+        # 补算钩子就永远不响：用户看到条目已经复制过来，语义检索却长期搜不到它
+        # （GPT 第五轮 P1/P2）。判据只认 `pending_vectors()` 这一处口径，不另算一遍。
+        if kb is not None and self._kb_semantic() and kb.pending_vectors():
+            self._kb_touch_vectors()
 
     async def _kb_build_semantic(self, force: bool = False) -> dict:
         """后台补算知识库向量（语义通道专用）。失败只记日志，不影响其它功能。"""

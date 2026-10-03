@@ -581,9 +581,25 @@ class ModKnowledgeBase:
             and self._sem.matrix is not None and self._sem.topics
         )
 
+    def pending_vectors(self) -> int:
+        """待补算向量的条目数（v0.23.5 第五轮）。
+
+        「缺向量」的**唯一口径**：`semantic_stats()["pending"]` 与插件判断
+        「切换 / 复制预设后要不要补算」都读这里 —— 两处各算一遍迟早会算出两个答案。
+        语义通道没开时恒为 0（开关没开就不是「缺」，是没这功能）。
+        """
+        if self._sem is None:
+            return 0
+        try:
+            return len(self._sem.missing(self._searchable()))
+        except Exception:                                # noqa: BLE001
+            # 向量索引自己坏了不该让「切预设」这个动作跟着炸：按「无需补算」处理，
+            # 真缺向量时下一轮写入 / 下次启动仍会发现。
+            return 0
+
     def semantic_stats(self) -> dict:
         ready = self.semantic_ready()
-        pending = len(self._sem.missing(self._searchable())) if self._sem is not None else 0
+        pending = self.pending_vectors()
         return {
             "enabled": self.semantic_enabled,
             "ready": ready,
@@ -743,7 +759,13 @@ class ModKnowledgeBase:
         降序取前 limit 条。任何异常都退回普通 search() —— 精排是锦上添花，
         不该让整次检索失败。
         """
-        pool = self._rank_candidates(query, query_vec)[:RERANK_POOL]
+        # v0.23.5 第五轮：**进池之前**就按 `_searchable()` 过一遍，与 search() 同一口径。
+        # 旧写法把 `_rank_candidates` 的输出整段当池：被禁用 / 待审批的条目若向量还留在
+        # 索引里（禁用后没人通知过索引），语义通道会照样把它排进候选 —— 精排开关一开，
+        # 「手工禁用」就形同虚设（GPT 第五轮 P1）。过滤必须发生在建 docs **之前**：
+        # rerank 回的 idx 是**池下标**，池一变，下标与文档的对应关系就全错了。
+        pool = [t for t in self._rank_candidates(query, query_vec)
+                if t in self._searchable()][:RERANK_POOL]
         if not pool:
             return []
         entries = self._searchable()
@@ -753,6 +775,10 @@ class ModKnowledgeBase:
             scored = await self.rerank_fn(query, docs)
         except Exception:
             return self.search(query, limit=limit, query_vec=query_vec)
+        # v0.23.5 第五轮：精排是一次**网络往返**（几百毫秒起），期间用户可能正好把某条
+        # 禁用、把待审批的回退成半成品、甚至直接删掉 —— 所以必须拿**回来之后**的条目表
+        # 再判一遍，不能沿用发请求前那一份快照。
+        entries = self._searchable()
         # rerank 只回「它给过分的那些」：没回的候选按原召回顺序兜底排在其后
         order: dict[int, float] = {}
         for item in scored or []:
@@ -768,6 +794,10 @@ class ModKnowledgeBase:
         for i in ranked:
             topic = pool[i]
             if topic in seen:
+                continue
+            if topic not in entries:
+                # 已删除（旧写法在这里 `_entry_view` 直接 KeyError，**整次检索崩掉**）、
+                # 已禁用、待审批 —— 一律不放行（GPT 第五轮 P1）
                 continue
             seen.add(topic)
             out.append(self._entry_view(topic))
@@ -1457,7 +1487,15 @@ class KnowledgePresetManager:
     REG_NAME = "kb_presets.json"
 
     # v0.23.5 外部复核：注册表落盘失败也要留痕（此前 `except: pass`，出事了一片安静）
+    # v0.23.5 第五轮：升级为**统一落盘健康度** —— 注册表 / 预设文件 / 指纹回写记在
+    # 同一本账上（见 `_note_save` / `save_health`），不再是「谁最后写谁说了算」。
+    last_save_ok: bool = True
     last_save_error: str = ""
+    last_save_at: str = ""
+
+    #: 落盘「部件」名（v0.23.5 第五轮）
+    SAVE_PART_REGISTRY = "registry"
+    SAVE_PART_PRESET_FILE = "preset_file"
 
     def __init__(self, data_dir: str, server_id: str, server_dir: str = "",
                  search_engine: str = DEFAULT_SEARCH_ENGINE,
@@ -1486,6 +1524,9 @@ class KnowledgePresetManager:
         self.rerank_fn = None                    # async 重排序调用，由插件注入
         self.reg_path = self.data_dir / self.REG_NAME
         self.reg: dict = self._load_registry()
+        # 统一落盘健康度：**按部件**记账（注册表 / 预设文件），聚合结果 = 全部部件都成功。
+        # 每个实例一份，绝不放类属性（那会变成所有实例共享同一本账）。
+        self._save_parts: dict[str, tuple[bool, str]] = {}
         self.kb: ModKnowledgeBase | None = None
         self.reload_active()
 
@@ -1615,11 +1656,11 @@ class KnowledgePresetManager:
         out = dict(fields or {})
         if not err:
             return out
-        prev = str(out.get("save_error") or "")
-        out["save_ok"] = False
-        out["save_error"] = f"{prev}；{err}" if prev else err
-        self.last_save_ok = False
-        self.last_save_error = str(out["save_error"])
+        # v0.23.5 第五轮：指纹回写动的也是**预设文件**，记进同一本账（而不是就地改两根
+        # 公共变量）—— 这样它的失败同样熬得过「紧接着的一次注册表写成功」。
+        self._note_save(self.SAVE_PART_PRESET_FILE, False, err)
+        out["save_ok"] = bool(self.last_save_ok)
+        out["save_error"] = str(self.last_save_error or "")
         return out
 
     def _migrate_legacy(self) -> dict:
@@ -1705,9 +1746,44 @@ class KnowledgePresetManager:
         （`reload_active()` 都跑完了），报 False 是另一种谎言 —— 界面会拒绝更新，
         而实际上预设真的换了。所以动作仍报 ok=True，另用 `save_ok` / `save_error`
         明说「**没写进磁盘**，重启后会回退」，由 WebAPI 原样带到界面上。
+
+        v0.23.5 第五轮：回调值改为**聚合**健康度（见 `save_health`）—— 注册表这一次写
+        成功了，也熬不过同一动作里「预设文件写失败」的那一笔账。
         """
-        self.last_save_ok = self.save_registry()
-        return {"save_ok": bool(self.last_save_ok), "save_error": self.last_save_error}
+        ok = self.save_registry()
+        reg_err = "" if ok else str(self.last_save_error or "预设注册表落盘失败")
+        self._note_save(self.SAVE_PART_REGISTRY, ok, reg_err)
+        return {"save_ok": bool(self.last_save_ok),
+                "save_error": str(self.last_save_error or "")}
+
+    def _note_save(self, part: str, ok: bool, err: str = "") -> None:
+        """记一次落盘结果，并刷新**聚合**健康度（v0.23.5 第五轮）。
+
+        为什么按「部件」记账：旧写法把 `last_save_ok` 当成一根公共变量 —— 谁最后写
+        谁说了算。`create()` 里预设文件写失败、紧接着注册表写成功，失败当场被覆盖成
+        True，界面与 GET 状态都看不见（GPT 第五轮 P2）。现在每个部件各记各的，
+        聚合 = 所有部件都成功；某个部件的红只有**它自己**下次写成功才会清掉，
+        与调用顺序无关。
+        """
+        self._save_parts[part] = (bool(ok), str(err or ""))
+        bad = [(k, e) for k, (o, e) in sorted(self._save_parts.items()) if not o]
+        self.last_save_ok = not bad
+        self.last_save_error = "；".join(e or f"{k} 落盘失败" for _, e in bad)
+        self.last_save_at = self._now()
+
+    def save_health(self) -> dict:
+        """统一落盘健康度（v0.23.5 第五轮）：注册表 / 预设文件 / 指纹回写同一本账。
+
+        所有预设写接口的 `save_ok` / `save_error`、GET 状态、诊断都读这一份 ——
+        任何一处落盘失败都不该被「后面那次成功」抹掉，也不该只在某一次回包里露面。
+        """
+        return {
+            "ok": bool(self.last_save_ok),
+            "error": str(self.last_save_error or ""),
+            "at": str(self.last_save_at or ""),
+            "parts": {k: {"ok": o, "error": e}
+                      for k, (o, e) in sorted(self._save_parts.items())},
+        }
 
     # ---------------- 预设读写 ----------------
 
@@ -1792,6 +1868,15 @@ class KnowledgePresetManager:
         fields = self._persist_registry()   # v0.23.5 第三轮：落盘结果不再丢
         # v0.23.5 第四轮：指纹回写失败同样要进健康度（否则界面只看到 save_ok=True）
         self._merge_stamp_error(fields, err)
+        # v0.23.5 第五轮：首次绑定是**同一次写入**里顺手做的，它的失败必须能进这次写入
+        # 的响应 —— 否则 `save_entry` 的调用方只看到「条目已保存」，界面照样说成功，
+        # 而指纹其实没落到预设文件里（GPT 第五轮 P2）。
+        if not self.last_save_ok:
+            kb.last_save_ok = False
+            kb.last_save_error = (
+                f"{kb.last_save_error}；{self.last_save_error}"
+                if kb.last_save_error else str(self.last_save_error)
+            )
         return self.server_id
 
     # ---------------- 预设操作 ----------------
@@ -1829,13 +1914,12 @@ class KnowledgePresetManager:
             "updated_at": self._now(),
         }
         self.reg["presets"].append(preset)
+        # v0.23.5 第五轮：预设文件的写入结果记进**统一账本**，而不是只在本次回包里
+        # 临时合一下 —— 否则紧随其后的 `_persist_registry()` 一成功，就把这次失败
+        # 覆盖成「一切正常」，GET / 状态接口从此看不到（GPT 第五轮 P2）。
+        self._note_save(self.SAVE_PART_PRESET_FILE, file_ok,
+                        "" if file_ok else f"预设文件写入失败：{file_err}")
         fields = self._persist_registry()
-        if not file_ok:
-            fields["save_ok"] = False
-            fields["save_error"] = (
-                f"预设文件写入失败：{file_err}"
-                + (f"；{fields['save_error']}" if fields.get("save_error") else "")
-            )
         return {**preset, **fields}
 
     def rename(self, pid: str, name: str) -> dict | None:
@@ -1869,13 +1953,10 @@ class KnowledgePresetManager:
         if self.reg.get("active") == pid:
             self.reg["active"] = self.reg["presets"][0]["id"]
             self.reload_active()
+        # v0.23.5 第五轮：与 create() 同一口径 —— 删除失败也进统一账本
+        self._note_save(self.SAVE_PART_PRESET_FILE, not file_err,
+                        f"预设文件删除失败：{file_err}" if file_err else "")
         fields = self._persist_registry()
-        if file_err:
-            fields["save_ok"] = False
-            fields["save_error"] = (
-                f"预设文件删除失败：{file_err}"
-                + (f"；{fields['save_error']}" if fields.get("save_error") else "")
-            )
         return {"ok": True, "removed": pid, **fields}
 
     def switch(self, pid: str) -> dict:
@@ -1947,11 +2028,18 @@ class KnowledgePresetManager:
                     "—— 源库条目仍在，请稍后重试或手动清空源预设。"
                 )
                 _log.warning("预设移动：源文件清空失败（%s）：%s", src_p, e)
+                # v0.23.5 第五轮：源库没清空 = 一次**真实的预设文件落盘失败**，
+                # 同样记进统一账本（GET / 状态接口才看得见，不是只在这一次回包里）。
+                self._note_save(self.SAVE_PART_PRESET_FILE, False,
+                                f"预设文件写入失败：{e}")
         # 刷新受影响的内存实例
         if self.reg.get("active") in (src_id, dst_id):
             self.reload_active()
         out = {"ok": True, "count": moved, "conflicts": conflict,
                "mode": mode, "from": sp.get("name"), "to": dp.get("name")}
+        # v0.23.5 第五轮：与其它预设接口同形的落盘字段（口径 = 统一账本）
+        out["save_ok"] = bool(self.last_save_ok)
+        out["save_error"] = str(self.last_save_error or "")
         # 只在真有问题时加字段：正常情况下不改变既有回包形状
         if warning:
             out["warning"] = warning
@@ -2109,5 +2197,9 @@ class KnowledgePresetManager:
             # 而不是等重启后发现改动没了。默认 True（没写过 = 没失败过）。
             "registry_save_ok": bool(getattr(self, "last_save_ok", True)),
             "registry_save_error": getattr(self, "last_save_error", ""),
+            # v0.23.5 第五轮：统一落盘健康度的完整一本账（按部件）。
+            # `registry_save_ok` 这两个老字段为兼容既有前端而保留，**口径已改为聚合**
+            # （旧名字只反映注册表，正是「预设文件写失败被覆盖」的那个洞）。
+            "save_health": self.save_health(),
         }
 

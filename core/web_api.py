@@ -1635,9 +1635,17 @@ class McControlWebApi:
         self.plugin._apply_active_knowledge()
         verb = "移动" if mode == "move" else "复制"
         extra = f"，{r['conflicts']} 条同名已保留目标版本" if r.get("conflicts") else ""
+        # v0.23.5 第五轮：管理器早就把「源库清空失败」说出来了，这里却把它丢了 ——
+        # 界面照样显示「移动成功」，源库条目其实原样躺在那里（GPT 第五轮 P1/P2）。
+        # 两处都带上：notice_text 给人看，独立 `warning` 字段留给会读它的调用方。
+        note = f"已把「{r['from']}」的 {r['count']} 条知识{verb}到「{r['to']}」{extra}"
+        warn = str(r.get("warning") or "")
+        if warn:
+            note += f"（⚠ {warn}）"
         return json_response({
             "ok": True, **self._presets_payload(man),
-            "notice_text": f"已把「{r['from']}」的 {r['count']} 条知识{verb}到「{r['to']}」{extra}",
+            "notice_text": note,
+            "warning": warn,
         })
 
     async def preset_notice(self):

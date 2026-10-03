@@ -134,6 +134,12 @@ _MSG_EXTRACT = re.compile(r"\]\s*:\s*(.*)$")
 #: 「关不掉一个读日志的协程」不该把插件 terminate() 卡住。
 STOP_TIMEOUT = 5.0
 
+# v0.23.5 第五轮：单次文件 IO 的等待上限。IO 都在线程里跑（事件循环不会再被占住），
+# 但**这一次 await** 仍可能永远不返回 —— 慢盘 / 网络盘 / 被独占的文件上，`_poll`
+# 会停在原地不产出，`stop()` 也救不回已经交出去的线程。超过这个秒数就按「这一次
+# 没读到」处理，让轮询与停止都不至于无限期挂着。
+IO_TIMEOUT = 15.0
+
 #: v0.23.5：单行超过这么多字符就截断再交给正则。
 #: 某些模组会把整段堆栈挤成一行（几十万字符），正则不关心行尾之后的内容，
 #: 留着只是白占内存与回溯时间。
@@ -179,7 +185,16 @@ class LogWatcher:
         # 「文件暂时不在」是轮转窗口里的正常现象，不该记 error；但「一直不在」
         # 必须看得见 —— 否则界面绿灯、pos 不动、事件安静地消失。
         self.missing_polls: int = 0
-        self.file_present: bool = True
+        # v0.23.5 第五轮：**还没探测** ≠「文件在」。旧写法默认 True —— 一个还没
+        # start()（或 start() 的初始化 IO 没成功）的监听器，健康度上会显示「文件在」。
+        self.file_present: bool = False
+        # 是否成功探测过一次：health() 用它把「还没看过」和「看过了、文件在」分开
+        self._probed: bool = False
+        # 位置未知标记（v0.23.5 第五轮）：`_pos = -1` 表示 start() 没能定位到文件尾，
+        # `_poll` 第一轮会直接落到文件尾 —— 位置未知时**绝不从 0 读**，那会把整份
+        # 历史日志当成新事件重播一遍。
+        # 文件 IO 超时次数（health() 摊开给界面与诊断看）
+        self.io_timeouts: int = 0
         self.last_read_at: float = 0.0
         # 放弃等待的监听任务（stop() 超时时留下）。丢引用会让半途的任务被 GC 掉，
         # 留着还能在 health() / 诊断里看见「有个没退出的」。
@@ -188,29 +203,98 @@ class LogWatcher:
         self._last_size: int = 0
 
     async def start(self) -> None:
-        """从日志文件末尾开始监听（不回溯历史日志）。"""
-        try:
-            if self.log_path.exists():
-                self._pos = self.log_path.stat().st_size
-            else:
-                self._pos = 0
-        except OSError:
-            self._pos = 0
-        self._sig = self._file_sig()
-        self._head = self._head_sig()
+        """从日志文件末尾开始监听（不回溯历史日志）。
+
+        v0.23.5 第五轮（GPT 第四轮复核遗留）：
+        - **幂等**：重复调用 `start()` 不再覆盖旧任务句柄（旧任务那时就再也 `stop()`
+          不到了），先把上一轮收掉。
+        - **初始化 IO 全部移出事件循环**：`exists / stat / 头指纹 / 编码探测` 都是文件
+          IO，慢盘上会把整个事件循环（连同别处的超时回调）一起拖住。
+        - `file_present` 初始值改 `False`：**还没探测** ≠「文件在」，健康度上两者必须
+          分得开（见 `health()["probed"]`）。
+        """
+        # 幂等保护：留着旧句柄 = 那个任务永远停不掉（GPT 第四轮 P2）
+        if self._running or (self._task is not None and not self._task.done()):
+            await self.stop()
+        primed = await self._io_wait(
+            asyncio.to_thread(self._prime_state), "初始化定位日志文件"
+        )
+        if primed is None:
+            # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
+            # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
+            self._pos = -1
+            self._sig, self._head = None, ""
+            self._probed = False
+        else:
+            self._pos, self._sig, self._head, present = primed
+            self.file_present = present
+            self._probed = True
         # v0.23.5 第三轮：锚点/跳过标记随之重置。重新开监听是从**文件尾**起步，
         # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
         self._anchor, self._anchor_at = b"", -1
         self._skip_to_newline = False
-        self.file_present = self.log_path.exists()
         self.missing_polls = 0
+        self._running = True
+        self._task = asyncio.create_task(self._loop())
+
+    def _prime_state(self) -> tuple[int, tuple[int, int] | None, str, bool]:
+        """`start()` 需要的那几件文件活儿（**同步版**，只在 `asyncio.to_thread` 里跑）。
+
+        抽出来是为了让初始化 IO 与轮询 IO 走同一条线：`exists / stat / 头指纹 /
+        编码探测` 一个都不许占着事件循环（GPT 第四轮 P2）。
+        """
+        try:
+            present = self.log_path.exists()
+            pos = self.log_path.stat().st_size if present else 0
+        except OSError:
+            present, pos = False, 0
+        sig = self._file_sig()
+        head = self._head_sig()
         # 探测日志编码（UTF-8 / GBK），避免固定 UTF-8 导致中文乱码
         try:
             self._enc = self._sniff_encoding()
-        except Exception:
+        except Exception:                                # noqa: BLE001
             self._enc = "utf-8"
-        self._running = True
-        self._task = asyncio.create_task(self._loop())
+        return pos, sig, head, present
+
+    async def _io_wait(self, awaitable, what: str = ""):
+        """给一次文件 IO 加**超时**（v0.23.5 第五轮）。
+
+        IO 已经在 `asyncio.to_thread` 里跑了，真正卡住事件循环的风险没了；但**这一次
+        await 本身**仍可能永不返回（慢盘 / 网络盘 / 被独占的文件），于是轮询停摆、
+        `stop()` 也只能干等。超过 `IO_TIMEOUT` 就放弃这一次等待，按「没读到」返回
+        `None`，由调用方决定降级口径。
+
+        已知边界（如实写在这里）：Python 杀不掉已经陷进系统调用的线程 —— 超时保证的是
+        **等待按时结束**，被放弃的线程由解释器的默认线程池兜着。要连线程一起回收得换
+        专用可回收执行器，本轮先落地「不让它拖住轮询与停止」这条最低承诺。
+        """
+        try:
+            return await asyncio.wait_for(awaitable, IO_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.io_timeouts += 1
+            self.last_error = f"文件 IO 超时（{what or '未知操作'} > {IO_TIMEOUT:g}s）"
+            logger.warning("日志监听：%s 超过 %g 秒未返回，本轮按「没读到」处理",
+                           what or "文件 IO", IO_TIMEOUT)
+            return None
+
+    def _reap_orphan(self, task: asyncio.Task) -> None:
+        """孤儿任务收尾（v0.23.5 第五轮）：取走异常并解除引用。
+
+        此前只 `self._orphaned.discard` —— 任务若带着异常结束，异常没有任何人取过，
+        解释器 GC 时会骂一句「Task exception was never retrieved」，而它到底为什么
+        没退出反而没人看（GPT 第四轮 P2）。
+        """
+        self._orphaned.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except Exception:                                # noqa: BLE001 —— 取不到也不许炸
+            return
+        if exc is not None:
+            logger.warning("日志监听孤儿任务异常收尾：%s: %s",
+                           type(exc).__name__, exc)
 
     async def stop(self) -> None:
         """停止监听。
@@ -243,7 +327,7 @@ class LogWatcher:
             # 保住引用：让它继续跑完（_running 已置 False，它下一轮会自己退出），
             # 但**别丢引用** —— 半途被 GC 掉的任务连痕迹都不剩，诊断时查无此人。
             self._orphaned.add(task)
-            task.add_done_callback(self._orphaned.discard)
+            task.add_done_callback(self._reap_orphan)
             logger.warning(
                 "日志监听任务在 %.1fs 内未退出，已放弃等待（多半卡在文件 IO 上）；"
                 "任务本身会在本轮读取返回后自行退出（进程退出时会一并回收）",
@@ -271,7 +355,11 @@ class LogWatcher:
             "error_count": int(self.error_count),
             "last_error": self.last_error,
             "file_present": bool(self.file_present),
+            # v0.23.5 第五轮：把「还没探测过」单独摊出来 —— 一个还没 start() 的监听器
+            # 与「文件真的不在」是两回事，混在一个布尔里就分不清了。
+            "probed": bool(self._probed),
             "missing_polls": int(self.missing_polls),
+            "io_timeouts": int(self.io_timeouts),
             "lag_bytes": max(0, int(self._last_size) - int(self._pos)),
             "last_read_at": float(self.last_read_at),
             "orphaned_tasks": len(self._orphaned),
@@ -342,7 +430,8 @@ class LogWatcher:
         # 被独占的文件），阻塞的是**整个事件循环** —— 于是 `stop()` 里那句
         # `asyncio.wait(timeout=5)` 也给不出 wall-clock 保证：事件循环根本没机会
         # 执行超时回调（GPT 第四轮）。判定逻辑一行没动，只是让 IO 不再占着循环。
-        if not await asyncio.to_thread(self.log_path.exists):
+        if not await self._io_wait(asyncio.to_thread(self.log_path.exists),
+                                   "检查日志文件是否在"):
             # v0.23.5 第三轮：文件暂时不在，是轮转窗口里的**正常现象**（旧文件已删、
             # 新文件还没建），所以不记 error；但计数要落进 health()，让「一直不在」
             # 看得见 —— 此前这种情况就是安静地 return，界面绿灯、pos 不动、事件消失。
@@ -352,14 +441,28 @@ class LogWatcher:
         self.file_present = True
         self.missing_polls = 0
         try:
-            st = await asyncio.to_thread(self.log_path.stat)
+            st = await self._io_wait(asyncio.to_thread(self.log_path.stat),
+                                     "读取日志文件属性")
         except OSError as e:
             self.error_count += 1
             self.last_error = f"{type(e).__name__}: {e}"
             return
+        if st is None:
+            # 超时（_io_wait 已留痕：io_timeouts + last_error）→ 这一轮当作没读到
+            self.error_count += 1
+            return
         size = st.st_size
         self._last_size = size
         sig = (int(getattr(st, "st_ino", 0) or 0), size)
+        if self._pos < 0:
+            # v0.23.5 第五轮：位置未知（start() 的初始化 IO 超时/被拒）→ **直接落到
+            # 文件尾**。位置未知时从 0 读 = 把整份历史日志当新事件重播一遍，
+            # 比漏几条严重得多；「不回溯历史日志」是 start() 的既有承诺。
+            self._pos = size
+            self._sig = sig
+            self._anchor, self._anchor_at = b"", -1
+            self._skip_to_newline = False
+            return
         head = ""
         # v0.23.5 外部复核：轮转判定不能只看「文件变短」。服主把旧日志挪走、新开的
         # 服务端恰好写到同样长度时 size 不变，_pos 停在旧位置 → 从此读到的都是错位
@@ -384,9 +487,9 @@ class LogWatcher:
         )
         if not rotated and anchor_ok:
             try:
-                now_anchor = await asyncio.to_thread(
+                now_anchor = await self._io_wait(asyncio.to_thread(
                     self._read_at, self._anchor_at, len(self._anchor)
-                )
+                ), "回读内容锚点")
             except OSError:
                 now_anchor = None
             if now_anchor is not None and now_anchor != self._anchor:
@@ -394,7 +497,8 @@ class LogWatcher:
         # ③ 头指纹：不再要求 size == _pos。正常追加时文件头永不改变，而这次读取
         #    本来每轮都要做（下面刷新 self._head 用的是同一次调用），等于零额外成本。
         if not rotated and self._head:
-            head = await asyncio.to_thread(self._head_sig)
+            head = await self._io_wait(asyncio.to_thread(self._head_sig),
+                                      "读取文件头指纹")
             rotated = bool(head) and head != self._head
         if rotated:
             # latest.log 被重建 → 从头读取（重新嗅探编码）
@@ -402,14 +506,19 @@ class LogWatcher:
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
             try:
-                self._enc = await asyncio.to_thread(self._sniff_encoding)
+                enc = await self._io_wait(asyncio.to_thread(self._sniff_encoding),
+                                          "探测日志编码")
+                if enc:
+                    self._enc = enc
             except Exception:
                 pass
             logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
         self._sig = sig
         if not head:
-            head = await asyncio.to_thread(self._head_sig)
-        self._head = head
+            head = await self._io_wait(asyncio.to_thread(self._head_sig),
+                                      "读取文件头指纹")
+        # 超时（None）时保留上一次的头指纹：清空等于把判据③关掉一轮，没必要
+        self._head = head if head is not None else self._head
         if size == self._pos:
             return
         # v0.23.5：滞后保护。上面的读取上限让每次最多前进 1 MiB —— 若消费速度
@@ -431,7 +540,9 @@ class LogWatcher:
         try:
             # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
             # 读多少有上限，见 MAX_READ_BYTES。
-            data = await asyncio.to_thread(self._read_at, self._pos, MAX_READ_BYTES)
+            data = await self._io_wait(asyncio.to_thread(self._read_at, self._pos,
+                                                        MAX_READ_BYTES),
+                                       "读取日志新增内容")
         except OSError as e:
             # 打开/读取失败是**真错误**（权限、被独占、盘掉了）→ 留痕，
             # 别再像以前那样安静地 return 让监听看起来一切正常。
