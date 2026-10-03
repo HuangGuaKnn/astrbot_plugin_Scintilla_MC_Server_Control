@@ -35,6 +35,7 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 PAGE_URL = os.environ.get("KBDET_TEST_PAGE") or (
@@ -153,8 +154,9 @@ def open_kb_tab(page) -> None:
 def main() -> int:
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.launch(channel="msedge")   # 本机无自带 chromium → 用系统 Edge
-        except Exception:
+            browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
+        except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
+            print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.route(API_GLOB, route)

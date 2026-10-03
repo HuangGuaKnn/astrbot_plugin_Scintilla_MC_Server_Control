@@ -32,6 +32,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import ui_theme_check as F  # noqa: E402  复用同一套假后端夹具与驱动补丁
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 HTML = F.PLUGIN / "pages" / "mc_control" / "index.html"
 
@@ -83,8 +84,9 @@ def main() -> int:
     print("\n[2] 动态：默认收起 + 可见性")
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.launch(channel="msedge")
-        except Exception:
+            browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
+        except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
+            print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
         ctx = browser.new_context(viewport={"width": 1360, "height": 950})
         pg = ctx.new_page()

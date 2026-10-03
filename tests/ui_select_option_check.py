@@ -33,6 +33,7 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 PAGE = (PLUGIN / "pages" / "mc_control" / "index.html").as_uri()
@@ -94,7 +95,7 @@ def probe(pg, theme: str) -> dict:
 
 
 with sync_playwright() as pw:
-    b = pw.chromium.launch(channel="msedge", headless=True)
+    b = pw.chromium.launch(**UI_LAUNCH_KWARGS, headless=True)
     pg = b.new_page(viewport={"width": 900, "height": 420})
     for theme in ("dark", "light"):
         info = probe(pg, theme)
