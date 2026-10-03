@@ -15,6 +15,10 @@
      没探测过却自称「文件在」、孤儿任务的异常没人取。
   E. 发版门禁：release.yml 只跑 test_*.py，**UI 契约类一条都没跑** —— 打 tag 直接发版
      可以绕过整个 UI 契约层；`.github` 里的清单还是手写的第二份。
+     第五轮上云实测（第一次把 UI 用例真搬上 ubuntu-latest，run 37144699301）又逮到
+     下一层问题：**9 件契约类里 5 件在 CI 上跑不过**（一件硬编码本机路径 = 真 bug；
+     其余判据里含本机环境）→ 于是清单多一份 `CI_OK` 白名单，CI 与发版只跑实测能跑的，
+     其余留本机全量复现；`--ui-set=ci-*` 让 tests.yml 的两个 job 也走同一套跑测循环。
 
 运行：
   <AstrBot python> tests\\test_v0235_review_round5.py
@@ -343,6 +347,14 @@ def part_c() -> None:
           and "SAVE_PART_PRESET_FILE = \"preset_file\"" in KB_SRC)
 
     # 指纹回写失败 → 同一次写入的响应也不许说「存好了」
+    # 注入方式必须**跨平台**（第五轮第一次在 CI 上跑这条用例时踩到的坑）：
+    #   · Windows：把预设文件设成只读 → 条目落盘走「写 .tmp 再 rename」，rename 顶不动
+    #     只读文件 → 失败；但失败发生在**条目落盘**那一步，不是这条用例想测的指纹那一步；
+    #   · Linux：rename 只看**目录**权限 → 只读的目标文件被新的可写文件顶替，条目落盘
+    #     成功、指纹回写也成功 → 断言直接红（本机绿、CI 红）。
+    # 所以改成按**目标路径**注入：只让「写到预设文件本体」的那一次（= `_stamp_fp` 里的
+    # `write_text`，条目落盘写的是 `.tmp` 兄弟文件）抛 PermissionError ——
+    # 抛的异常类型与磁盘满 / 只读盘时一样，走的是被测代码里那条真正的 except 分支。
     with tempfile.TemporaryDirectory() as td:
         kd = Path(td)
         man = KnowledgePresetManager(str(kd), "sid2", str(kd))
@@ -351,11 +363,22 @@ def part_c() -> None:
         kb.fingerprint = None                      # 模拟「首次写入要绑指纹」
         p = man.preset_path(kb.preset_id)
         p.write_text("{}", encoding="utf-8")
-        os.chmod(p, stat.S_IREAD)                  # 只读 → 指纹回写必失败
+        real_write_text = Path.write_text
+        hit = {"n": 0}
+
+        def _flaky_write_text(self, *a, **k):
+            if Path(self) == p:                    # 预设文件本体（不是 .tmp 兄弟）
+                hit["n"] += 1
+                raise PermissionError("注入：指纹回写时盘不可写（模拟只读 / 磁盘满）")
+            return real_write_text(self, *a, **k)
+
+        Path.write_text = _flaky_write_text
         try:
             kb.save_entry("新条目", "内容", status="verified")
         finally:
-            os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
+            Path.write_text = real_write_text
+        check("注入确实命中了指纹回写那一次写入（第 2 步，不是条目落盘）",
+              hit["n"] == 1, f"命中 {hit['n']} 次")
         check("指纹回写失败 → 这次写入的响应也不许说「存好了」",
               kb.last_save_ok is False and "指纹回写失败" in kb.last_save_error,
               f"{kb.last_save_ok} / {kb.last_save_error}")
@@ -526,6 +549,7 @@ def part_e() -> None:
 
     # 清单守卫：每个 ui_*.py 都必须有归属（ui_theme_flash_trace 当年就是漏网的）
     sys.path.insert(0, str(PLUGIN / "tests"))
+    import _ui_manifest as UM  # noqa: E402
     from _ui_manifest import HARD, SOFT, TOOLS, unclassified  # noqa: E402
     check("清单守卫：没有未归类的 ui_*.py", unclassified(PLUGIN) == [],
           str(unclassified(PLUGIN)))
@@ -533,6 +557,29 @@ def part_e() -> None:
           len(HARD) >= 9 and len(SOFT) >= 4 and len(TOOLS) >= 1)
     check("取证脚本也被清单收编（旧守卫只看 *_check.py，它就漏了）",
           "ui_theme_flash_trace" in TOOLS)
+
+    # 第四份名单 CI_OK：能上 CI 的和只能在本机跑的分开（第五轮上云实测后的收口）
+    check("静态：CI 白名单非空且都在判定档里（CI 上真有人跑）",
+          len(UM.ci_hard()) > 0 and set(UM.ci_hard() + UM.ci_soft()) <= set(HARD) | set(SOFT),
+          f"{UM.ci_hard()} / {UM.ci_soft()}")
+    check("静态：确实把 CI 上跑不过的挑了出来（不是把 9 件全塞进 CI 硬门禁）",
+          len(UM.local_only()) >= 1 and set(UM.local_only()) <= set(HARD) | set(SOFT) | set(TOOLS),
+          str(UM.local_only()))
+    check("静态：release.yml 用 --ci（与 CI 同款子集，不再声称「UI 契约类全跑」）",
+          "run_release_verify.py --ci" in REL_YML)
+    check("静态：tests.yml 的两个 UI job 都走统一跑测器（逐文件超时同一套）",
+          "--ui-set=ci-hard" in TESTS_YML and "--ui-set=ci-soft" in TESTS_YML
+          and "for b in $HARD_UI" not in TESTS_YML,
+          "tests.yml 里还有自己写的 shell 循环")
+    bad = UM.check(PLUGIN)
+    saved_ci_ok = list(UM.CI_OK)
+    UM.CI_OK.append("ui_不存在的用例")
+    try:
+        problems = UM.check(PLUGIN)
+    finally:
+        UM.CI_OK[:] = saved_ci_ok
+    check("守卫：CI 白名单里混进不存在 / 没定档的名字会被抓出来",
+          bad == [] and any("ui_不存在的用例" in p for p in problems), str(problems))
 
     def _run(args, timeout=180):
         return subprocess.run([RV.PY, str(PLUGIN / "run_release_verify.py")] + args,
@@ -544,12 +591,18 @@ def part_e() -> None:
     r = _run(["--emit-env"])
     lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
     check("--emit-env 只输出环境变量行（混进日志会污染 $GITHUB_ENV）",
-          r.returncode == 0 and all(ln.startswith(("HARD_UI=", "SOFT_UI=")) for ln in lines)
-          and len(lines) == 2, str(lines))
+          r.returncode == 0
+          and all(ln.startswith(("HARD_UI=", "SOFT_UI=", "UI_LOCAL_ONLY=")) for ln in lines)
+          and len(lines) == 3, str(lines))
+    r = _run(["--list-ui"])
+    check("--list-ui 把四份名单与实测依据打出来（CI 日志里看得见谁没跑、为什么）",
+          r.returncode == 0 and "本机专属" in r.stdout and "37144699301" in r.stdout,
+          r.stdout[-200:])
     r = _run(["--plan"])
-    check("--plan 列出将要跑什么（含 UI 硬门禁）",
+    check("--plan 列出将要跑什么（含 UI 硬门禁 + 本机专属名单）",
           r.returncode == 0 and "ui_theme_check.py" in r.stdout
-          and "test_v0235_review_round5.py" in r.stdout, r.stdout[-200:])
+          and "test_v0235_review_round5.py" in r.stdout
+          and "本机专属" in r.stdout, r.stdout[-200:])
 
     # 超时机制真的生效：挂死的用例必须被掐掉，而不是把门禁一起拖住
     with tempfile.TemporaryDirectory() as td:
