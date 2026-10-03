@@ -121,6 +121,16 @@ _DEATH_PATTERN = re.compile(
 _MSG_EXTRACT = re.compile(r"\]\s*:\s*(.*)$")
 
 
+#: v0.23.5：`stop()` 等待监听任务退出的超时（秒）。超时只记警告 ——
+#: 「关不掉一个读日志的协程」不该把插件 terminate() 卡住。
+STOP_TIMEOUT = 5.0
+
+#: v0.23.5：单行超过这么多字符就截断再交给正则。
+#: 某些模组会把整段堆栈挤成一行（几十万字符），正则不关心行尾之后的内容，
+#: 留着只是白占内存与回溯时间。
+MAX_LINE_CHARS = 8192
+
+
 class LogWatcher:
     """轮询监听服务器日志文件。"""
 
@@ -138,6 +148,14 @@ class LogWatcher:
         self._running = False
         # 已识别的日志编码（中文 Windows 下 Forge 常用 GBK 写日志）
         self._enc: str = ""
+        # v0.23.5 外部复核：轮转不能只看「文件变短」——
+        # _sig = (st_ino, st_size)：文件被换掉时 st_ino 会变；
+        # _head = 文件头 256 字节的指纹：尺寸恰好相同的换文件也能认出来。
+        self._sig: tuple[int, int] | None = None
+        self._head: str = ""
+        # 健康度留痕（见 health()）：轮询连续失败次数 + 最近一条错误
+        self.error_count: int = 0
+        self.last_error: str = ""
 
     async def start(self) -> None:
         """从日志文件末尾开始监听（不回溯历史日志）。"""
@@ -148,6 +166,8 @@ class LogWatcher:
                 self._pos = 0
         except OSError:
             self._pos = 0
+        self._sig = self._file_sig()
+        self._head = self._head_sig()
         # 探测日志编码（UTF-8 / GBK），避免固定 UTF-8 导致中文乱码
         try:
             self._enc = self._sniff_encoding()
@@ -157,38 +177,110 @@ class LogWatcher:
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
+        """停止监听。
+
+        v0.23.5 外部复核：`await self._task` 此前没有超时 —— 若监听协程恰好卡在
+        文件 IO 上不理会取消，terminate() 就会一直挂在这里。现在限时等待。
+        """
         self._running = False
         if self._task:
             self._task.cancel()
             try:
-                await self._task
+                await asyncio.wait_for(self._task, timeout=STOP_TIMEOUT)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "日志监听任务在 %.1fs 内未退出，已放弃等待（进程退出时会一并回收）",
+                    STOP_TIMEOUT,
+                )
+            except Exception as e:                       # noqa: BLE001
+                logger.warning("日志监听任务停止时异常（已忽略）：%s", e)
             self._task = None
+
+    def health(self) -> dict:
+        """监听健康度（v0.23.5 外部复核）。
+
+        「日志还好不好读」此前完全不可见：文件被删、编码认错、轮询一直抛异常，
+        界面与工具都只会安静地少播报几条事件。这里把位置、编码、错误计数摊开。
+        """
+        return {
+            "running": bool(
+                self._running and self._task is not None and not self._task.done()
+            ),
+            "path": str(self.log_path),
+            "pos": int(self._pos),
+            "encoding": self._enc or "",
+            "error_count": int(self.error_count),
+            "last_error": self.last_error,
+        }
+
+    def _file_sig(self) -> tuple[int, int] | None:
+        """(st_ino, st_size) —— 文件被换掉时 st_ino 会变（Windows 上为文件索引）。"""
+        try:
+            st = self.log_path.stat()
+        except OSError:
+            return None
+        return (int(getattr(st, "st_ino", 0) or 0), int(st.st_size))
+
+    def _head_sig(self) -> str:
+        """文件头 256 字节的指纹，用来识别「尺寸恰好相同的换文件」。"""
+        try:
+            with open(self.log_path, "rb") as f:
+                head = f.read(256)
+        except OSError:
+            return ""
+        return hash(head).to_bytes(8, "big", signed=True).hex()
 
     async def _loop(self) -> None:
         while self._running:
             try:
                 await self._poll()
-            except Exception:
-                # 日志读取失败不中断监听循环
-                pass
+                # 恢复正常就清零：health() 里的计数表示「当前连续失败几次」
+                self.error_count = 0
+            except Exception as e:                       # noqa: BLE001
+                # 日志读取失败不中断监听循环；但要留痕，别让「监听已死」瞒着所有人
+                self.error_count += 1
+                self.last_error = f"{type(e).__name__}: {e}"
+                if self.error_count == 1 or self.error_count % 60 == 0:
+                    logger.warning(
+                        "日志监听轮询异常（连续第 %d 次，文件 %s）：%s",
+                        self.error_count, self.log_path, e,
+                    )
             await asyncio.sleep(self.poll_interval)
 
     async def _poll(self) -> None:
         if not self.log_path.exists():
             return
         try:
-            size = self.log_path.stat().st_size
+            st = self.log_path.stat()
         except OSError:
             return
-        if size < self._pos:
-            # 日志轮转：latest.log 被重建，从头读取（重新嗅探编码）
+        size = st.st_size
+        sig = (int(getattr(st, "st_ino", 0) or 0), size)
+        head = ""
+        # v0.23.5 外部复核：轮转判定不能只看「文件变短」。服主把旧日志挪走、新开的
+        # 服务端恰好写到同样长度时 size 不变，_pos 停在旧位置 → 从此读到的都是错位
+        # 内容（甚至一直读到文件尾就不再产出），而外表毫无异常。三种情况都算轮转：
+        #   ① 文件变短（经典轮转）② st_ino 变了（换了个文件）③ 尺寸相同但文件头指纹变了
+        rotated = size < self._pos
+        if not rotated and self._sig is not None and sig[0] != self._sig[0]:
+            rotated = True
+        if not rotated and size == self._pos and self._head:
+            head = self._head_sig()
+            rotated = bool(head) and head != self._head
+        if rotated:
+            # latest.log 被重建 → 从头读取（重新嗅探编码）
             self._pos = 0
             try:
                 self._enc = self._sniff_encoding()
             except Exception:
                 pass
+            logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
+        self._sig = sig
+        if not head:
+            head = self._head_sig()
+        self._head = head
         if size == self._pos:
             return
         # v0.23.5：滞后保护。上面的读取上限让每次最多前进 1 MiB —— 若消费速度
@@ -233,6 +325,10 @@ class LogWatcher:
         for line in self._decode_chunk(data).splitlines():
             if not line.strip():
                 continue
+            if len(line) > MAX_LINE_CHARS:
+                # v0.23.5：超长单行先截断再解析（正则只看行首那段），
+                # 免得几十万字符的行拖慢正则回溯、白占内存。
+                line = line[:MAX_LINE_CHARS]
             for etype, player, detail in self._parse_line_multi(line):
                 try:
                     await self.on_event(etype, player, detail)
