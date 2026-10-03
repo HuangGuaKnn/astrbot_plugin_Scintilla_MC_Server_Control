@@ -44,7 +44,9 @@ _patch_pw_driver()
 from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
-PLUGIN = pathlib.Path(r"C:\Users\10316\.astrbot\data\plugins\astrbot_plugin_Scintilla_MC_Server_Control")
+# 插件根**必须从本文件反推**：写死本机路径会让这条用例只在主人的机器上跑得动
+# （v0.23.5 第五轮第一次在 CI 上跑就撞上：FileNotFoundError ...\_t_host.html）。
+PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 
 
 def check(ok: bool, label: str, detail: str = "") -> None:
