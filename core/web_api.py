@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -39,6 +38,48 @@ def _metadata_version(fallback: str = "0.21.40") -> str:
     except Exception:
         pass
     return fallback
+
+
+# ================= 严格布尔解析（v0.23.5） =================
+
+_BOOL_TRUE_TOKENS = frozenset({"true", "1", "yes", "on", "y", "t"})
+_BOOL_FALSE_TOKENS = frozenset({"false", "0", "no", "off", "n", "f", ""})
+
+
+def parse_bool(value) -> bool:
+    """严格解析布尔值；无法确定时抛 ``ValueError``。
+
+    v0.23.5 修复：此前各接口一律写 ``bool(value)``。Python 中
+    ``bool("false")`` / ``bool("0")`` / ``bool("no")`` **都是 True** ——
+    非前端客户端（脚本、curl、旧版页面缓存）提交字符串形式的「关」时，
+    反而会把开关**打开**：异地 RCON 模式、多 Agent 工作流与工具位、渐变颜色
+    都可能被意外启用，方向上是「从保守变激进」，属于 fail-open。
+
+    现在只认三类输入，其余一律报错、绝不猜：
+
+      * JSON 布尔 ``true`` / ``false``
+      * 数字 ``0`` / ``1``（含 ``0.0`` / ``1.0``）
+      * 字符串词表 ``true``/``false``、``yes``/``no``、``on``/``off``、``1``/``0``
+        （忽略大小写与首尾空白）
+
+    ``None`` 与空串按 False 处理：与旧行为一致，且方向保守（= 关闭）。
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):          # bool 已在上面拦掉
+        if value in (0, 1):
+            return bool(value)
+        raise ValueError(f"数字只接受 0 或 1，收到 {value!r}")
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _BOOL_TRUE_TOKENS:
+            return True
+        if token in _BOOL_FALSE_TOKENS:
+            return False
+        raise ValueError(f"无法解析为布尔值：{value!r}")
+    raise ValueError(f"不支持的类型 {type(value).__name__}：{value!r}")
 
 
 PLUGIN_INFO = {
@@ -199,6 +240,12 @@ class McControlWebApi:
         # 多 Agent 提示词正文由「提示词」页单独读取（v0.15.0），
         # 这里剔除，避免设置页一次性搬运近 2 万字提示词。
         flat = {k: v for k, v in flat.items() if not str(k).startswith("agent_prompt_")}
+        # v0.23.5：RCON 密码是「只写」配置 —— 永不回传给前端。
+        # 此前这里把整个摊平配置抛出去，密码明文落进页面输入框：任何能打开
+        # 本页面 / 直接打这个接口的人，凭据就跟着走了。现在只回一个布尔，
+        # 前端留空即代表「保持原值」（后端也据此跳过写入，见 _validate_settings）。
+        rcon_pwd_configured = bool(str(flat.get("rcon_password") or "").strip())
+        flat.pop("rcon_password", None)
         # mcs 指令组的前缀跟随 AstrBot 唤醒词设置，一并给前端用于文案展示
         # （纯反斜杠唤醒词会被 _wake_prefix() 归一成空串：展示成 \mcs 只会误导人）
         try:
@@ -213,6 +260,8 @@ class McControlWebApi:
         return json_response({
             "ok": True,
             "settings": flat,
+            # 只写字段的「是否已配置」——前端据此渲染占位提示，而不是回填密文
+            "rcon_password_configured": rcon_pwd_configured,
             # v0.23.3：内置话题词表（前端「恢复内置词表」按钮的填充源，
             # 免得前端再手抄一份 33 个词、两边慢慢漂移）
             "hint_keywords_default": list(HINT_TOPIC_KEYWORDS),
@@ -264,6 +313,8 @@ class McControlWebApi:
         "enable_mc_correct_knowledge", "agent_workflow_enabled",
         "enable_mc_workflow", "gradient_enabled",
         "permission_hint_injection", "permission_latch",
+        # v0.23.5：黑名单下未知命令的闸门（bool，默认 false = 拒绝）
+        "allow_unknown_commands",
         # v0.21.15：异地 RCON 模式（开关本身也是设置项，务必进白名单）
         "remote_rcon_mode",
     )
@@ -288,7 +339,9 @@ class McControlWebApi:
     # 主人白重载了好几回。别再手工同步两份清单 —— tests/test_settings_whitelist_contract.py
     # 会把「前端提交键 ⊆ 后端接受键」钉死。
     STR_SETTING_KEYS = (
-        "rcon_host", "rcon_end_mode", "rcon_probe_command", "rcon_password", "server_dir", "chat_bridge_prefix",
+        # v0.23.5：rcon_password 已移出本表，改由 _validate_settings 的「只写字段」
+        # 块单独处理 —— 否则通用文本分支会把空串写回，一次普通保存就抹掉已配密码。
+        "rcon_host", "rcon_end_mode", "rcon_probe_command", "server_dir", "chat_bridge_prefix",
         "chat_bridge_format", "ban_default_reason", "feedback_name",
         "server_version_override",
         "llm_provider_id", "agent_classifier_provider_id",
@@ -314,7 +367,10 @@ class McControlWebApi:
         parsed: dict = {}
         for k in self.BOOL_SETTING_KEYS:
             if k in settings:
-                parsed[k] = bool(settings[k])
+                try:
+                    parsed[k] = parse_bool(settings[k])
+                except ValueError as e:
+                    return None, f"{k} 需要布尔值（{e}）"
         for k, (lo, hi) in self.INT_RANGES.items():
             if k in settings:
                 try:
@@ -368,6 +424,14 @@ class McControlWebApi:
                     picked = [x for x in picked if x in allowed_groups]
                     clean[umo] = picked
                 parsed[k] = clean
+        # ---- 只写字段（v0.23.5）：提交了才写，留空 = 保持原值 ----
+        # 密码从不回传，前端那个框永远是空的；若照通用文本分支处理，一次
+        # 「只想改个端口」的保存就会把密码写成空串，RCON 当场断掉。
+        # 所以：非空才写入，空 / 纯空白一律**跳过该键**（不是写空值）。
+        if "rcon_password" in settings:
+            _pwd = str(settings["rcon_password"] or "").strip()
+            if _pwd:
+                parsed["rcon_password"] = _pwd
         for k in self.STR_SETTING_KEYS:
             if k in settings:
                 parsed[k] = str(settings[k] or "").strip()
@@ -452,7 +516,12 @@ class McControlWebApi:
                 })
         # v0.17.1：前端已更新、插件却没热重载时，新版键会被旧代码静默忽略
         # （保存看着成功、实际不落盘），这里把「后端不认识的键」回传给前端提示。
-        ignored = sorted(k for k in settings.keys() if k not in parsed)
+        # 只写字段（rcon_password）留空时会被上面有意跳过，不该算「后端未识别」——
+        # 否则每次不填密码的保存，前端都会弹「1 项后端未接受，请重载插件」的假警报。
+        ignored = sorted(
+            k for k in settings.keys()
+            if k not in parsed and k != "rcon_password"
+        )
         # 仅对「真正发生变化的键」触发副作用，避免无变化的保存白重启监听器
         try:
             current = self.plugin._cfg_flat()
@@ -464,6 +533,11 @@ class McControlWebApi:
             self.plugin._set_cfg_batch(parsed)
         except Exception as e:
             return json_response({"ok": False, "error": f"配置保存失败: {e}"})
+        # v0.23.5：_set_cfg_batch 内部把 _save_config() 的返回值丢掉了 ——
+        # 配置只进了内存、没落盘，这里照样回 ok:True，界面显示「已保存」，
+        # 重启后改动凭空消失。现在把落盘结果捞出来一起报。
+        cfg_save_ok = bool(getattr(self.plugin, "_last_cfg_save_ok", True))
+        cfg_save_error = str(getattr(self.plugin, "_last_cfg_save_error", "") or "")
 
         # ---------- 热应用（无需重启） ----------
         effects: list[str] = []
@@ -530,7 +604,11 @@ class McControlWebApi:
                             "否则本通道会安静退化为纯 BM25"
                         )
                     else:
-                        asyncio.create_task(self.plugin._kb_build_semantic())
+                        # policy="replace"：用户明确按了开关，后一次覆盖前一次
+                        self.plugin._spawn_bg(
+                            "kb_semantic", self.plugin._kb_build_semantic(),
+                            policy="replace",
+                        )
                         effects.append("语义增强检索已开启：向量索引正在后台补齐（新增条目才会重算）")
                 else:
                     effects.append("语义增强检索已关闭：检索回到纯 BM25")
@@ -579,8 +657,13 @@ class McControlWebApi:
                     if self.plugin._inject_embed_fn():
                         label = self.plugin.kb_effective_label("embedding")
                         if self.plugin._kb_semantic():
-                            asyncio.create_task(
-                                self.plugin._kb_build_semantic(force=True)
+                            # 换了嵌入模型 → 旧模型算的向量整库作废。这里必须
+                            # replace：可能正有一轮「旧模型」构建在跑，先取消它，
+                            # 否则两个协程会同时改同一个 SemanticIndex。
+                            self.plugin._spawn_bg(
+                                "kb_semantic",
+                                self.plugin._kb_build_semantic(force=True),
+                                policy="replace",
                             )
                             effects.append(
                                 f"嵌入模型已切换为「{label or '（未指明）'}」："
@@ -607,8 +690,21 @@ class McControlWebApi:
                 f"⚠ 有 {len(ignored)} 项后端未识别：{'、'.join(ignored[:4])}"
                 "（多为插件未重载所致，请到 AstrBot「插件管理」重载本插件后重新保存）；" + notice
             )
+        # v0.23.5：applied 会原样回给前端 —— 密码必须在这里再抹一次，
+        # 否则「刚保存的密码」又跟着响应明文返回一趟，等于绕回同一个泄露口。
+        applied = dict(parsed)
+        applied.pop("rcon_password", None)
+        # 落盘失败：内存已生效（功能照用），但重启会丢 —— 必须显著告警而不是报成功
+        if not cfg_save_ok:
+            notice = (
+                "⚠ 设置已写入内存并即时生效，但**配置文件落盘失败**（"
+                + (cfg_save_error or "未知原因")
+                + "）—— AstrBot 重启后这次改动会丢失，请检查磁盘空间与配置目录权限。" + notice
+            )
         return json_response({
-            "ok": True, "notice": notice, "applied": parsed, "ignored": ignored,
+            "ok": True, "notice": notice, "applied": applied, "ignored": ignored,
+            "config_saved": cfg_save_ok,
+            "save_warning": ("" if cfg_save_ok else cfg_save_error),
         })
 
     # ================= 多Agent工作流 =================
@@ -1143,7 +1239,13 @@ class McControlWebApi:
                 })
             parsed["gradient_format"] = fmt
         if "gradient_enabled" in data:
-            parsed["gradient_enabled"] = bool(data["gradient_enabled"])
+            try:
+                parsed["gradient_enabled"] = parse_bool(data["gradient_enabled"])
+            except ValueError as e:
+                return json_response({
+                    "ok": False,
+                    "error": f"gradient_enabled 需要布尔值（{e}）",
+                })
         if not parsed:
             return json_response({
                 "ok": False,
@@ -1175,6 +1277,24 @@ class McControlWebApi:
 
     # ================= 知识库管理 =================
 
+    def _kb_save_warning(self, kb) -> str:
+        """v0.23.5：知识库最近一次落盘失败 → 告警文案（否则空串）。
+
+        这些写接口以前一律只回 ok:True —— 条目进了内存、磁盘却没写成功时，
+        界面看着一切正常，重启后新增 / 启停 / 删除全部回滚。落盘健康度由
+        ModKnowledgeBase.save_health() 提供。
+        """
+        try:
+            info = kb.save_health()
+        except Exception:
+            return ""
+        if info.get("ok"):
+            return ""
+        return (
+            "已写入内存但**知识库落盘失败**（" + (info.get("error") or "未知原因")
+            + "）—— AstrBot 重启后这次改动会丢失，请检查磁盘空间与数据目录权限。"
+        )
+
     async def save_entry(self):
         kb = self._kb()
         if kb is None:
@@ -1196,7 +1316,9 @@ class McControlWebApi:
                 return json_response({"ok": False, "error": "原条目已不存在（可能刚被改名或删除）"})
         entry = kb.save_entry(topic, content, source="webui", status=status,
                               rename_from=old_topic if renaming else "", manual=True)
-        return json_response({"ok": True, "entry": entry, "renamed_from": old_topic if renaming else ""})
+        return json_response({"ok": True, "entry": entry,
+                              "renamed_from": old_topic if renaming else "",
+                              "save_warning": self._kb_save_warning(kb)})
 
     async def toggle_entry(self):
         kb = self._kb()
@@ -1206,10 +1328,15 @@ class McControlWebApi:
         topic, enabled = data.get("topic", ""), data.get("enabled")
         if not topic or enabled is None:
             return json_response({"ok": False, "error": "topic 与 enabled 必填"})
-        entry = kb.set_enabled(topic, bool(enabled))
+        try:
+            flag = parse_bool(enabled)
+        except ValueError as e:
+            return json_response({"ok": False, "error": f"enabled 需要布尔值（{e}）"})
+        entry = kb.set_enabled(topic, flag)
         if entry is None:
             return json_response({"ok": False, "error": "条目不存在"})
-        return json_response({"ok": True, "entry": entry})
+        return json_response({"ok": True, "entry": entry,
+                              "save_warning": self._kb_save_warning(kb)})
 
     async def delete_entry(self):
         kb = self._kb()
@@ -1220,7 +1347,8 @@ class McControlWebApi:
         if not topic:
             return json_response({"ok": False, "error": "topic 必填"})
         ok = kb.delete_entry(topic)
-        return json_response({"ok": ok, "deleted": ok})
+        return json_response({"ok": ok, "deleted": ok,
+                              "save_warning": self._kb_save_warning(kb)})
 
     async def approve_entry(self):
         kb = self._kb()
@@ -1228,20 +1356,25 @@ class McControlWebApi:
             return json_response(self._kb_uninit())
         data = await request.json() or {}
         topic = data.get("topic", "")
-        approve = bool(data.get("approve", True))
+        try:
+            approve = parse_bool(data.get("approve", True))
+        except ValueError as e:
+            return json_response({"ok": False, "error": f"approve 需要布尔值（{e}）"})
         if not topic:
             return json_response({"ok": False, "error": "topic 必填"})
         entry = kb.approve_entry(topic, approve)
         if entry is None:
             return json_response({"ok": False, "error": "条目不存在"})
-        return json_response({"ok": True, "entry": entry})
+        return json_response({"ok": True, "entry": entry,
+                              "save_warning": self._kb_save_warning(kb)})
 
     async def clear_kb(self):
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
         stats = kb.clear()
-        return json_response({"ok": True, "stats": stats})
+        return json_response({"ok": True, "stats": stats,
+                              "save_warning": self._kb_save_warning(kb)})
 
     # ================= 知识库预设（v0.18.0） =================
 

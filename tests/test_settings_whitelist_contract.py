@@ -13,6 +13,7 @@
 
 三层守卫（越往后越硬）：
   [1] 静态：index.html 里 DOM 真实存在的 CFG_FIELDS 键 + 运行时补的会话键 ⊆ 后端接受键；
+      （只写类型 p 除外 —— 它留空时压根不提交，见 v0.23.5 的 rcon_password）
   [2] 真后端：`_validate_settings` 对这两个键的接受与规范化（非法枚举值必须被拒，不许静默吞）；
   [3] 端到端：真浏览器点「保存全部设置」按钮 → 截获那一刻的真实载荷 →
       把它的每个键喂给真后端校验 → `ignored` 必须为空。
@@ -85,7 +86,11 @@ def front_submittable_keys() -> set[str]:
     blk = re.search(r"const CFG_FIELDS = \[(.*?)\n\];", src, re.S)
     pairs = re.findall(r'\[\s*"([\w]+)"\s*,\s*"([\w]+)"\s*,\s*"(\w)"', blk.group(1)) if blk else []
     dom_ids = set(re.findall(r'id="(cfg_[\w]+)"', src))
-    keys = {key for cfg_id, key, _ in pairs if cfg_id in dom_ids}
+    # v0.23.5：只写类型（ty == "p"，目前是 rcon_password）留空时**不会**被
+    # collectSettings 提交（后端也有意跳过空值）—— 它属于「条件提交键」，
+    # 静态推导必须排除，否则又是一次「请重载插件」的假警报。
+    # 真提交它的情况（主人填了新密码）由 [3] 端到端那层覆盖。
+    keys = {key for cfg_id, key, ty in pairs if cfg_id in dom_ids and ty != "p"}
     # collectSettings 里另外手工塞进去的会话键（TGT_KEYS）+ 每会话事件组
     keys |= {"notify_targets", "chat_bridge_targets", "notify_target_events"}
     return keys

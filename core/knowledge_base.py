@@ -31,6 +31,15 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+# 规范要求：插件的日志器必须来自 astrbot.api（不得使用标准库 logging）——
+# 与 core/hot_reload.py、core/agent_llm.py 一致，也由 tests/test_review_compliance.py 钉住。
+from astrbot.api import logger
+
+# v0.23.5：本文件此前**一行日志都没有**，三处落盘都是 `except Exception: pass`。
+# 磁盘满 / 只读 / 路径被删时，知识库会安静地在内存里"看起来一切正常"，
+# 直到重启才发现全没了。改为统一记日志 + 把最后一次落盘结果留在实例上。
+_log = logger
+
 try:                      # numpy 随 AstrBot（faiss 依赖）一起提供；缺了就让语义通道自动失效
     import numpy as _np
 except Exception:         # pragma: no cover
@@ -323,17 +332,25 @@ class SemanticIndex:
 
     # ---------- 落盘 ----------
 
-    def save(self, path: Path) -> None:
+    # v0.23.5：最近一次落盘错误（空串 = 上一次成功 / 从未失败）
+    last_save_error: str = ""
+
+    def save(self, path: Path) -> bool:
+        """把向量索引写盘。返回是否成功（v0.23.5 起不再静默吞异常）。"""
         if _np is None or self.matrix is None:
-            return
+            return True          # 无索引可写 = 无需落盘，不算失败
         try:
             _np.savez_compressed(
                 path, matrix=self.matrix,
                 topics=_np.array(self.topics, dtype=object),
                 hashes=_np.array(self.hashes, dtype=object),
             )
-        except Exception:
-            pass
+            self.last_save_error = ""
+            return True
+        except Exception as e:                       # noqa: BLE001
+            self.last_save_error = str(e)
+            _log.warning("向量索引落盘失败（%s）：%s", path, e)
+            return False
 
     def load(self, path: Path) -> bool:
         if _np is None or not path.exists():
@@ -399,7 +416,11 @@ class KnowledgeState:
             except Exception:
                 pass
 
-    def save(self) -> None:
+    # v0.23.5：最近一次落盘错误（空串 = 上一次成功 / 从未失败）
+    last_save_error: str = ""
+
+    def save(self) -> bool:
+        """把开关状态写盘。返回是否成功（v0.23.5 起不再静默吞异常）。"""
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.file_path.with_suffix(".tmp")
@@ -409,8 +430,12 @@ class KnowledgeState:
                 "auto_apply": self.auto_apply,
             }, ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.file_path)
-        except Exception:
-            pass
+            self.last_save_error = ""
+            return True
+        except Exception as e:                       # noqa: BLE001
+            self.last_save_error = str(e)
+            _log.warning("知识库开关状态落盘失败（%s）：%s", self.file_path, e)
+            return False
 
     def set(self, enabled: bool | None = None, learning: bool | None = None,
             auto_apply: bool | None = None) -> dict:
@@ -710,7 +735,20 @@ class ModKnowledgeBase:
         if changed:
             self.save()
 
-    def save(self) -> None:
+    # v0.23.5：最近一次落盘的结果。此前这里是 `except Exception: pass` ——
+    # 磁盘满 / 只读 / 路径被删时，知识库会安静地在内存里"看起来一切正常"，
+    # 界面上条目照加、检索照用，直到重启才发现全没了。现在留痕供上层告警。
+    last_save_ok: bool = True
+    last_save_error: str = ""
+    last_save_at: str = ""
+
+    def save(self) -> bool:
+        """把整库写盘并重建索引。返回是否成功（v0.23.5 起不再静默吞异常）。
+
+        注意：**无论落盘成败都会重建索引** —— 索引只依赖内存条目，
+        写盘失败不该让检索跟着一起退化。
+        """
+        ok = True
         try:
             self._data["preset_id"] = self.preset_id
             self._data["updated_at"] = self._now()
@@ -720,11 +758,29 @@ class ModKnowledgeBase:
                 encoding="utf-8",
             )
             tmp.replace(self.file_path)
-        except Exception:
-            pass
+            self.last_save_error = ""
+        except Exception as e:                       # noqa: BLE001
+            ok = False
+            self.last_save_error = str(e)
+            _log.warning("知识库落盘失败（%s）：%s", self.file_path, e)
+        self.last_save_ok = ok
+        self.last_save_at = self._now()
         # 落盘后重建索引：所有写操作（沉淀/纠错/启停/删除）都会走到这里，
         # 索引因此始终与内存条目一致，不必在每个写方法里各挂一次钩子
         self._rebuild_index()
+        return ok
+
+    def save_health(self) -> dict:
+        """最近一次落盘结果（v0.23.5）。
+
+        WebUI 与工具结果据此提示「已写进内存，但没落盘、重启会丢」——
+        而不是让主人以为保存成功了。
+        """
+        return {
+            "ok": bool(self.last_save_ok),
+            "error": str(self.last_save_error or ""),
+            "at": str(self.last_save_at or ""),
+        }
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

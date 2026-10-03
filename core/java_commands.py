@@ -28,7 +28,11 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------- 权限等级表
 
-#: 未知命令（模组命令、整合包自定义命令、比本表更新的版本命令）按 2 级处理。
+#: 未知命令的**占位**等级（模组命令、整合包自定义命令、比本表更新的版本命令）。
+#:
+#: 注意：2 < MIN_ADMIN_LEVEL(3)，所以**绝不能**拿它当作放行依据 —— 那正是
+#: v0.23.5 修掉的 fail-open。现在 _check_line 的第四段对未知命令**默认拒绝**
+#: （除非显式打开 allow_unknown_commands）。这里保留 2 只是给一个可读的等级值。
 DEFAULT_LEVEL = 2
 
 #: 达到该等级即视为「服务器管理」，黑名单策略下非管理员一律拒绝。
@@ -403,11 +407,21 @@ def check_tool_access(policy: str = "whitelist", is_admin: bool = False) -> str 
     )
 
 
-def check_command(command: str, policy: str = "whitelist", is_admin: bool = False) -> str | None:
+def check_command(command: str, policy: str = "whitelist", is_admin: bool = False,
+                  allow_unknown: bool = False) -> str | None:
     """权限闸门：返回 None 表示放行，否则返回拒绝原因（人类可读）。
 
     policy: "whitelist"（白名单，默认：非管理员不能用命令工具）
             "blacklist"（黑名单：所有人都能用，但危险命令与权限等级 ≥ 3 的管理命令仅管理员）
+    allow_unknown: 黑名单策略下是否放行**未知命令**（不在 COMMAND_LEVELS 里的：
+            模组命令 / 整合包自定义命令 / 比本表更新的版本命令）。
+
+            v0.23.5 起默认为 False（fail-closed）。此前这类命令统一按 2 级处理
+            直接放行 —— 可 2 < MIN_ADMIN_LEVEL(3)，等于把「改世界、发物品」这整类
+            模组能力对所有人敞开；而偏偏未知命令**最不可能**被本表覆盖到，
+            而 `is_danger_command` 也认不出它们。认不出来就放行 = fail-open。
+
+            需要恢复旧行为的服务器把配置 allow_unknown_commands 打开即可。
     管理员不受策略限制（但仍要求命令非空）。
     """
     lines = split_lines(command)
@@ -419,22 +433,24 @@ def check_command(command: str, policy: str = "whitelist", is_admin: bool = Fals
     if denied:
         return denied
     for line in lines:
-        reason = _check_line(line, policy)
+        reason = _check_line(line, policy, allow_unknown)
         if reason:
             return reason
     return None
 
 
-def _check_line(line: str, policy: str) -> str | None:
+def _check_line(line: str, policy: str, allow_unknown: bool = False) -> str | None:
     """黑名单策略下的逐行把关（白名单在 check_tool_access 就已整体拦下）。
 
-    fail-closed 三段式：
+    fail-closed 四段式：
       ① 结构解析不出来（子命令边界判不出 / 嵌套过深）→ 拒绝；
       ② 解包后命中危险清单 → 拒绝；
-      ③ 解包后的命令权限等级 ≥ 3（服务器管理类）→ 拒绝。
-    绝不允许出现「解析失败 → 按普通命令放行」这种 fail-open。
+      ③ 解包后的命令权限等级 ≥ 3（服务器管理类）→ 拒绝；
+      ④ **未知命令**（不在 COMMAND_LEVELS 里的模组 / 整合包自定义命令）→ 拒绝
+         （v0.23.5 新增；仅在 allow_unknown=True 时按旧行为放行）。
+    绝不允许出现「解析失败 / 认不出来 → 按普通命令放行」这种 fail-open。
     """
-    name, level, _unknown = effective_level(line)
+    name, level, unknown = effective_level(line)
     if not name:
         return "命令为空。"
     if is_whitelist_policy(policy):
@@ -452,5 +468,15 @@ def _check_line(line: str, policy: str) -> str | None:
         return (
             f"命令「{name}」需要权限等级 {level}（服务器管理类），"
             f"仅管理员可执行，已拒绝。"
+        )
+    # ④ 未知命令（模组 / 整合包自定义 / 比本表更新的版本命令）
+    #    注意：解析失败那条路（effective_level 返回 unknown=True 后 unwrap 再抛）
+    #    已经在上面 ① 拦掉了，走不到这里，所以此处只覆盖「认得名字但不在表里」。
+    if unknown and not allow_unknown:
+        return (
+            f"命令「{name}」不在已知命令表里（模组 / 整合包自定义命令），"
+            "黑名单策略下默认拒绝 —— 这类命令无法判定权限等级，"
+            "认不出来就放行等于把模组能力对所有人敞开。"
+            "管理员可在插件设置里打开「允许未知命令」，或把该玩家加入 admin_ids。"
         )
     return None

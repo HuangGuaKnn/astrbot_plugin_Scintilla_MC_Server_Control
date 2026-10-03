@@ -143,9 +143,17 @@ class MCWorkflow:
         # 复杂路径：后台流水线 + 完成通知
         self._log(request=request, player=player, status="running",
                   detail="复杂任务进入后台流水线", kind="complex")
-        task = asyncio.create_task(
-            self._run_complex_async(request, player, event, umo)
-        )
+        # v0.23.x：登记进插件任务册（policy="parallel" —— 多个复杂任务可以同时在跑），
+        # 插件卸载 / 重载时随任务册一起取消；否则流水线会活过一个已终止的插件。
+        # 本地 _tasks 集合保留：流水线内部要拿它判断「还有没有在跑的任务」。
+        reg = getattr(self.plugin, "_bg", None)
+        coro = self._run_complex_async(request, player, event, umo)
+        task = reg.spawn("workflow", coro, policy="parallel") if reg is not None \
+            else asyncio.create_task(coro)
+        if task is None:
+            self._log(request=request, player=player, status="failed",
+                      detail="插件正在卸载，复杂任务未启动", kind="complex")
+            return "[MC工作流·终止] 插件正在卸载，本次复杂任务未启动。"
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return f"[MC工作流·已开始] 复杂任务已进入后台流水线：{request.strip()[:60]}，完成后将自动通知。"
