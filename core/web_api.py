@@ -214,12 +214,47 @@ class McControlWebApi:
         if kb is None:
             return json_response(self._kb_uninit())
         data = await request.json() or {}
-        st = kb.state.set(
-            enabled=data.get("enabled"),
-            learning=data.get("learning"),
-            auto_apply=data.get("auto_apply"),
+        # v0.23.5 外部复核：本接口此前把外部值**直传** `KnowledgeState.set()`，
+        # 而它内部是裸 `bool()` —— `bool("false")` 仍是 True，等于把「关」读成「开」。
+        # 四个入口当时都改了，偏偏漏了这一处；现在一律走严格解析：无法判定就报错。
+        # 缺省 / 空串视为「本次不动这一项」（与前端不提交该键同义）。
+        parsed: dict = {}
+        for key in ("enabled", "learning", "auto_apply"):
+            if key not in data:
+                continue
+            raw = data.get(key)
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                continue
+            try:
+                parsed[key] = parse_bool(raw)
+            except ValueError as e:
+                return json_response({
+                    "ok": False,
+                    "error": f"{key} 需要布尔值（{e}）",
+                })
+        if not parsed:
+            # 什么都不改也照旧回成功 + 当前状态（不改动语义，避免旧前端白屏）
+            return json_response({"ok": True, "state": kb.state.as_dict()})
+        st = kb.state.set(**parsed)
+        return json_response({
+            "ok": True, "state": st,
+            "save_warning": self._state_save_warning(kb),
+        })
+
+    @staticmethod
+    def _state_save_warning(kb) -> str:
+        """知识库开关状态的落盘告警（v0.23.5 外部复核补充）。
+
+        开关状态也落盘（`knowledge_state.json`）：写失败时界面显示「已切换」，
+        重启后却退回旧值 —— 与知识库条目那条告警同一个道理。
+        """
+        if bool(getattr(kb.state, "last_save_ok", True)):
+            return ""
+        err = str(getattr(kb.state, "last_save_error", "") or "")
+        return (
+            "知识库开关已在内存生效，但**状态落盘失败**（" + (err or "未知原因")
+            + "）—— AstrBot 重启后会退回旧设置，请检查数据目录权限。"
         )
-        return json_response({"ok": True, "state": st})
 
     # ================= 基础设置 =================
 
@@ -323,8 +358,16 @@ class McControlWebApi:
         "agent_max_implement_rounds": (1, 10),
         "agent_max_correct_rounds": (0, 10),
         "permission_latch_ttl": (10, 3600),
+        # v0.23.5 外部复核：喊话闸门既然做到界面上，就必须进白名单 ——
+        # 否则前端每次都提交、后端每次都判成「不认识」，界面长期误报「后端未接受」，
+        # 而设置其实压根没保存。0 = 不限（见 _conf_schema.json 的 commands 分组）。
+        "say_max_chars": (0, 10000),
     }
-    FLOAT_RANGES = {"rcon_timeout": (0.1, 300.0), "rcon_idle_probe": (0.05, 5.0)}
+    FLOAT_RANGES = {
+        "rcon_timeout": (0.1, 300.0),
+        "rcon_idle_probe": (0.05, 5.0),
+        "say_cooldown_seconds": (0.0, 3600.0),
+    }
     LIST_SETTING_KEYS = ("admin_ids", "notify_targets", "chat_bridge_targets",
                          # v0.23.3：MC 话题关键词（按需注入用；默认值即内置词表）
                          "permission_hint_keywords")
@@ -606,7 +649,7 @@ class McControlWebApi:
                     else:
                         # policy="replace"：用户明确按了开关，后一次覆盖前一次
                         self.plugin._spawn_bg(
-                            "kb_semantic", self.plugin._kb_build_semantic(),
+                            self.plugin.KB_VECTORS_TASK, self.plugin._kb_build_semantic(),
                             policy="replace",
                         )
                         effects.append("语义增强检索已开启：向量索引正在后台补齐（新增条目才会重算）")
@@ -661,7 +704,7 @@ class McControlWebApi:
                             # replace：可能正有一轮「旧模型」构建在跑，先取消它，
                             # 否则两个协程会同时改同一个 SemanticIndex。
                             self.plugin._spawn_bg(
-                                "kb_semantic",
+                                self.plugin.KB_VECTORS_TASK,
                                 self.plugin._kb_build_semantic(force=True),
                                 policy="replace",
                             )
@@ -790,7 +833,11 @@ class McControlWebApi:
         notice = f"已保存 {len(updates)} 个 Agent 的提示词，下一次任务即刻生效"
         if warn:
             notice += f"（注意：{'、'.join(warn)} 的提示词里没有出现 JSON 输出约定，可能解析失败）"
-        return json_response({"ok": True, "notice": notice})
+        # v0.23.5 外部复核：提示词同样落盘，写失败必须浮出水面
+        return json_response({
+            "ok": True, "notice": notice,
+            "save_warning": self._cfg_save_warning(),
+        })
 
     async def reset_prompt(self):
         """把某个 Agent（或全部）的提示词恢复为内置默认。"""
@@ -814,6 +861,8 @@ class McControlWebApi:
         return json_response({
             "ok": True,
             "notice": f"已把「{names}」恢复为内置默认提示词（下次任务生效）",
+            # v0.23.5 外部复核：恢复默认也是写盘，失败要能看见
+            "save_warning": self._cfg_save_warning(),
         })
 
     # ================= 概览 / 服务器 =================
@@ -890,9 +939,18 @@ class McControlWebApi:
             }
 
         # 服务器事件转发
+        # v0.23.5 外部复核：此前 `running` 判的是「_watcher 对象在不在」——
+        # 对象还挂着、监听循环却已经死了（连续读盘异常 / 文件被删）时，概览页照样亮绿灯。
+        # 现在直接问 watcher 本人（health() 会核对监听任务是否真的还活着），并附上健康度明细。
+        _w = getattr(plugin, "_watcher", None)
+        try:
+            _whealth = _w.health() if _w is not None else {}
+        except Exception:                                # noqa: BLE001
+            _whealth = {}
         listener = {
             "enabled": bool(self._cfg("enable_event_listener", False)),
-            "running": getattr(plugin, "_watcher", None) is not None,
+            "running": bool(_whealth.get("running", False)),
+            "health": _whealth,
             "server_dir": str(self._cfg("server_dir", "") or ""),
             "targets": self._cfg("notify_targets", []) or [],
             # v0.17.0：会话级播报内容 + 全局类型闸门状态（供 WebUI 渲染子菜单）
@@ -1079,6 +1137,12 @@ class McControlWebApi:
         if not message:
             return json_response({"ok": False, "error": "消息不能为空"})
         plugin = self.plugin
+        # v0.23.5 外部复核：`mcs 喊话` 加了限长，WebUI 这条广播却还是想发多长发多长 ——
+        # 走的是同一条 tellraw / 同一个共享 RCON，超长文本照样只显示半句、照样挤住别人的指令。
+        # 这里复用喊话那道闸门（is_admin=True → 只吃长度上限，不吃冷却：WebUI 本就是管理员在操作）。
+        gate = plugin._say_gate(message, "webui", is_admin=True)
+        if gate:
+            return json_response({"ok": False, "error": gate})
         try:
             rcon = await plugin._get_rcon()
             name = str(self._cfg("feedback_name", "RCON") or "RCON")
@@ -1252,11 +1316,16 @@ class McControlWebApi:
                 "error": "参数错误：需要颜色或渐变设置之一",
             })
         # v0.14.0：按分组写回内存并落盘
-        self.plugin._set_cfg_batch(parsed)
+        # v0.23.5 外部复核：这里此前连 try 都没有，落盘失败也回 ok:True —— 与 save_settings 对齐。
+        try:
+            self.plugin._set_cfg_batch(parsed)
+        except Exception as e:
+            return json_response({"ok": False, "error": f"配置写入失败: {e}"})
         grad = bool(self._cfg("gradient_enabled", False))
         fmt_now = self._cfg("gradient_format", self.DEFAULT_FORMAT)
         return json_response({
             "ok": True,
+            "save_warning": self._cfg_save_warning(),
             "colors": {
                 k: self._cfg(k, self.COLOR_DEFAULTS[k])
                 for k in self.COLOR_KEYS
@@ -1276,6 +1345,22 @@ class McControlWebApi:
         })
 
     # ================= 知识库管理 =================
+
+    def _cfg_save_warning(self) -> str:
+        """配置类写接口的落盘告警（空串 = 落盘成功）。
+
+        v0.23.5 外部复核补充：`save_settings` 之外的三个配置写接口
+        （`save_colors` / `save_prompts` / `reset_prompt`）同样调 `_set_cfg_batch()`，
+        却没人看落盘结果 —— 磁盘写失败时它们照样回 `ok:True`，界面显示「已保存」，
+        重启后改动凭空消失。落盘状态由 `main._save_config()` 记在插件实例上。
+        """
+        if bool(getattr(self.plugin, "_last_cfg_save_ok", True)):
+            return ""
+        err = str(getattr(self.plugin, "_last_cfg_save_error", "") or "")
+        return (
+            "已写入内存但**配置落盘失败**（" + (err or "未知原因")
+            + "）—— AstrBot 重启后这次改动会丢失，请检查磁盘空间与配置目录权限。"
+        )
 
     def _kb_save_warning(self, kb) -> str:
         """v0.23.5：知识库最近一次落盘失败 → 告警文案（否则空串）。

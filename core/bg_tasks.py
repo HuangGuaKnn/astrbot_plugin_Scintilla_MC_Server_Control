@@ -83,6 +83,8 @@ class BackgroundTasks:
         self._loose: dict[str, set[asyncio.Task]] = {}
         self._closing = False
         self._shutdown_timeout = shutdown_timeout
+        #: v0.23.5：收口时「超时未退出、已放弃等待」的任务名（册子清空后仍留档）
+        self._gave_up: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------ 查询
 
@@ -121,6 +123,8 @@ class BackgroundTasks:
             "named": named,
             "groups": loose,
             "alive": sum(1 for t in self._all_tasks() if not t.done()),
+            # v0.23.5：收口时放弃等待的任务 —— 册子已空，但这些名字仍是「可能还活着」的
+            "gave_up_at_shutdown": list(self._gave_up),
         }
 
     # ------------------------------------------------------------------ 登记
@@ -226,6 +230,11 @@ class BackgroundTasks:
                     "后台任务 %s 在 %.1fs 内未退出，已放弃等待（可能阻塞在 IO）",
                     self._label(t), self._shutdown_timeout,
                 )
+            # v0.23.5 外部复核：下面两行会把册子清空 —— 于是「超时未退出」的任务从此
+            # 在册子上查无此人（snapshot() 会说「没有在跑的」，实际可能还有一个在爬）。
+            # 收口阶段做不了更多事，但至少要留下名字，别让诊断信息自相矛盾。
+            if still:
+                self._gave_up = tuple(self._label(t) for t in still)
 
         self._named.clear()
         self._loose.clear()

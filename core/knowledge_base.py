@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -334,17 +335,28 @@ class SemanticIndex:
 
     # v0.23.5：最近一次落盘错误（空串 = 上一次成功 / 从未失败）
     last_save_error: str = ""
+    # v0.23.5 外部复核：落盘成败也要留痕 —— set() 内部吞掉返回值时，
+    # WebUI 无从判断「开关状态到底写进磁盘没有」。
+    last_save_ok: bool = True
 
     def save(self, path: Path) -> bool:
-        """把向量索引写盘。返回是否成功（v0.23.5 起不再静默吞异常）。"""
+        """把向量索引写盘。返回是否成功（v0.23.5 起不再静默吞异常）。
+
+        v0.23.5 外部复核：改为**先写临时文件再原子替换** —— 原先直接往目标
+        路径写，进程在写一半时被打断（或两个构建任务撞车）会留下半截 npz，
+        下次启动 `np.load` 直接失败、整库向量作废。临时文件后缀保留 `.npz`，
+        免得 `np.savez_compressed` 自己再补一个后缀。
+        """
         if _np is None or self.matrix is None:
             return True          # 无索引可写 = 无需落盘，不算失败
         try:
+            tmp = path.with_suffix(".tmp.npz")
             _np.savez_compressed(
-                path, matrix=self.matrix,
+                tmp, matrix=self.matrix,
                 topics=_np.array(self.topics, dtype=object),
                 hashes=_np.array(self.hashes, dtype=object),
             )
+            tmp.replace(path)
             self.last_save_error = ""
             return True
         except Exception as e:                       # noqa: BLE001
@@ -439,13 +451,20 @@ class KnowledgeState:
 
     def set(self, enabled: bool | None = None, learning: bool | None = None,
             auto_apply: bool | None = None) -> dict:
+        """写入开关状态并落盘。
+
+        v0.23.5 外部复核：三个参数**必须**已经是布尔值 —— WebUI 侧统一走
+        `web_api.parse_bool()` 严格解析后才传进来（此前直传原始 JSON 值，
+        而这里是裸 `bool()`：`bool("false")` 仍是 True，「关」会被读成「开」）。
+        保留 `bool()` 只为兜住内部调用方传 0/1 的老习惯，不再是外部输入的入口。
+        """
         if enabled is not None:
             self.enabled = bool(enabled)
         if learning is not None:
             self.learning = bool(learning)
         if auto_apply is not None:
             self.auto_apply = bool(auto_apply)
-        self.save()
+        self.last_save_ok = self.save()
         return self.as_dict()
 
     def as_dict(self) -> dict:
@@ -566,12 +585,33 @@ class ModKnowledgeBase:
         """精排通道是否真正可用（开关开着 + 有 rerank 调用）。"""
         return bool(self.rerank_enabled and self.rerank_fn is not None)
 
+    def _vectors_lock(self) -> "asyncio.Lock":
+        """向量构建用的互斥锁（惰性创建，省得动 ``__init__``）。
+
+        v0.23.5 外部复核：启动补算与「写入后 debounce 补算」是两条独立路径
+        （`kb_semantic` / `kb_vec_debounce` —— 名字不同，登记册去重挡不住它们），
+        两边各自 `prune() / set_vectors() / save()` 同一份 `SemanticIndex` 与
+        同一个 `.vec.npz`，轻则互相覆盖，重则写出半截文件。锁在这里，锁的是
+        「构建 + 落盘」这一整段，而不是某一次嵌入调用。
+        """
+        lk = getattr(self, "_vec_lock", None)
+        if lk is None:
+            lk = self._vec_lock = asyncio.Lock()
+        return lk
+
     async def build_vectors(self, force: bool = False) -> dict:
         """为「新增 / 内容有变」的条目补算向量（后台调用，可安全重复执行）。
 
         force=True 时整库重算（换嵌入模型、怀疑缓存脏了时用）。
         返回统计信息；嵌入调用失败不抛异常，交由上层提示。
+
+        并发安全：整个「构建 + 落盘」在同一把锁内完成（见 `_vectors_lock`），
+        因此重复调用只会串成先后两轮，不会互相踩。
         """
+        async with self._vectors_lock():
+            return await self._build_vectors_locked(force)
+
+    async def _build_vectors_locked(self, force: bool = False) -> dict:
         if not self.semantic_enabled:
             return {"ok": False, "reason": "语义通道未开启"}
         if self.embed_fn is None:
@@ -603,11 +643,21 @@ class ModKnowledgeBase:
             except Exception:
                 failed += len(batch)
                 continue
-        self._sem.save(self.vec_path)
-        return {
+        # v0.23.5 外部复核：落盘结果此前被直接丢掉 —— 向量算完却写不进磁盘时，
+        # 界面/日志都以为「语义索引已补齐」，下次启动又得整库重算。
+        saved = self._sem.save(self.vec_path)
+        out = {
             "ok": True, "added": added, "failed": failed,
             "total": len(self._sem.topics), "dim": self._sem.dim,
+            "saved": bool(saved),
         }
+        if not saved:
+            out["save_warning"] = (
+                "向量索引已算进内存但**落盘失败**（"
+                + (self._sem.last_save_error or "未知原因")
+                + "）—— 下次启动会重新计算，请检查数据目录权限。"
+            )
+        return out
 
     async def asearch(self, query: str, limit: int = 10) -> list[dict]:
         """search() 的异步入口：先算查询向量（语义通道），再走检索。
@@ -1308,6 +1358,9 @@ class KnowledgePresetManager:
 
     REG_NAME = "kb_presets.json"
 
+    # v0.23.5 外部复核：注册表落盘失败也要留痕（此前 `except: pass`，出事了一片安静）
+    last_save_error: str = ""
+
     def __init__(self, data_dir: str, server_id: str, server_dir: str = "",
                  search_engine: str = DEFAULT_SEARCH_ENGINE,
                  semantic_enabled: bool = False,
@@ -1498,16 +1551,21 @@ class KnowledgePresetManager:
         self._write_registry_raw(reg)
         return reg
 
-    def _write_registry_raw(self, reg: dict) -> None:
+    def _write_registry_raw(self, reg: dict) -> bool:
+        """写预设注册表。返回是否成功（v0.23.5 外部复核：此前是 `except: pass`，零日志）。"""
         try:
             tmp = self.reg_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.reg_path)
-        except Exception:
-            pass
+            self.last_save_error = ""
+            return True
+        except Exception as e:                       # noqa: BLE001
+            self.last_save_error = f"预设注册表落盘失败：{e}"
+            _log.warning("预设注册表落盘失败（%s）：%s", self.reg_path, e)
+            return False
 
-    def save_registry(self) -> None:
-        self._write_registry_raw(self.reg)
+    def save_registry(self) -> bool:
+        return self._write_registry_raw(self.reg)
 
     # ---------------- 预设读写 ----------------
 

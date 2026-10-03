@@ -401,7 +401,7 @@ class McControlPlugin(Star):
                 if self._kb_semantic():
                     self._inject_embed_fn()
                     # v0.23.x：不阻塞启动，但登记进任务册 —— 卸载时会跟着取消
-                    self._spawn_bg("kb_semantic", self._kb_build_semantic(), policy="skip")
+                    self._spawn_bg(self.KB_VECTORS_TASK, self._kb_build_semantic(), policy="skip")
                 # v0.21.42：精排开关开着就注入重排序调用（无需预计算，注完即用）
                 if self._kb_rerank():
                     self._inject_rerank_fn()
@@ -447,6 +447,10 @@ class McControlPlugin(Star):
                 )
 
     async def terminate(self):
+        # v0.23.5 外部复核：先让「延迟窗口里的热重载排程」失效 —— 本次 terminate 本身
+        # 就说明已经有一次重载/卸载在发生，那个还睡在 0.6 秒里的任务再去重载一次纯属多余
+        # （它带收口豁免，取消不了，只能靠凭证让它在动手前自行放弃）。
+        self._hot_reload_token = None
         # v0.23.x：后台任务先收口 —— 取消 + 等待。
         # 顺序有意放在最前：先把「四处乱跑的后台任务」停掉，再拆 watcher / RCON，
         # 否则收尾期间还会有任务伸手去用已经关掉的连接。
@@ -468,6 +472,14 @@ class McControlPlugin(Star):
             self._rcon = None
 
     # ================= 内部工具 =================
+
+    # v0.23.5 外部复核：向量构建的后台任务名**必须全仓唯一且一致**。
+    # 启动补算（`on_start`）与写入后的 debounce 补算（`_kb_touch_vectors`）此前用了
+    # 两个不同的名字（kb_semantic / kb_vec_debounce），而登记册是**按名字**配对的 ——
+    # policy="skip" 因此形同虚设：两条路径能同时跑，一起改同一份 SemanticIndex
+    # 与同一个 .vec.npz。现在收敛成同一个常量，谁再写错名字也不可能不一致。
+    # （知识库内部另有 `_vectors_lock` 兜底，双保险。）
+    KB_VECTORS_TASK = "kb_semantic"
 
     def _spawn_bg(self, name: str, coro, *, policy: str = "replace",
                   cancel_on_shutdown: bool = True):
@@ -1084,9 +1096,10 @@ class McControlPlugin(Star):
         if not self._kb_semantic():
             return
         # policy="skip"：已有一轮在排队/进行中就把这次丢弃，等它把这批一起带走。
-        # （登记册取代了原先手搓的 _kb_vec_task 判空 —— 顺带把「并发跑同一个
-        #   SemanticIndex」的口子堵上，force 重建不会再踹掉正在算的那一轮。）
-        self._spawn_bg("kb_vec_debounce", self._kb_debounced_vectors(), policy="skip")
+        # v0.23.5 外部复核：名字必须与启动补算一致（`KB_VECTORS_TASK`）才谈得上去重 ——
+        # 此前这里用 "kb_vec_debounce"、启动用 "kb_semantic"，登记册按名字配对，
+        # 于是两条路径能同时改同一份 SemanticIndex 与同一个 .vec.npz。
+        self._spawn_bg(self.KB_VECTORS_TASK, self._kb_debounced_vectors(), policy="skip")
 
     async def _kb_debounced_vectors(self) -> None:
         """延后一小会儿再算，让连续的写入合并成一轮。"""
@@ -2695,8 +2708,21 @@ class McControlPlugin(Star):
             else "标准清理（补丁未在位）"
         )
 
+        # v0.23.5 外部复核：0.6 秒延迟窗口里，若用户自己点了 AstrBot 插件管理页的重载
+        # （或别的路径触发了重载），本次排程其实已经**过期** —— 旧任务照样会再重载一次，
+        # 而 cancel_on_shutdown=False 的收口豁免又拦不住它。
+        # 做法：发一张一次性凭证代表「当前武装的那次排程」；terminate() 里把凭证清掉，
+        # 于是窗口期内发生过的任何重载，都会让本任务在动手前自行放弃。
+        token = object()
+
         async def _runner():
             await asyncio.sleep(delay)
+            if getattr(self, "_hot_reload_token", None) is not token:
+                self.logger.info(
+                    "[热重载] 本次排程已过期（期间已有另一次重载），跳过以免重复重载"
+                )
+                return
+            self._hot_reload_token = None        # 认领：接下来这一次由本任务执行
             try:
                 ok, msg = await perform_hot_reload(pm, target)
                 self.logger.info("[热重载] %s", msg)
@@ -2720,6 +2746,9 @@ class McControlPlugin(Star):
                 "已经有一次重载在排队了，这次没重复排～ 等它跑完再试哦。"
                 "（热重载大约 1 秒完成，之后新代码立即生效）"
             )
+        # 只有在真的排上队之后才「武装」凭证：若本次被 skip 丢弃，凭证必须保持原样，
+        # 否则正在跑的那一轮会误判自己过期、白白放弃一次重载。
+        self._hot_reload_token = token
         return (
             f"已安排重载 {label}：{mode} → 重新导入。约 1 秒后完成，"
             "之后新代码立即生效（无需重启 AstrBot）♡"
