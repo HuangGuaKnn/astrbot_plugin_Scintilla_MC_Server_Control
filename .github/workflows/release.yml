@@ -8,6 +8,8 @@ name: release
 # 预发布：把 CHANGELOG 里对应小节的标题写成 `## [vX.Y.Z] - YYYY-MM-DD（预发布）`，
 # 本流程会自动把这个 Release 标成 pre-release（不会占据「Latest」正式版位置）；
 # 不加「（预发布）」则是正式版。
+#
+# 外部审查 D4 已修：发布前必须**测试全绿**（verify job），publish 依赖它。
 on:
   push:
     tags: ["v*"]
@@ -16,11 +18,35 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  verify:
+    # 为什么在这里重跑一遍，而不是复用 tests.yml 的 run：
+    #   · 跨 workflow 没有 needs —— tests.yml 的结论在别的 workflow 里，门关不上；
+    #   · 也不能去查「这个 SHA 的 tests 跑过没」—— tag 常常紧跟 push，那个 run 可能还在排队，
+    #     查到的多半是「进行中」，要么误拦、要么得写轮询等待，脆弱。
+    # 所以把同一套用例在原地重跑：结果只取决于**这个 commit 本身**，与 CI 先后顺序无关。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        # psutil：插件可选依赖；astrbot：tests/_paths.py 用它反推 AstrBot 运行目录
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install psutil astrbot
+      - name: 语法检查（compileall）
+        run: python -m compileall -q main.py core pages tests || exit 1
+      - name: 回归测试（与 tests.yml 同一套）
+        run: |
+          fail=0
+          for f in tests/test_*.py; do
+            echo "======== $f"
+            python "$f" || fail=1
+          done
+          exit $fail
       - name: 校验标签与 metadata.yaml 版本是否一致
+        # 放在 verify 而不是 publish：能便宜地失败的事就早失败，别等打完包再发现版本号写错。
         run: |
           set -e
           tag="${GITHUB_REF_NAME#v}"
@@ -31,6 +57,12 @@ jobs:
             echo "::error::标签与 metadata.yaml 版本不一致（$tag != $ver）"
             exit 1
           fi
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: 打包 zip（不含 tests/）
         run: |
           set -e

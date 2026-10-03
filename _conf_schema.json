@@ -280,6 +280,18 @@
         "type": "bool",
         "default": true
       },
+      "say_max_chars": {
+        "description": "喊话单条长度上限（字符）",
+        "hint": "超过就拒绝并提示精简。默认 200 —— 游戏内聊天栏一行约 256 字符，而喊话还要加 [群聊→昵称] 前缀，200 已远超正常喊话所需，挡的是「整段贴进来」。填 0 = 不限长度。管理员同样受本项限制（超长内容对服务器和聊天栏都是负担）。",
+        "type": "int",
+        "default": 200
+      },
+      "say_cooldown_seconds": {
+        "description": "喊话冷却（秒）",
+        "hint": "同一个人的两次喊话最小间隔，默认 5 秒，用来挡连点与刷屏。被拒的喊话不占用 RCON 往返、也不进服务器。填 0 = 不限频率。管理员不受冷却限制。",
+        "type": "float",
+        "default": 5.0
+      },
       "enable_status_command": {
         "description": "状态",
         "hint": "mcs 状态：查询 mspt / tps / 在线人数 / 运行时长 / 内存 / CPU（TPS 依赖 Spark 等模组，内存 CPU 需同机部署）",

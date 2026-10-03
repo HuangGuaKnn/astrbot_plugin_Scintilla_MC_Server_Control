@@ -33,6 +33,7 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 PLUGIN = pathlib.Path(r"C:\Users\10316\.astrbot\data\plugins\astrbot_plugin_Scintilla_MC_Server_Control")
 
@@ -103,7 +104,7 @@ def summarize(trace):
 
 
 with sync_playwright() as pw:
-    b = pw.chromium.launch(channel="msedge", headless=True)
+    b = pw.chromium.launch(**UI_LAUNCH_KWARGS, headless=True)
     ctx = b.new_context(color_scheme="light")   # 主人系统是浅色
 
     for backend in ("dark", "light"):

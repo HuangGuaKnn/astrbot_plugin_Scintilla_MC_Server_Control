@@ -17,8 +17,10 @@
 覆盖：
   1) 契约：schema 里任何 `type: "object"` 都必须带非空 `items`（空结构 = 会清用户数据的坑）；
      自由映射用途的 `notify_target_events` 必须是 `"dict"`；
-  2) 真往返：真 `AstrBotConfig` + 真 schema，逐键写入探针值 → 重新加载 → 逐键比对；
-  3) 定点：群聊静音 / 私聊只留指令调用，重载后必须一模一样。
+  2) 文档对账（v0.23.5 补）：`docs/configure.md` 与 `README.md` 里写的分组数 / 项数 /
+     逐条列出的配置键，必须与 schema 完全一致 —— 数字是给主人的承诺，不能每次加配置就漂；
+  3) 真往返：真 `AstrBotConfig` + 真 schema，逐键写入探针值 → 重新加载 → 逐键比对；
+  4) 定点：群聊静音 / 私聊只留指令调用，重载后必须一模一样。
 
 用法：
   python tests\\test_config_persistence_contract.py
@@ -26,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -89,6 +92,69 @@ def walk_schema(schema: dict, path: tuple = ()):
             yield path + (k,), v
 
 
+def doc_group_sections(text: str) -> dict:
+    """从 docs/configure.md 析出 {分组: (标注项数, [条目标题...])}。
+
+    文档体例：`` `group` · 共 N 项 `` 起一段，下面每条 ``**`key`** — 说明``。
+    """
+    pat = re.compile(r"`(\w+)` · 共 (\d+) 项")
+    marks = list(pat.finditer(text))
+    out: dict = {}
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        body = text[m.end():end]
+        out[m.group(1)] = (int(m.group(2)), re.findall(r"^\*\*`([^`]+)`\*\*", body, re.M))
+    return out
+
+
+def check_docs_match_schema(schema: dict) -> None:
+    """v0.23.5（外部审查 D1）：文档里的「N 个分组、M 项」必须与 schema 对得上。
+
+    为什么写进 CI：README 曾写「10 组、83 项」、configure.md 写「86 项」，
+    而实际是 **93 项** —— 数字是给人看的**承诺**，对不上就等于文档在说谎，
+    而且每次加配置都会再漂一次。这里把「说数」和「数数」绑死：
+
+      · configure.md 每个分组的标注数 == 该分组的真实叶子键数；
+      · configure.md 逐条列出的键名集合 == 该分组的真实键名集合（**一个都不能漏**）；
+      · configure.md 开头的总数 == 各组之和；
+      · README 文档表里的「全部 X 组、Y 项配置」== 同一组数字。
+    """
+    conf_md = (PLUGIN_DIR / "docs" / "configure.md").read_text(encoding="utf-8")
+    readme = (PLUGIN_DIR / "README.md").read_text(encoding="utf-8")
+    sections = doc_group_sections(conf_md)
+
+    real = {g: [path[-1] for path, _ in walk_schema(node.get("items", {}))]
+            for g, node in schema.items()}
+    total = sum(len(v) for v in real.values())
+
+    check("configure.md 覆盖了全部分组", set(sections) == set(real),
+          f"文档缺 {sorted(set(real) - set(sections))}；文档多 {sorted(set(sections) - set(real))}")
+    for g in real:
+        if g not in sections:
+            continue
+        n_doc, listed = sections[g]
+        check(f"configure.md · {g} 的项数标注正确（{len(real[g])}）", n_doc == len(real[g]),
+              f"文档写 {n_doc}")
+        missing = [k for k in real[g] if k not in listed]
+        extra = [k for k in listed if k not in real[g]]
+        check(f"configure.md · {g} 的条目一个不漏不多",
+              not missing and not extra,
+              f"缺 {missing}；多 {extra}")
+
+    doc_total = re.search(r"共 \*\*(\d+) 个分组、(\d+) 项\*\*", conf_md)
+    check("configure.md 开头的总数行存在", doc_total is not None)
+    if doc_total:
+        check(f"configure.md 的总数正确（{len(real)} 组、{total} 项）",
+              (int(doc_total.group(1)), int(doc_total.group(2))) == (len(real), total),
+              f"文档写 {doc_total.group(1)} 组 {doc_total.group(2)} 项")
+    readme_num = re.search(r"全部 (\d+) 组、(\d+) 项配置", readme)
+    check("README 文档表里的数字存在", readme_num is not None)
+    if readme_num:
+        check(f"README 的数字与 schema 一致（{len(real)} 组、{total} 项）",
+              (int(readme_num.group(1)), int(readme_num.group(2))) == (len(real), total),
+              f"README 写 {readme_num.group(1)} 组 {readme_num.group(2)} 项")
+
+
 def main() -> int:
     schema = load_schema()
 
@@ -101,12 +167,16 @@ def main() -> int:
     check("★notify_target_events 用 type=dict（自由映射）", nte.get("type") == "dict",
           f"实际 {nte.get('type')!r}")
 
+    print()
+    print("[2] 文档：configure.md / README 的数字与条目必须与 schema 一致")
+    check_docs_match_schema(schema)
+
     if not HAS_ABC:
-        print(f"\n[2] 真往返：SKIP —— 本环境没有 AstrBotConfig（{ABC_SKIP}）")
+        print(f"\n[3] 真往返：SKIP —— 本环境没有 AstrBotConfig（{ABC_SKIP}）")
         print("      （静态契约层已在上面跑过；用 AstrBot 自带解释器在本机跑时这层会真实执行）")
         return _finish()
 
-    print("\n[2] 真往返：逐键写入探针 → AstrBotConfig 重新加载 → 逐键比对")
+    print("\n[3] 真往返：逐键写入探针 → AstrBotConfig 重新加载 → 逐键比对")
     leaves = list(walk_schema(schema))
     print(f"      schema 叶子键 {len(leaves)} 个")
     tmp = Path(tempfile.mkdtemp())
@@ -137,7 +207,7 @@ def main() -> int:
     check(f"★{len(expected)} 个键全部穿越重载（一个都不许被清）", not lost,
           "；".join(lost[:6]))
 
-    print("\n[3] 定点：主人那次的场景")
+    print("\n[4] 定点：主人那次的场景")
     scene = {"Pirika:GroupMessage:727939729": [], "Pirika:FriendMessage:1031631712": ["command"]}
     seed2 = AstrBotConfig(str(tmp / "seed2.json"), schema=schema)
     data = json.loads(json.dumps(dict(seed2), ensure_ascii=False))

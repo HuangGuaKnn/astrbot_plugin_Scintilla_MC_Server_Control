@@ -25,7 +25,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _paths import add_sys_paths  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, add_sys_paths  # noqa: E402
 
 add_sys_paths()
 import ui_theme_check as F  # noqa: E402  复用：驱动补丁 + 假后端夹具（导入即打补丁）
@@ -95,8 +95,9 @@ def main() -> int:
     SHOTS.mkdir(parents=True, exist_ok=True)
     with F.sync_playwright() as pw:
         try:
-            browser = pw.chromium.launch(channel="msedge")   # 本机无自带 chromium → 用系统 Edge
-        except Exception:
+            browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
+        except Exception as e:  # noqa: BLE001 —— 兜底要打印原因，否则真错误会被静默吞掉
+            print(f"⚠ 通道 {UI_CHANNEL!r} 启动失败（{e}），改用 playwright 自带 Chromium")
             browser = pw.chromium.launch()
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="light")
         page = ctx.new_page()

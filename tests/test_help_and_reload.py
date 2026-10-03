@@ -152,8 +152,10 @@ cmd_keys = set((groups["commands"].get("items") or {}).keys())
 tool_keys = set((groups["tools"].get("items") or {}).keys())
 print("  commands 组 %d 键：" % len(cmd_keys), sorted(cmd_keys))
 check("enable_reload_command 已从 schema 删除", "enable_reload_command" not in allkeys)
-check("指令组按键数与预期一致（11 → 10，只少「热重载指令」）", cmd_keys == {
-    "enable_bind_command", "enable_say_command", "say_command_public", "enable_status_command",
+check("指令组按键数与预期一致（12 项：10 个开关 + 喊话限长/限频）", cmd_keys == {
+    "enable_bind_command", "enable_say_command", "say_command_public",
+    "say_max_chars", "say_cooldown_seconds",  # v0.23.6：外部审查 ⑧ 喊话限长限频
+    "enable_status_command",
     "enable_kick_command", "enable_ban_command", "enable_unban_command",
     "enable_banlist_command", "enable_help_command", "enable_title_command"}, cmd_keys)
 check("enable_mc_reload_plugin 仍在（工具保留）", "enable_mc_reload_plugin" in tool_keys)
