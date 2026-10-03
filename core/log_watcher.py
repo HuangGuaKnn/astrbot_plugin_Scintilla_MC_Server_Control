@@ -305,9 +305,15 @@ class LogWatcher:
     async def _loop(self) -> None:
         while self._running:
             try:
+                before = self.error_count
                 await self._poll()
-                # 恢复正常就清零：health() 里的计数表示「当前连续失败几次」
-                self.error_count = 0
+                # v0.23.5 第四轮：**不能无条件清零**。`_poll()` 遇到 stat / read
+                # 失败时是「自己递增计数后正常 return」（不抛异常），原先在这里
+                # 直接 `= 0` 会把刚记上的错误当场抹掉 —— health()["error_count"]
+                # 于是永远是 0，只剩 last_error 能看见最近一次错误（GPT 第四轮）。
+                # 判据：这一轮**没新增**错误，才算「恢复正常」。
+                if self.error_count == before:
+                    self.error_count = 0
             except Exception as e:                       # noqa: BLE001
                 # 日志读取失败不中断监听循环；但要留痕，别让「监听已死」瞒着所有人
                 self.error_count += 1
@@ -319,8 +325,24 @@ class LogWatcher:
                     )
             await asyncio.sleep(self.poll_interval)
 
+    def _read_at(self, offset: int, size: int) -> bytes:
+        """同步块读（只在 `_poll` 的 `asyncio.to_thread` 里调用）。
+
+        v0.23.5 第四轮：抽出来是为了让 `_poll` 的 IO 全部跑在线程里 ——
+        同步 IO 占住事件循环时，`stop()` 的 5 秒 wall-clock 承诺是给不出来的。
+        `OSError` 一律向上抛：由调用方决定「算真错误」还是「当作没读到」。
+        """
+        with open(self.log_path, "rb") as f:
+            f.seek(offset)
+            return f.read(size)
+
     async def _poll(self) -> None:
-        if not self.log_path.exists():
+        # v0.23.5 第四轮：**文件 IO 全部移到线程里**。这里原本是同步的
+        # `exists / stat / open / read`，一旦底层 IO 真被卡住（慢盘、网络盘、
+        # 被独占的文件），阻塞的是**整个事件循环** —— 于是 `stop()` 里那句
+        # `asyncio.wait(timeout=5)` 也给不出 wall-clock 保证：事件循环根本没机会
+        # 执行超时回调（GPT 第四轮）。判定逻辑一行没动，只是让 IO 不再占着循环。
+        if not await asyncio.to_thread(self.log_path.exists):
             # v0.23.5 第三轮：文件暂时不在，是轮转窗口里的**正常现象**（旧文件已删、
             # 新文件还没建），所以不记 error；但计数要落进 health()，让「一直不在」
             # 看得见 —— 此前这种情况就是安静地 return，界面绿灯、pos 不动、事件消失。
@@ -330,7 +352,7 @@ class LogWatcher:
         self.file_present = True
         self.missing_polls = 0
         try:
-            st = self.log_path.stat()
+            st = await asyncio.to_thread(self.log_path.stat)
         except OSError as e:
             self.error_count += 1
             self.last_error = f"{type(e).__name__}: {e}"
@@ -362,9 +384,9 @@ class LogWatcher:
         )
         if not rotated and anchor_ok:
             try:
-                with open(self.log_path, "rb") as f:
-                    f.seek(self._anchor_at)
-                    now_anchor = f.read(len(self._anchor))
+                now_anchor = await asyncio.to_thread(
+                    self._read_at, self._anchor_at, len(self._anchor)
+                )
             except OSError:
                 now_anchor = None
             if now_anchor is not None and now_anchor != self._anchor:
@@ -372,7 +394,7 @@ class LogWatcher:
         # ③ 头指纹：不再要求 size == _pos。正常追加时文件头永不改变，而这次读取
         #    本来每轮都要做（下面刷新 self._head 用的是同一次调用），等于零额外成本。
         if not rotated and self._head:
-            head = self._head_sig()
+            head = await asyncio.to_thread(self._head_sig)
             rotated = bool(head) and head != self._head
         if rotated:
             # latest.log 被重建 → 从头读取（重新嗅探编码）
@@ -380,13 +402,13 @@ class LogWatcher:
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
             try:
-                self._enc = self._sniff_encoding()
+                self._enc = await asyncio.to_thread(self._sniff_encoding)
             except Exception:
                 pass
             logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
         self._sig = sig
         if not head:
-            head = self._head_sig()
+            head = await asyncio.to_thread(self._head_sig)
         self._head = head
         if size == self._pos:
             return
@@ -409,9 +431,7 @@ class LogWatcher:
         try:
             # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
             # 读多少有上限，见 MAX_READ_BYTES。
-            with open(self.log_path, "rb") as f:
-                f.seek(self._pos)
-                data = f.read(MAX_READ_BYTES)
+            data = await asyncio.to_thread(self._read_at, self._pos, MAX_READ_BYTES)
         except OSError as e:
             # 打开/读取失败是**真错误**（权限、被独占、盘掉了）→ 留痕，
             # 别再像以前那样安静地 return 让监听看起来一切正常。

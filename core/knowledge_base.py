@@ -31,6 +31,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 # 规范要求：插件的日志器必须来自 astrbot.api（不得使用标准库 logging）——
 # 与 core/hot_reload.py、core/agent_llm.py 一致，也由 tests/test_review_compliance.py 钉住。
@@ -264,13 +265,26 @@ class SemanticIndex:
     def has(self, topic: str) -> bool:
         return topic in self._pos
 
-    def set_vectors(self, topics: list[str], entries: dict, vectors) -> None:
+    def set_vectors(self, topics: list[str], entries: dict, vectors,
+                    hashes: list[str] | None = None) -> None:
         """把一批新算的向量并入索引（同 topic 覆盖旧行）。
 
         性能注意：新增行先攒在列表里、最后**一次性 vstack**。
         早期写法是每行都 vstack 一次，建 4000 条时等于复制矩阵 4000 次
         （O(n²)，实测要好几秒）；批量建库正是「大型服务器」的典型场景，
         所以这里必须整批拼接。
+
+        v0.23.5 第四轮 · `hashes` 为什么必须由调用方传
+        ------------------------------------------------
+        哈希的含义是「这行向量对应哪份文本」。若这里从 `entries` **现算**，
+        只在「调用方与嵌入文本同源」时才正确；而 `_searchable()` 返回的是
+        条目表里的**同一批 dict 对象**（不是拷贝），`correct_entry()` /
+        `set_enabled()` 会**就地改**它们 —— 于是「等待嵌入期间改了内容」的条目
+        会拿到「新文本的哈希 + 旧文本的向量」，`needs()` 判定哈希相等、
+        `missing()` 从此认为无需重算，**这条永久错配**（GPT 第四轮复核指出，
+        第三轮那段「哈希仍按快照算…不会留下错配」的注释是错的：
+        快照与实况是同一批对象）。
+        所以构建方必须在 `await` **之前**把哈希算好、连同 vectors 一起传进来。
         """
         if _np is None or not topics or vectors is None:
             return
@@ -284,7 +298,10 @@ class SemanticIndex:
         self.dim = int(mat.shape[1])
         fresh: list = []
         for i, topic in enumerate(topics):
-            h = self.content_hash(topic, entries.get(topic) or {})
+            if hashes is not None and i < len(hashes):
+                h = str(hashes[i])
+            else:
+                h = self.content_hash(topic, entries.get(topic) or {})
             pos = self._pos.get(topic)
             if pos is None:
                 self._pos[topic] = len(self.topics)
@@ -509,6 +526,7 @@ class ModKnowledgeBase:
         preset_name: str | None = None,
         fingerprint: str | None = None,
         on_first_write=None,
+        on_write=None,
         search_engine: str = DEFAULT_SEARCH_ENGINE,
         semantic_enabled: bool = False,
         rerank_enabled: bool = False,
@@ -520,6 +538,9 @@ class ModKnowledgeBase:
         self.preset_name = preset_name or f"知识库 {self.preset_id}"
         self.fingerprint = fingerprint           # 本预设绑定的指纹，None=未绑定
         self.on_first_write = on_first_write     # 首次写入时回调（用于绑定指纹）
+        # v0.23.5 第四轮：每次写入落盘后的脏信号回调（向量补算的**唯一**出口，
+        # 详见类属性 on_write 的说明）。打包成 KB 实例的一部分，跟着实例走。
+        self.on_write = on_write
         # 检索引擎：非法值一律回落到默认（配置写错也不能让检索崩掉）
         self.search_engine = (
             search_engine if search_engine in SEARCH_ENGINES else DEFAULT_SEARCH_ENGINE
@@ -636,6 +657,12 @@ class ModKnowledgeBase:
             batch = todo[i:i + SEMANTIC_BATCH]
             texts = [f"{t} {entries[t].get('content', '')}" for t in batch]
             try:
+                # v0.23.5 第四轮：哈希必须与 texts **在同一瞬间**取好（都在 await 之前）。
+                # 见 set_vectors() 的说明：快照里的 dict 就是条目表里的同一批对象，
+                # 等待嵌入期间会被 correct_entry() / set_enabled() 就地改掉 ——
+                # 等嵌入回来再现算哈希，就会把「新文本的哈希」配给「旧文本的向量」，
+                # 而 missing() 从此判定「无需重算」= 这条永久错配。
+                hashes = [SemanticIndex.content_hash(t, entries[t]) for t in batch]
                 vectors = await self.embed_fn(texts)
                 if not vectors or len(vectors) != len(batch):
                     failed += len(batch)
@@ -648,20 +675,28 @@ class ModKnowledgeBase:
                 # 快照，等嵌入返回的这段时间里主人可能删/禁用/改名了条目。不复检就会
                 # 把已删除的 topic 连向量一起写回索引 → 语义通道把幽灵 topic 排进候选
                 # → search() 取 _entry_view 时 KeyError，整次检索报错（不只是少一条）。
-                # 注意哈希仍按**快照**算：它对应的是「被嵌入的那份文本」，这样等待期间
-                # 改过内容的条目下次仍会被 missing() 认出来重算，不会留下错配的向量。
+                # v0.23.5 第四轮：哈希**不再**在这里现算（那是本轮修掉的错配根源），
+                # 改用 await 之前取好的 hashes；这里只做与 batch/vectors 同口径的过滤。
+                # 它对应的是「被嵌入的那份文本」，所以等待期间被改过内容的条目
+                # 下次仍会被 missing() 认出来重算，不会留下错配的向量。
                 cur = self._searchable()
                 self._sem.prune(cur)
                 keep = [i for i, t in enumerate(batch) if t in cur]
                 if len(keep) != len(batch):
                     batch = [batch[i] for i in keep]
                     vectors = [vectors[i] for i in keep]
+                    hashes = [hashes[i] for i in keep]
                 if not batch:
                     continue
-                self._sem.set_vectors(batch, entries, vectors)
+                self._sem.set_vectors(batch, entries, vectors, hashes)
                 added += len(batch)
-            except Exception:
+            except Exception as e:                       # noqa: BLE001
+                # v0.23.5 第四轮：此前这里是**静默** `except Exception`（只累加 failed）。
+                # 本轮改代码时就踩中了它：`content_hash` 写错接收者 →
+                # AttributeError → 整批"失败"却一声不响，`added=0` 看起来像「本来就没事可算」。
+                # 这种一手埋雷一手消音的写法，正是这一轮复核反复点名的模式。
                 failed += len(batch)
+                _log.warning("向量构建失败（本批 %d 条，已跳过）：%s", len(batch), e)
                 continue
         # v0.23.5 外部复核：落盘结果此前被直接丢掉 —— 向量算完却写不进磁盘时，
         # 界面/日志都以为「语义索引已补齐」，下次启动又得整库重算。
@@ -811,6 +846,12 @@ class ModKnowledgeBase:
     last_save_ok: bool = True
     last_save_error: str = ""
     last_save_at: str = ""
+    #: 写入后的脏信号回调（v0.23.5 第四轮）：由插件注入（`_kb_touch_vectors`），
+    #: 用来把新内容补进向量索引。**放在这里而不是 WebUI 层**，是因为所有写路径
+    #: （Agent 沉淀 / 纠错 / WebUI 增删改启停审批 / 清空 / 批量导入）都必经
+    #: `save()` —— 判据一处实现，以后新增写入入口也不会再漏（第四轮实测：
+    #: WebUI 的六个写接口此前一处都没通知向量索引，语义检索长期吃不到新内容）。
+    on_write: Callable[[], None] | None = None
 
     def save(self) -> bool:
         """把整库写盘并重建索引。返回是否成功（v0.23.5 起不再静默吞异常）。
@@ -838,6 +879,12 @@ class ModKnowledgeBase:
         # 落盘后重建索引：所有写操作（沉淀/纠错/启停/删除）都会走到这里，
         # 索引因此始终与内存条目一致，不必在每个写方法里各挂一次钩子
         self._rebuild_index()
+        # v0.23.5 第四轮：同一个「唯一收口」的道理，这里也是**向量索引**的脏信号
+        # 出口。此前只有 Agent 的两个工具路径会通知向量补算，WebUI 的写入
+        # （新增/编辑/启停/删除/审批/清空）一条都不通知 —— 语义通道于是长期
+        # 拿不到新内容，被禁用的条目还继续被语义候选带回来。放在 save() 里
+        # 就一次性覆盖全部写路径。
+        self._notify_write()
         return ok
 
     def save_health(self) -> dict:
@@ -851,6 +898,21 @@ class ModKnowledgeBase:
             "error": str(self.last_save_error or ""),
             "at": str(self.last_save_at or ""),
         }
+
+    def _notify_write(self) -> None:
+        """写入落点的统一脏信号出口（v0.23.5 第四轮）。
+
+        回调本身**必须**被包住：向量补算只是锦上添花，绝不能反过来把一次
+        正常的知识写入炸掉（回调里会去 `_spawn_bg` 排后台任务，理论上也可能
+        抛异常）。
+        """
+        cb = self.on_write
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:                       # noqa: BLE001
+            _log.warning("知识写入回调失败（向量补算会被推迟）：%s", e)
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1077,13 +1139,19 @@ class ModKnowledgeBase:
         if not q:
             return []
         ranked = self._rank_candidates(q, query_vec)
+        # v0.23.5 第四轮：候选过滤必须按 `_searchable()`（enabled + 非 pending），
+        # 不能只查「topic 是否还在条目表里」—— 被禁用 / 待审批的条目若向量还留在
+        # 索引里（禁用后没人通知过索引），语义通道会照样把它排进候选带回来，
+        # 于是「手工禁用」形同虚设。词法侧本来就从 _searchable() 取，两边口径统一。
+        searchable = self._searchable()
         out, seen = [], set()
         for topic in ranked:
             if topic in seen:
                 continue
-            if topic not in self._data["entries"]:
-                # v0.23.5 第三轮：防御性跳过。候选的任何一个来源（词法 / 语义 / 补召）
-                # 都可能带出已经不在条目表里的 topic，_entry_view 会直接 KeyError。
+            if topic not in searchable:
+                # 防御性跳过 + 状态过滤二合一：候选的任何一个来源（词法 / 语义 /
+                # 补召）都可能带出已删除（_entry_view 直接 KeyError）或已禁用 /
+                # 待审批的 topic，这里一律不放行。
                 continue
             seen.add(topic)
             out.append(self._entry_view(topic))
@@ -1394,7 +1462,11 @@ class KnowledgePresetManager:
     def __init__(self, data_dir: str, server_id: str, server_dir: str = "",
                  search_engine: str = DEFAULT_SEARCH_ENGINE,
                  semantic_enabled: bool = False,
-                 rerank_enabled: bool = False):
+                 rerank_enabled: bool = False,
+                 on_write: Callable[[], None] | None = None):
+        # v0.23.5 第四轮：写入后的脏信号回调（插件的 `_kb_touch_vectors`）。
+        # 记在管理器上、随每个 KB 实例下发 —— 切换预设重建 KB 时不会丢。
+        self.on_write = on_write
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.server_id = server_id or "unknown"
@@ -1511,22 +1583,44 @@ class KnowledgePresetManager:
             found = True
         return found
 
-    def _stamp_fp(self, pid: str, fp: str) -> None:
+    def _stamp_fp(self, pid: str, fp: str) -> str:
         """把指纹同时写进预设文件本身（文件自描述，便于迁移/恢复）。
 
         v0.23.5 第三轮：失败不再无声。预设文件不在（已被删）是**正常**情况，
         降为 debug；读/写盘失败（磁盘满、只读、JSON 坏了）是异常，升为 warning。
+
+        v0.23.5 第四轮：返回值改为**错误文案**（空串 = 成功；文件不在属正常），
+        并交由调用方并进「落盘健康度」—— 此前只写了日志，上层拿到的
+        `save_ok` 仍是 True，于是「指纹回写失败」在界面上完全不可见（GPT 第四轮）。
         """
         p = self.preset_path(pid)
         if not p.exists():
             _log.debug("预设文件不在，跳过指纹回写（%s）", p)
-            return
+            return ""
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             d["fingerprint"] = fp or ""
             p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:                       # noqa: BLE001
             _log.warning("预设文件指纹回写失败（%s）：%s", p, e)
+            return f"预设文件指纹回写失败：{e}"
+        return ""
+
+    def _merge_stamp_error(self, fields: dict | None, err: str) -> dict:
+        """把「预设文件指纹回写失败」并进落盘健康度（v0.23.5 第四轮）。
+
+        为什么不另开一个字段：界面只需要**一个**判据 ——「这次改动到底写进磁盘没有」。
+        再多一个并行字段，就等于多一处会被人忘记读的地方。
+        """
+        out = dict(fields or {})
+        if not err:
+            return out
+        prev = str(out.get("save_error") or "")
+        out["save_ok"] = False
+        out["save_error"] = f"{prev}；{err}" if prev else err
+        self.last_save_ok = False
+        self.last_save_error = str(out["save_error"])
+        return out
 
     def _migrate_legacy(self) -> dict:
         """首次运行：把旧 mod_knowledge_<指纹>.json 逐个导入为预设（原文件保持不动）。"""
@@ -1649,6 +1743,7 @@ class KnowledgePresetManager:
             preset_name=p.get("name") or p["id"],
             fingerprint=(p.get("fingerprint") or None),
             on_first_write=self.bind_active_if_needed,
+            on_write=self.on_write,
             search_engine=self.search_engine,
             semantic_enabled=self.semantic_enabled,
             rerank_enabled=self.rerank_enabled,
@@ -1693,8 +1788,10 @@ class KnowledgePresetManager:
         p["fingerprint"] = self.server_id
         p["updated_at"] = self._now()
         kb.bind(self.server_id)
-        self._stamp_fp(p["id"], self.server_id)
-        self._persist_registry()      # v0.23.5 第三轮：落盘结果不再丢
+        err = self._stamp_fp(p["id"], self.server_id)
+        fields = self._persist_registry()   # v0.23.5 第三轮：落盘结果不再丢
+        # v0.23.5 第四轮：指纹回写失败同样要进健康度（否则界面只看到 save_ok=True）
+        self._merge_stamp_error(fields, err)
         return self.server_id
 
     # ---------------- 预设操作 ----------------
@@ -1799,11 +1896,12 @@ class KnowledgePresetManager:
             return None
         p["fingerprint"] = (fingerprint or "").strip()
         p["updated_at"] = self._now()
-        self._stamp_fp(p["id"], p["fingerprint"])
+        err = self._stamp_fp(p["id"], p["fingerprint"])
         fields = self._persist_registry()
         if self.kb is not None and pid == self.reg.get("active"):
             self.kb.bind(p["fingerprint"] or None)
-        return {**p, **fields}
+        # v0.23.5 第四轮：预设文件指纹回写失败并进落盘健康度，原样带给界面
+        return {**p, **self._merge_stamp_error(fields, err)}
 
     def transfer(self, src_id: str, dst_id: str, mode: str = "copy") -> dict:
         """把 src 预设的条目整体复制/移动到 dst 预设（冲突 topic 默认保留目标版本）。"""
@@ -1833,18 +1931,31 @@ class KnowledgePresetManager:
             dst_p.write_text(json.dumps(dd, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:
             return {"ok": False, "error": f"写入失败: {e}"}
+        warning = ""
         if mode == "move":
             sd["entries"] = {}
             sd.setdefault("deleted", [])
             try:
                 src_p.write_text(json.dumps(sd, ensure_ascii=False, indent=1), encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as e:                   # noqa: BLE001
+                # v0.23.5 第四轮：这里以前是 `except: pass`，最后照报 ok=True ——
+                # 「移动」实际只完成了复制，界面却以为源库已清空（GPT 第四轮）。
+                # 判据：**复制确实成功了**，所以动作仍算 ok（报 False 会把用户
+                # 引向「以为没搬过去」再搬一次），但必须明说源库没清空。
+                warning = (
+                    f"已完成复制，但源预设清空失败（{e}）"
+                    "—— 源库条目仍在，请稍后重试或手动清空源预设。"
+                )
+                _log.warning("预设移动：源文件清空失败（%s）：%s", src_p, e)
         # 刷新受影响的内存实例
         if self.reg.get("active") in (src_id, dst_id):
             self.reload_active()
-        return {"ok": True, "count": moved, "conflicts": conflict,
-                "mode": mode, "from": sp.get("name"), "to": dp.get("name")}
+        out = {"ok": True, "count": moved, "conflicts": conflict,
+               "mode": mode, "from": sp.get("name"), "to": dp.get("name")}
+        # 只在真有问题时加字段：正常情况下不改变既有回包形状
+        if warning:
+            out["warning"] = warning
+        return out
 
     # ---------------- 指纹不匹配提醒（v0.21.8 重做 / v0.21.9 补轮次口径） ----------------
     #
