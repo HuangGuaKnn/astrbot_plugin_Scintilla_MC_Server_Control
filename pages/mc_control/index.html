@@ -1305,6 +1305,14 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <div class="sw-row"><div class="sw-t"><b>帮助</b><span>mcs 帮助</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_help"><span class="sl"></span></label></div>
       <div class="sw-row"><div class="sw-t"><b>全屏喊话</b><span>mcs 全屏喊话（管理员）</span></div><label class="sw"><input type="checkbox" id="cfg_cmd_title"><span class="sl"></span></label></div>
     </div>
+    <!-- v0.23.5 外部复核：喊话的两道闸门（字数上限、冷却）此前写死在代码里，
+         界面无处可调 —— 现在摊出来，留空即用内置默认（默认 200 字符 / 5 秒）。 -->
+    <div class="frow" style="margin-top:12px">
+      <div style="max-width:150px"><label class="f" style="margin-top:0">喊话字数上限</label><input type="number" id="cfg_cmd_say_max" placeholder="200" min="1"></div>
+      <div style="max-width:150px"><label class="f" style="margin-top:0">喊话冷却（秒）</label><input type="number" id="cfg_cmd_say_cd" placeholder="5" min="0" step="0.5"></div>
+    </div>
+    <div class="hint">字数上限同时管住游戏内 <code>mcs 喊话</code> 与 WebUI 广播（超长文本在游戏里只会显示半句）；
+      冷却只对游戏内喊话生效，管理员不受冷却限制。</div>
     <div class="hint" style="margin-top:10px" id="cmd_prefix_tip">
       AstrBot 聊天平台指令（不是在游戏里输入）；前缀跟随 AstrBot 唤醒词设置，加载中…
     </div>
@@ -1671,7 +1679,15 @@ async function loadOverview(){
         : (k.preset_name?`${k.preset_name} · ${k.fingerprint? "指纹 "+k.fingerprint : "未绑定"}${k.server_content?`（${k.server_content}）`:""}`:(k.server_id?`指纹 ${k.server_id}${k.server_content?`（${k.server_content}）`:""}`:(rmt?"异地模式禁用":"未初始化"))),
       !!(k.stats&&k.stats.total), (kMis?"b":(k.state&&k.state.enabled?"g":"b"))],
     ["多Agent工作流", w.enabled===false?"已停用":"运行中", `近${w.recent_total??0}次·${w.recent_done??0}成功`, w.recent_done>0, "c"],
-    ["服务器事件转发", l.running?"监听中":"未运行", rmt?"异地模式禁用（读不到服务端日志）":(l.enabled?"播报开启":"仅记录不播报"), l.running, l.running?"g":"b"],
+    // v0.23.5：监听健康度 —— 对象还在、循环却死了的情况要看得见（此前只报「未运行」，
+    // 不说为什么）。有错就把最后一条错误挂在副行上。
+    ["服务器事件转发",
+      l.running?"监听中":(l.health&&l.health.last_error?"监听已中断":"未运行"),
+      rmt?"异地模式禁用（读不到服务端日志）"
+        : (l.health&&l.health.last_error
+            ? `${l.enabled?"播报开启":"仅记录不播报"} · ${l.health.last_error}`
+            : (l.enabled?"播报开启":"仅记录不播报")),
+      l.running, l.running?"g":"b"],
   ];
   $("ov_modules").innerHTML = mods.map(([t,st,s,bar,cls])=>statHTML(t,st,s,bar,cls)).join("");
   // RCON 测试区
@@ -2345,14 +2361,23 @@ async function savePrompt(){
   if(!a) return;
   if(!$("pr_text").value.trim()){ setNotice($("pr_notice"), "内容为空：保存后将回退为内置默认", false); }
   const r = await callPost("prompts/save", { role: a.role, content: $("pr_text").value });
-  if(r && r.ok){ setNotice($("pr_notice"), "✓ " + (r.notice||"已保存")); await loadPrompts(); }
+  if(r && r.ok){
+    // v0.23.5：提示词也要落盘 —— 写失败（磁盘满 / 只读）时别再只报「✓ 已保存」
+    if(!showSaveWarn(r, $("pr_notice")))
+      setNotice($("pr_notice"), "✓ " + (r.notice||"已保存"));
+    await loadPrompts();
+  }
   else setNotice($("pr_notice"), "保存失败" + (r&&r.error?"："+r.error:""), true);
 }
 
 async function resetPrompt(role, all){
   const body = all ? { all:true } : { role };
   const r = await callPost("prompts/reset", body);
-  if(r && r.ok){ setNotice($("pr_notice"), "✓ " + (r.notice||"已恢复内置默认")); await loadPrompts(); }
+  if(r && r.ok){
+    if(!showSaveWarn(r, $("pr_notice")))
+      setNotice($("pr_notice"), "✓ " + (r.notice||"已恢复内置默认"));
+    await loadPrompts();
+  }
   else setNotice($("pr_notice"), "恢复失败" + (r&&r.error?"："+r.error:""), true);
 }
 
@@ -2440,6 +2465,10 @@ const CFG_FIELDS = [
   ["cfg_cmd_bind","enable_bind_command","b",true],
   ["cfg_cmd_say","enable_say_command","b",true],
   ["cfg_cmd_say_public","say_command_public","b",true],
+  // v0.23.5 外部复核：喊话闸门（字符上限 / 冷却）此前写死在代码里，现在可配；
+  // 留空 = 用 S_DEFAULTS 里的内置默认值。
+  ["cfg_cmd_say_max","say_max_chars","n",200],
+  ["cfg_cmd_say_cd","say_cooldown_seconds","n",5],
   ["cfg_cmd_status","enable_status_command","b",true],
   ["cfg_cmd_kick","enable_kick_command","b",true],
   ["cfg_cmd_ban","enable_ban_command","b",true],
@@ -3707,7 +3736,9 @@ async function saveColors(){
   setNotice($("clr_notice"), "保存中…");
   const r = await callPost("colors/save", payload).catch(()=>({ok:false,error:"请求失败"}));
   if(r.ok){
-    setNotice($("clr_notice"), "✓ " + (r.notice||"设置已保存并即时生效"));
+    // v0.23.5：配色也要落盘（save_warning 由后端给出，写失败时别报「已保存」）
+    if(!showSaveWarn(r, $("clr_notice")))
+      setNotice($("clr_notice"), "✓ " + (r.notice||"设置已保存并即时生效"));
     for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(r.colors[key]); $(txt).value = r.colors[key]; }
     const g = r.gradient || {};
     if(g.format) $("clr_grad_fmt").value = g.format;

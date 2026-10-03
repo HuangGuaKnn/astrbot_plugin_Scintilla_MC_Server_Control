@@ -388,8 +388,14 @@ async def t_snapshot_shape():
     await asyncio.sleep(0.02)
     snap = bg.snapshot()
 
+    # v0.23.5：快照可以**增**键（本轮加了收口放弃留档 gave_up_at_shutdown），
+    # 但四个基础键必须始终在位 —— 断言「⊆」而不是「==」，否则每加一项诊断信息
+    # 都得改测试，护栏就从「防丢键」退化成了「防进步」。
+    want = {"closing", "named", "groups", "alive"}
     check("快照：含 closing/named/groups/alive 四键",
-          set(snap) == {"closing", "named", "groups", "alive"}, str(set(snap)))
+          want <= set(snap), str(set(snap)))
+    check("快照：收口放弃留档键在位（v0.23.5）",
+          "gave_up_at_shutdown" in snap, str(set(snap)))
     check("快照：Alive 计数正确", snap["alive"] == 2, str(snap))
     await bg.shutdown()
 
