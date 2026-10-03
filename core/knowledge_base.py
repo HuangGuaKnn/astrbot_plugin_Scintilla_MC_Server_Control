@@ -348,7 +348,8 @@ class SemanticIndex:
         免得 `np.savez_compressed` 自己再补一个后缀。
         """
         if _np is None or self.matrix is None:
-            return True          # 无索引可写 = 无需落盘，不算失败
+            self.last_save_ok = True     # 无索引可写 = 无需落盘，不算失败
+            return True
         try:
             tmp = path.with_suffix(".tmp.npz")
             _np.savez_compressed(
@@ -357,9 +358,14 @@ class SemanticIndex:
                 hashes=_np.array(self.hashes, dtype=object),
             )
             tmp.replace(path)
+            self.last_save_ok = True
             self.last_save_error = ""
             return True
         except Exception as e:                       # noqa: BLE001
+            # v0.23.5 第三轮：**这里必须落 `last_save_ok = False`**。类属性默认是
+            # True，失败时只改 error 不改 ok，上层读到的就是「落盘没问题」——
+            # 第三轮回归测试逮到的正是这一条（写盘失败却报成功）。
+            self.last_save_ok = False
             self.last_save_error = str(e)
             _log.warning("向量索引落盘失败（%s）：%s", path, e)
             return False
@@ -638,6 +644,20 @@ class ModKnowledgeBase:
                 if self._sem.dim and self._sem.matrix is not None and \
                         len(vectors[0]) != self._sem.matrix.shape[1]:
                     self._sem = SemanticIndex()
+                # v0.23.5 第三轮：**提交前复检**。这一批是在若干次 await 之前取的
+                # 快照，等嵌入返回的这段时间里主人可能删/禁用/改名了条目。不复检就会
+                # 把已删除的 topic 连向量一起写回索引 → 语义通道把幽灵 topic 排进候选
+                # → search() 取 _entry_view 时 KeyError，整次检索报错（不只是少一条）。
+                # 注意哈希仍按**快照**算：它对应的是「被嵌入的那份文本」，这样等待期间
+                # 改过内容的条目下次仍会被 missing() 认出来重算，不会留下错配的向量。
+                cur = self._searchable()
+                self._sem.prune(cur)
+                keep = [i for i, t in enumerate(batch) if t in cur]
+                if len(keep) != len(batch):
+                    batch = [batch[i] for i in keep]
+                    vectors = [vectors[i] for i in keep]
+                if not batch:
+                    continue
                 self._sem.set_vectors(batch, entries, vectors)
                 added += len(batch)
             except Exception:
@@ -1008,7 +1028,13 @@ class ModKnowledgeBase:
             return []
         ranked = self._rank(q)
         if self.semantic_ready() and query_vec is not None:
-            ranked = self._rrf_fuse(ranked, self._sem.rank(query_vec))
+            # v0.23.5 第三轮：语义索引与条目表理论上同步，但「索引里有、条目表里没有」
+            # 的幽灵 topic 一旦混进候选，search() 取 _entry_view 就是 KeyError ——
+            # 整次检索**报错**，不只是少一条。这里做一次廉价的存在性过滤兜底：
+            # 索引的一致性归索引自己保证，检索路径不该被它拖下水。
+            entries = self._data["entries"]
+            sem = [t for t in self._sem.rank(query_vec) if t in entries]
+            ranked = self._rrf_fuse(ranked, sem)
         return ranked
 
     def _template_fill(self, query: str, out: list[dict], seen: set, limit: int) -> None:
@@ -1054,6 +1080,10 @@ class ModKnowledgeBase:
         out, seen = [], set()
         for topic in ranked:
             if topic in seen:
+                continue
+            if topic not in self._data["entries"]:
+                # v0.23.5 第三轮：防御性跳过。候选的任何一个来源（词法 / 语义 / 补召）
+                # 都可能带出已经不在条目表里的 topic，_entry_view 会直接 KeyError。
                 continue
             seen.add(topic)
             out.append(self._entry_view(topic))
@@ -1482,14 +1512,21 @@ class KnowledgePresetManager:
         return found
 
     def _stamp_fp(self, pid: str, fp: str) -> None:
-        """把指纹同时写进预设文件本身（文件自描述，便于迁移/恢复）。"""
+        """把指纹同时写进预设文件本身（文件自描述，便于迁移/恢复）。
+
+        v0.23.5 第三轮：失败不再无声。预设文件不在（已被删）是**正常**情况，
+        降为 debug；读/写盘失败（磁盘满、只读、JSON 坏了）是异常，升为 warning。
+        """
         p = self.preset_path(pid)
+        if not p.exists():
+            _log.debug("预设文件不在，跳过指纹回写（%s）", p)
+            return
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             d["fingerprint"] = fp or ""
             p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:                       # noqa: BLE001
+            _log.warning("预设文件指纹回写失败（%s）：%s", p, e)
 
     def _migrate_legacy(self) -> dict:
         """首次运行：把旧 mod_knowledge_<指纹>.json 逐个导入为预设（原文件保持不动）。"""
@@ -1566,6 +1603,17 @@ class KnowledgePresetManager:
 
     def save_registry(self) -> bool:
         return self._write_registry_raw(self.reg)
+
+    def _persist_registry(self) -> dict:
+        """写注册表并把结果摊平成两个字段（v0.23.5 第三轮）。
+
+        为什么不是「失败就返回 ok=False」：预设的增删改切**在内存里已经生效**
+        （`reload_active()` 都跑完了），报 False 是另一种谎言 —— 界面会拒绝更新，
+        而实际上预设真的换了。所以动作仍报 ok=True，另用 `save_ok` / `save_error`
+        明说「**没写进磁盘**，重启后会回退」，由 WebAPI 原样带到界面上。
+        """
+        self.last_save_ok = self.save_registry()
+        return {"save_ok": bool(self.last_save_ok), "save_error": self.last_save_error}
 
     # ---------------- 预设读写 ----------------
 
@@ -1646,7 +1694,7 @@ class KnowledgePresetManager:
         p["updated_at"] = self._now()
         kb.bind(self.server_id)
         self._stamp_fp(p["id"], self.server_id)
-        self.save_registry()
+        self._persist_registry()      # v0.23.5 第三轮：落盘结果不再丢
         return self.server_id
 
     # ---------------- 预设操作 ----------------
@@ -1663,12 +1711,19 @@ class KnowledgePresetManager:
                     entries = d.get("entries", {})
                 except Exception:
                     entries = {}
-        (self.data_dir / f"kb_preset_{pid}.json").write_text(
-            json.dumps({"preset_id": pid, "fingerprint": "",
-                        "entries": entries, "deleted": deleted},
-                       ensure_ascii=False, indent=1),
-            encoding="utf-8",
-        )
+        # v0.23.5 第三轮：预设**文件**的写入此前没有任何保护 —— 磁盘满 / 只读时
+        # 它会直接抛异常冲出 WebAPI；现在记进落盘结果，和注册表一起回报。
+        file_ok, file_err = True, ""
+        try:
+            (self.data_dir / f"kb_preset_{pid}.json").write_text(
+                json.dumps({"preset_id": pid, "fingerprint": "",
+                            "entries": entries, "deleted": deleted},
+                           ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception as e:                       # noqa: BLE001
+            file_ok, file_err = False, f"{type(e).__name__}: {e}"
+            _log.warning("新预设文件写入失败（%s）：%s", pid, e)
         preset = {
             "id": pid,
             "name": (name or "").strip() or f"新预设 {len(self.reg['presets']) + 1}",
@@ -1677,8 +1732,14 @@ class KnowledgePresetManager:
             "updated_at": self._now(),
         }
         self.reg["presets"].append(preset)
-        self.save_registry()
-        return preset
+        fields = self._persist_registry()
+        if not file_ok:
+            fields["save_ok"] = False
+            fields["save_error"] = (
+                f"预设文件写入失败：{file_err}"
+                + (f"；{fields['save_error']}" if fields.get("save_error") else "")
+            )
+        return {**preset, **fields}
 
     def rename(self, pid: str, name: str) -> dict | None:
         p = self.get(pid)
@@ -1686,10 +1747,11 @@ class KnowledgePresetManager:
             return None
         p["name"] = name.strip()
         p["updated_at"] = self._now()
-        self.save_registry()
+        fields = self._persist_registry()
         if self.kb is not None and pid == (self.active_preset() or {}).get("id"):
             self.kb.preset_name = p["name"]
-        return p
+        # 返回**副本**：p 是注册表里的活对象，save_* 字段不能跟着写进磁盘
+        return {**p, **fields}
 
     def remove(self, pid: str) -> dict:
         """删除预设（至少保留一个）。删除激活预设时自动切到第一个。"""
@@ -1699,24 +1761,36 @@ class KnowledgePresetManager:
         if len(self.reg["presets"]) <= 1:
             return {"ok": False, "error": "至少要保留一个预设"}
         self.reg["presets"] = [x for x in self.reg["presets"] if x.get("id") != pid]
+        file_err = ""
         try:
             self.preset_path(pid).unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:                       # noqa: BLE001
+            # v0.23.5 第三轮：删不掉就说出来。此前 `except: pass` —— 文件删不掉时
+            # 注册表里预设已经没了、文件还躺在数据目录里，下次恢复逻辑又会把它捞回来。
+            file_err = f"{type(e).__name__}: {e}"
+            _log.warning("预设文件删除失败（%s）：%s", pid, e)
         if self.reg.get("active") == pid:
             self.reg["active"] = self.reg["presets"][0]["id"]
             self.reload_active()
-        self.save_registry()
-        return {"ok": True, "removed": pid}
+        fields = self._persist_registry()
+        if file_err:
+            fields["save_ok"] = False
+            fields["save_error"] = (
+                f"预设文件删除失败：{file_err}"
+                + (f"；{fields['save_error']}" if fields.get("save_error") else "")
+            )
+        return {"ok": True, "removed": pid, **fields}
 
     def switch(self, pid: str) -> dict:
         p = self.get(pid)
         if p is None:
             return {"ok": False, "error": "预设不存在"}
         self.reg["active"] = pid
-        self.save_registry()
+        fields = self._persist_registry()
         self.reload_active()
-        return {"ok": True, "active": pid}
+        # 与 `_persist_registry` 的口径一致：切换在内存里已经生效，报 ok=False 是
+        # 另一种谎言；落盘失败用 save_ok/save_error 明说「重启后回到原预设」。
+        return {"ok": True, "active": pid, **fields}
 
     def bind(self, pid: str, fingerprint: str | None) -> dict | None:
         """手动绑定/解绑预设指纹（fingerprint=None 表示解绑）。"""
@@ -1726,10 +1800,10 @@ class KnowledgePresetManager:
         p["fingerprint"] = (fingerprint or "").strip()
         p["updated_at"] = self._now()
         self._stamp_fp(p["id"], p["fingerprint"])
-        self.save_registry()
+        fields = self._persist_registry()
         if self.kb is not None and pid == self.reg.get("active"):
             self.kb.bind(p["fingerprint"] or None)
-        return p
+        return {**p, **fields}
 
     def transfer(self, src_id: str, dst_id: str, mode: str = "copy") -> dict:
         """把 src 预设的条目整体复制/移动到 dst 预设（冲突 topic 默认保留目标版本）。"""
@@ -1819,7 +1893,7 @@ class KnowledgePresetManager:
             n["last_dir"] = self.server_dir
             n["popup_keys"] = []
             n["suppress_keys"] = []
-            self.save_registry()
+            self._persist_registry()
         return n
 
     def notice_key(self, p: dict | None = None) -> str:
@@ -1869,7 +1943,7 @@ class KnowledgePresetManager:
         只认「显示过」，不要求主人点确认按钮 —— 这就是「同一轮只弹一次」的实现。
         """
         self._remember("popup_keys", self.notice_key())
-        self.save_registry()
+        self._persist_registry()
         return self.notice()
 
     def ack_notice(self, suppress: bool = False) -> dict:
@@ -1878,7 +1952,7 @@ class KnowledgePresetManager:
         self._remember("popup_keys", key)
         if suppress:
             self._remember("suppress_keys", key)   # 只对本轮生效，指纹变动后自动恢复提示
-        self.save_registry()
+        self._persist_registry()
         return self.notice()
 
     def set_suppress(self, on: bool) -> dict:
@@ -1890,7 +1964,7 @@ class KnowledgePresetManager:
         else:
             n["suppress_keys"] = []
             n["popup_keys"] = [k for k in n["popup_keys"] if k != key]  # 本轮重新给一次弹窗
-        self.save_registry()
+        self._persist_registry()
         return self.notice()
 
     # ---------------- 展示 ----------------
@@ -1919,5 +1993,10 @@ class KnowledgePresetManager:
             "active": self.reg.get("active"),
             "presets": self.list_presets(),
             "notice": self.notice(),
+            # v0.23.5 第三轮：注册表「上一次落盘成不成功」随状态一起给出去 ——
+            # 每个预设接口的响应都带它，界面才能把「改了但没写进磁盘」长期显示出来，
+            # 而不是等重启后发现改动没了。默认 True（没写过 = 没失败过）。
+            "registry_save_ok": bool(getattr(self, "last_save_ok", True)),
+            "registry_save_error": getattr(self, "last_save_error", ""),
         }
 

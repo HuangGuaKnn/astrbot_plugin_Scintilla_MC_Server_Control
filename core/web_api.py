@@ -247,10 +247,14 @@ class McControlWebApi:
 
         开关状态也落盘（`knowledge_state.json`）：写失败时界面显示「已切换」，
         重启后却退回旧值 —— 与知识库条目那条告警同一个道理。
+
+        取不到 `kb.state` 的老对象一律当健康（与 `_kb_save_warning` 同一口径）：
+        告警是**锦上添花**，绝不能反过来把接口炸了。
         """
-        if bool(getattr(kb.state, "last_save_ok", True)):
+        st = getattr(kb, "state", None)
+        if st is None or bool(getattr(st, "last_save_ok", True)):
             return ""
-        err = str(getattr(kb.state, "last_save_error", "") or "")
+        err = str(getattr(st, "last_save_error", "") or "")
         return (
             "知识库开关已在内存生效，但**状态落盘失败**（" + (err or "未知原因")
             + "）—— AstrBot 重启后会退回旧设置，请检查数据目录权限。"
@@ -648,8 +652,10 @@ class McControlWebApi:
                         )
                     else:
                         # policy="replace"：用户明确按了开关，后一次覆盖前一次
+                        # v0.23.5 第三轮：走统一轮次入口（delay=0：主人刚按开关，不攒批）
                         self.plugin._spawn_bg(
-                            self.plugin.KB_VECTORS_TASK, self.plugin._kb_build_semantic(),
+                            self.plugin.KB_VECTORS_TASK,
+                            self.plugin._kb_vector_rounds(delay=0.0),
                             policy="replace",
                         )
                         effects.append("语义增强检索已开启：向量索引正在后台补齐（新增条目才会重算）")
@@ -705,7 +711,7 @@ class McControlWebApi:
                             # 否则两个协程会同时改同一个 SemanticIndex。
                             self.plugin._spawn_bg(
                                 self.plugin.KB_VECTORS_TASK,
-                                self.plugin._kb_build_semantic(force=True),
+                                self.plugin._kb_vector_rounds(delay=0.0, force=True),
                                 policy="replace",
                             )
                             effects.append(
@@ -1485,6 +1491,19 @@ class McControlWebApi:
             }
         return {"ok": False, "kb_unavailable": True, "error": "知识库未初始化"}
 
+    @staticmethod
+    def _save_fail_note(r: dict) -> str:
+        """预设落盘失败时的界面提示（v0.23.5 第三轮）。
+
+        预设动作**在内存里已经生效**（预设真的换了 / 建了 / 删了），所以业务上仍报
+        ok=True —— 报 False 是另一种谎言。但「没写进磁盘」必须说出来，否则主人看到
+        「已切换」、重启后却回到原预设，只会把这件事当成玄学。
+        """
+        if not isinstance(r, dict) or r.get("save_ok", True):
+            return ""
+        err = r.get("save_error") or "未知原因"
+        return f"（⚠ 写入磁盘失败：{err}；重启后会回退到改动前的状态）"
+
     def _presets_payload(self, man) -> dict:
         """预设状态 + 服务端内容来源（v0.21.20：说明指纹是按 mods/ 还是 plugins/ 算的）。"""
         payload = dict(man.status())
@@ -1517,7 +1536,10 @@ class McControlWebApi:
         p = man.active_preset() or {}
         return json_response({
             "ok": True, **self._presets_payload(man),
-            "notice_text": f"已切换到预设「{p.get('name')}」（指纹 {p.get('fingerprint') or '未绑定'}）",
+            "notice_text": (
+                f"已切换到预设「{p.get('name')}」（指纹 {p.get('fingerprint') or '未绑定'}）"
+                + self._save_fail_note(r)
+            ),
         })
 
     async def create_preset(self):
@@ -1532,7 +1554,10 @@ class McControlWebApi:
         return json_response({
             "ok": True, **self._presets_payload(man),
             "created": preset,
-            "notice_text": f"已新建预设「{preset['name']}」（未绑定指纹，首次写入知识时自动绑定）",
+            "notice_text": (
+                f"已新建预设「{preset['name']}」（未绑定指纹，首次写入知识时自动绑定）"
+                + self._save_fail_note(preset)
+            ),
         })
 
     async def rename_preset(self):
@@ -1543,7 +1568,10 @@ class McControlWebApi:
         p = man.rename(data.get("id", ""), data.get("name", ""))
         if p is None:
             return json_response({"ok": False, "error": "预设不存在或名称为空"})
-        return json_response({"ok": True, **self._presets_payload(man), "notice_text": "预设已重命名"})
+        return json_response({
+            "ok": True, **self._presets_payload(man),
+            "notice_text": "预设已重命名" + self._save_fail_note(p),
+        })
 
     async def delete_preset(self):
         man = self._kbman()
@@ -1556,7 +1584,10 @@ class McControlWebApi:
             return json_response(r)
         if was_active:
             self.plugin._apply_active_knowledge()
-        return json_response({"ok": True, **self._presets_payload(man), "notice_text": "预设已删除"})
+        return json_response({
+            "ok": True, **self._presets_payload(man),
+            "notice_text": "预设已删除" + self._save_fail_note(r),
+        })
 
     async def bind_preset(self):
         """绑定/解绑预设指纹。target=server 表示绑定到当前服务端指纹。"""
@@ -1576,8 +1607,9 @@ class McControlWebApi:
             return json_response({"ok": False, "error": "预设不存在"})
         return json_response({
             "ok": True, **self._presets_payload(man),
-            "notice_text": (f"预设「{p['name']}」已绑定指纹 {p['fingerprint']}"
-                            if p["fingerprint"] else f"预设「{p['name']}」已解绑指纹"),
+            "notice_text": ((f"预设「{p['name']}」已绑定指纹 {p['fingerprint']}"
+                             if p["fingerprint"] else f"预设「{p['name']}」已解绑指纹")
+                            + self._save_fail_note(p)),
         })
 
     async def transfer_preset(self):

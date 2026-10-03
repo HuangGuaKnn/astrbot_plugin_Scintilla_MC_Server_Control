@@ -250,8 +250,12 @@ check("提醒里给出替代方式", "mcs 喊话" in req.hint_text)
 check("文案里不再出现请求者 ID（v0.23.3）", "10001" not in req.hint_text)
 check("提示挂在用户消息内容块上（不是系统提示词）",
       len(req.extra_user_content_parts) == 1
-      and isinstance(req.extra_user_content_parts[0], dict)
-      and req.extra_user_content_parts[0].get("type") == "text")
+      # v0.23.5：元素必须是核心认得的类型 —— 官方 TextPart（有 model_dump_for_context），
+      # 或老版本核心上退回来的 dict；裸 dict 塞给 4.27.x 会让整条 LLM 流水线挂掉。
+      and (hasattr(req.extra_user_content_parts[0], "model_dump_for_context")
+           or isinstance(req.extra_user_content_parts[0], dict))
+      and (getattr(req.extra_user_content_parts[0], "type", None)
+           or req.extra_user_content_parts[0].get("type")) == "text")
 check("system_prompt 一字未动（动态改写会破坏前缀缓存）",
       req.system_prompt == SYSTEM_PROMPT)
 req2 = FakeReq()

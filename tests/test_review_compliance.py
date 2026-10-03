@@ -108,8 +108,10 @@ check("没有任何一处给 .system_prompt 赋值（含请求者 ID 的动态�
 main_src = (PLUGIN / "main.py").read_text(encoding="utf-8")
 check("提供了统一注入出口 _append_user_hint（拼到用户消息的额外内容块）",
       "def _append_user_hint(" in main_src)
-check("注入出口用的是 extra_user_content_parts，且格式是 {type: text, text: ...}",
-      'parts.append({"type": "text", "text": block})' in main_src)
+check("注入出口用的是 extra_user_content_parts，且元素走官方文本块构造器（不许裸 dict）",
+      "extra_user_content_parts" in main_src
+      and "parts.append(_make_text_part(block))" in main_src
+      and 'parts.append({"type": "text", "text": block})' not in main_src)
 check("注入出口收口到 _emit_hint：_append_user_hint 只在内部调用一次（唯一出口）",
       main_src.count("self._append_user_hint(req, blocks)") == 1,
       f"→ 实际 {main_src.count('self._append_user_hint(req, blocks)')} 处")

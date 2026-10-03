@@ -465,9 +465,24 @@ def part_e() -> None:
         ):
             name = ast.literal_eval(node.value)
     check("KB_VECTORS_TASK 常量在位", isinstance(name, str) and name, str(name))
+    # v0.23.5 第三轮：两条路径进一步收敛进**同一个轮次入口** `_kb_vector_rounds`
+    # （补跑循环在里面），所以「数 spawn 次数」这类断言会随重构立刻过期。这里改判
+    # **结构**：引用常量 ≥2（启动 + 写入）、裸 spawn 只剩 1 处、直接 await build
+    # 只剩 1 处（在轮次入口里）—— 谁也不能绕过入口去动同一份索引。
     check("启动补算与写入补算都用同一个常量",
-          SRC.count("_spawn_bg(self.KB_VECTORS_TASK") == 2,
-          str(SRC.count("_spawn_bg(self.KB_VECTORS_TASK")))
+          SRC.count("self.KB_VECTORS_TASK") >= 2 and
+          SRC.count("_spawn_bg(self.KB_VECTORS_TASK") == 1,
+          f"常量引用={SRC.count('self.KB_VECTORS_TASK')}，"
+          f"裸 spawn={SRC.count('_spawn_bg(self.KB_VECTORS_TASK')}")
+    check("向量补算收敛到唯一入口 _kb_vector_rounds",
+          "async def _kb_vector_rounds" in SRC
+          and SRC.count("self._kb_vector_rounds(") == 2,      # 启动 + 写入，各一处
+          f"入口定义={'async def _kb_vector_rounds' in SRC}，"
+          f"调用点={SRC.count('self._kb_vector_rounds(')}")
+    check("没有绕过入口直接 build 的路径",
+          SRC.count("await self._kb_build_semantic(") == 1
+          and "_spawn_bg(self.KB_VECTORS_TASK, self._kb_build_semantic" not in SRC,
+          f"直接 await={SRC.count('await self._kb_build_semantic(')}")
     # 旧名字只允许出现在解释性注释里（源码字符串字面量中必须绝迹，否则又是两个槽位）
     stale = [n.value for n in ast.walk(TREE)
              if isinstance(n, ast.Constant) and n.value == "kb_vec_debounce"]
