@@ -7,16 +7,27 @@
 里它们是硬门禁。于是「打个 tag 直接发版」可以绕过整个 UI 契约层：跨 workflow 没有
 `needs`，tests.yml 就算红了也拦不住发版。现在发版与 CI 跑同一个脚本、同一份清单。
 
+**但「同一份清单」不能让 UI 用例凭空变得可移植**（第五轮上云实测）：
+9 件契约类第一次在 `ubuntu-latest` 上跑就红了 5 件 —— 其中一件是文件里硬编码了本机
+路径（真 bug，已修），其余是「判据里含本机环境」（本机宿主页 / Edge 通道）。
+所以清单里多了 `CI_OK` 白名单：**CI 与发版只跑实测能跑的**，其余留在本机全量复现
+（`run_v0230_all.py`）。这条边界的详细依据写在 `tests/_ui_manifest.py` 顶部。
+
 跑法：
-  <python> run_release_verify.py             # 全跑：静态 + 回归 + UI 硬门禁
+  <python> run_release_verify.py             # 本机全跑：静态 + 回归 + UI 硬门禁（全部契约类）
+  <python> run_release_verify.py --ci        # 与 CI / 发版一致：只跑 CI_OK 里的那几件 UI
   <python> run_release_verify.py --plan      # 只打印「将要跑什么」，一条都不执行
   <python> run_release_verify.py --guard     # 只做 UI 归类守卫（清单唯一来源）
-  <python> run_release_verify.py --emit-env  # 给 CI 打印 HARD_UI / SOFT_UI 环境变量
+  <python> run_release_verify.py --list-ui   # 只打印四份名单（含 CI 可跑 / 本机专属）
+  <python> run_release_verify.py --emit-env  # 给 CI 打印 HARD_UI / SOFT_UI / UI_LOCAL_ONLY
+  <python> run_release_verify.py --ui-only --ui-set=ci-hard   # 只跑 UI（workflows 用）
   <python> run_release_verify.py --all-ui    # 连观察期 / 取证脚本也一起跑（本机复现）
 
 逐文件**超时**（v0.23.5 第五轮）：超时按失败处理，并且**连子进程树一起收掉** ——
 UI 用例会拉起浏览器，只杀父进程会留下一堆孤儿进程继续占着端口，下一个用例就跟着倒。
 超时秒数可用 `SCINTILLA_TEST_TIMEOUT` / `SCINTILLA_UI_TIMEOUT` 覆盖。
+`--ui-only` 让 tests.yml 的两个 UI job 也走这套超时（此前它们自己写 shell 循环，
+同样的循环、不同的判据 —— 又是「一份判据两处实现」）。
 """
 from __future__ import annotations
 
@@ -33,7 +44,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TESTS = ROOT / "tests"
 sys.path.insert(0, str(TESTS))
-from _ui_manifest import HARD, SOFT, TOOLS, check as check_ui_manifest  # noqa: E402
+from _ui_manifest import (  # noqa: E402
+    HARD,
+    SOFT,
+    TOOLS,
+    ci_hard,
+    ci_soft,
+    check as check_ui_manifest,
+    local_only,
+    ui_stems,
+)
+
+#: `--ui-set=` 的取值 → 实际要跑的 UI 用例（唯一一处「集合怎么算」）
+UI_SETS = {
+    "hard": lambda: list(HARD),          # 本机：全部契约类
+    "soft": lambda: list(SOFT),
+    "ci-hard": ci_hard,                  # CI / 发版：实测能跑的契约类
+    "ci-soft": ci_soft,
+    "all": lambda: ui_stems(ROOT),
+}
 
 # 逐文件超时（秒）：正常一条用例 1~30 秒，UI 用例含浏览器冷启动也就 40 秒上下。
 # 给足两个数量级的余量，同时把「挂死」钉在有限的等待里。
@@ -235,17 +264,28 @@ def static_checks() -> list[str]:
         fails.append("UI 归类守卫")
     else:
         print(f"[PASS] UI 归类守卫（硬门禁 {len(HARD)} / 观察期 {len(SOFT)} / "
-              f"取证 {len(TOOLS)}，无未归类用例）")
+              f"取证 {len(TOOLS)}；其中 CI 可跑 {len(ci_hard())}+{len(ci_soft())} 件，"
+              f"本机专属 {len(local_only())} 件，无未归类用例）")
 
     fails.extend(check_export_ignore())
     return fails
 
 
-def ui_plan(all_ui: bool = False) -> list[str]:
-    """本次要跑的 UI 用例（默认只跑硬门禁那几个）。"""
+def ui_plan(all_ui: bool = False, ci: bool = False, ui_set: str = "") -> list[str]:
+    """本次要跑的 UI 用例。
+
+    默认（本机）只跑硬门禁那几个（全部契约类）；`ci=True` 或 `--ui-set=ci-*` 时
+    只跑 `tests/_ui_manifest.py` 里 **CI_OK** 白名单内的 —— 也就是“本机能跑、别人
+    的机器上也能跑”的那些（第五轮上云实测的结论）。
+    """
+    if ui_set:
+        if ui_set not in UI_SETS:
+            raise SystemExit(f"--ui-set 只接受 {sorted(UI_SETS)}，收到 {ui_set!r}")
+        return UI_SETS[ui_set]()
     if all_ui:
-        from _ui_manifest import ui_stems
         return ui_stems(ROOT)
+    if ci:
+        return ci_hard()
     return list(HARD)
 
 
@@ -253,17 +293,35 @@ def test_plan() -> list[str]:
     return sorted(p.name for p in TESTS.glob("test_*.py"))
 
 
-def plan(all_ui: bool = False) -> None:
+def plan(all_ui: bool = False, ci: bool = False, ui_set: str = "") -> None:
     print("将要执行：")
     print(f"  解释器：{PY}")
     print(f"  ① 静态检查：compileall / _conf_schema.json / metadata.yaml / UI 归类守卫 / 发布包卫生")
     print(f"  ② 回归 {len(test_plan())} 个 test_*.py（单文件超时 {TIMEOUT_TEST:g}s）")
-    uis = ui_plan(all_ui)
+    uis = ui_plan(all_ui, ci, ui_set)
     print(f"  ③ UI {len(uis)} 个用例（单文件超时 {TIMEOUT_UI:g}s）")
     for name in test_plan():
         print(f"      · tests/{name}")
     for name in uis:
         print(f"      · tests/{name}.py")
+    if not all_ui:
+        skip = [s for s in (list(HARD) + list(SOFT)) if s not in uis]
+        if skip:
+            print(f"  ④ 本机专属（不在 CI 上跑，改了它们得在本机复现）："
+                  f"{len(skip)} 件 —— {', '.join(skip)}")
+            print(f"      依据见 tests/_ui_manifest.py 顶部的 CI 实测记录")
+
+
+def list_ui() -> None:
+    """打印四份名单 —— CI 日志里一眼看清「跑了什么、没跑什么、为什么」。"""
+    print(f"硬门禁（契约类）  {len(HARD):>2} 件：{', '.join(HARD)}")
+    print(f"观察期（渲染类）  {len(SOFT):>2} 件：{', '.join(SOFT)}")
+    print(f"取证脚本          {len(TOOLS):>2} 件：{', '.join(TOOLS)}")
+    print(f"CI 上跑           {len(ci_hard()) + len(ci_soft()):>2} 件："
+          f"{', '.join(ci_hard() + ci_soft())}")
+    print(f"本机专属（不上 CI）{len(local_only()):>2} 件：{', '.join(local_only())}")
+    print("依据：run 37144699301（第五轮第一次把 UI 用例搬上 ubuntu-latest，"
+          "9 件契约类红了 5 件）—— 详见 tests/_ui_manifest.py 顶部。")
 
 
 def main(argv: list[str]) -> int:
@@ -272,6 +330,12 @@ def main(argv: list[str]) -> int:
     only_static = "--only-static" in argv
     no_ui = "--no-ui" in argv
     all_ui = "--all-ui" in argv
+    ci_mode = "--ci" in argv
+    ui_only = "--ui-only" in argv
+    ui_set = next((a.split("=", 1)[1] for a in argv if a.startswith("--ui-set=")), "")
+    if ui_set and ui_set not in UI_SETS:
+        print(f"--ui-set 只接受 {sorted(UI_SETS)}，收到 {ui_set!r}", file=sys.stderr)
+        return 2
     if only_guard:
         problems = check_ui_manifest(ROOT)
         for p in problems:
@@ -281,26 +345,42 @@ def main(argv: list[str]) -> int:
             print(f"UI 归类守卫失败：{len(problems)} 项")
             return 1
         print(f"UI 归类守卫通过（硬门禁 {len(HARD)} / 观察期 {len(SOFT)} / 取证 {len(TOOLS)}）")
+        print(f"  CI 上跑：{len(ci_hard()) + len(ci_soft())} 件；"
+              f"本机专属：{len(local_only())} 件（依据见 tests/_ui_manifest.py 顶部）")
+        return 0
+    if "--list-ui" in argv:
+        list_ui()
         return 0
     if "--emit-env" in argv:
-        # CI 用它把两份清单写进 $GITHUB_ENV —— **只有环境变量行**，别掺任何日志
-        print(f"HARD_UI={' '.join(HARD)}")
-        print(f"SOFT_UI={' '.join(SOFT)}")
+        # CI 用它把名单写进 $GITHUB_ENV —— **只有环境变量行**，别掺任何日志
+        # （混一行提示进去就是一条非法环境变量，第五轮踩过）
+        print(f"HARD_UI={' '.join(ci_hard())}")
+        print(f"SOFT_UI={' '.join(ci_soft())}")
+        print(f"UI_LOCAL_ONLY={' '.join(local_only())}")
         return 0
     if only_plan:
-        plan(all_ui)
+        plan(all_ui, ci_mode, ui_set)
         return 0
 
     print(f"解释器：{PY}")
-    total_fail: list[str] = static_checks()
+    total_fail: list[str] = [] if ui_only else static_checks()
     if not only_static:
-        groups = [("test_*.py", test_plan(), TIMEOUT_TEST, None)]
-        labels = ["② 回归 / 单元测试"]
+        groups = []
+        labels = []
+        if not ui_only:
+            groups.append(("test_*.py", test_plan(), TIMEOUT_TEST, None))
+            labels.append("② 回归 / 单元测试")
         if not no_ui:
-            ui_names = ui_plan(all_ui)
+            ui_names = ui_plan(all_ui, ci_mode, ui_set)
             groups.append(("ui", [f"{n}.py" for n in ui_names], TIMEOUT_UI, None))
-            labels.append("③ WebUI 契约（硬门禁）" if not all_ui
-                          else "③ WebUI 全部用例（含观察期 / 取证）")
+            if all_ui:
+                labels.append("③ WebUI 全部用例（含观察期 / 取证；本机复现用）")
+            elif ui_set == "ci-soft":
+                labels.append("③ WebUI 渲染 / 度量类（观察期，只跑不拦）")
+            elif ui_set == "ci-hard" or ci_mode:
+                labels.append("③ WebUI 契约类（CI 可跑子集，硬门禁）")
+            else:
+                labels.append("③ WebUI 契约类（本机全跑，硬门禁）")
         for (pattern, files, timeout, env_extra), label in zip(groups, labels):
             print("=" * 68)
             print(f"{label}（{len(files)} 个文件，单文件超时 {timeout:g}s）")

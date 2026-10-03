@@ -31,6 +31,11 @@ jobs:
     # 直接发版」可以绕过整个 UI 契约层（tests.yml 就算红了也拦不住发版）。
     # 现在改跑 `run_release_verify.py`：静态 + 回归 + UI 契约类，与 CI 同一份清单、
     # 同一套逐文件超时；清单来自 tests/_ui_manifest.py（唯一来源，不再各抄一份）。
+    #
+    # `--ci` 的含义：UI 部分只跑 `CI_OK` 白名单里那几件（实测能在 ubuntu 上跑通）——
+    # 第一次上云实测时 9 件契约类红了 5 件（含一件硬编码本机路径的真 bug，已修），
+    # 于是「与发版同款」的判据只能取这个子集；剩余用例由本机
+    # `run_v0230_all.py` 全量覆盖。依据见 tests/_ui_manifest.py 顶部。
     runs-on: ubuntu-latest
     env:
       SCINTILLA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
@@ -47,7 +52,7 @@ jobs:
           python -m pip install psutil astrbot playwright
           python -m playwright install --with-deps chromium
       - name: 发布前验证（静态 + 回归 + UI 契约类，与 CI 同一套）
-        run: python run_release_verify.py
+        run: python run_release_verify.py --ci
       - name: 校验标签与 metadata.yaml 版本是否一致
         # 放在 verify 而不是 publish：能便宜地失败的事就早失败，别等打完包再发现版本号写错。
         run: |

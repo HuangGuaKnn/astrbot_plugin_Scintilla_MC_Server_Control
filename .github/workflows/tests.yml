@@ -2,8 +2,8 @@ name: tests
 
 # push / PR 时自动跑回归测试：
 #   · regression  —— tests/test_*.py（纯逻辑，无需浏览器）→ 硬门禁
-#   · ui-contract —— tests/ui_*_check.py 里的**契约类**（DOM 结构 / 状态 / 顺序 / 折叠边界）→ 硬门禁
-#   · ui-render   —— 同目录里的**渲染 / 度量类**（像素阈值、配色）→ 观察期不阻断
+#   · ui-contract —— tests/ui_*.py 里的**契约类**且**已在 CI 上实测可跑**的那些 → 硬门禁
+#   · ui-render   —— 同目录里的**渲染 / 度量类**且已在 CI 上实测可跑的 → 观察期不阻断
 # 本机权威环境仍是 Windows + 系统 Edge（`python tests\ui_xxx_check.py`）；
 # CI 上没有 Edge，改走 SCINTILLA_UI_CHANNEL=bundled（playwright 自带 Chromium）。
 #
@@ -11,6 +11,13 @@ name: tests
 # `tests/_ui_manifest.py` —— 本文件不再手写名单（写死就得在发版流程里再抄一遍，
 # 两份清单迟早分叉）。回归与静态检查也统一走 `run_release_verify.py`，
 # 与发版前置（release.yml）跑同一个脚本、同一套逐文件超时。
+#
+# v0.23.5 第五轮上云实测（run 37144699301，第一次把 UI 用例真搬上 ubuntu-latest）：
+# 9 件契约类里 **5 件在 CI 上跑不过** —— 一件是文件里硬编码了本机 Windows 路径（真 bug，
+# 已修），其余 4 件的判据里含本机环境（本机宿主页 / Edge 通道）。所以清单里多了
+# `CI_OK` 白名单：**CI 只跑实测跑得动的**（契约类 4 件 + 渲染类 3 件），其余留在本机
+# 全量复现（`run_v0230_all.py`）。这不是把门放宽，而是拒绝让「换个 OS 就红的用例」
+# 冒充门禁 —— 判据与依据都在 `tests/_ui_manifest.py` 顶部，`--list-ui` 会打出来。
 on:
   push:
     branches: [main]
@@ -41,13 +48,11 @@ jobs:
     # 判据只跟「页面自己写没写对」有关（DOM 结构 / 状态 / 顺序 / 折叠边界），
     # 与字体、滚动条宽度、亚像素取整无关 —— 这类绿了就是真的没回归，红就该挡住。
     # （渲染 / 度量类在同文件的 ui-render job，观察期仍不阻断。）
+    # 第五轮上云实测后又多一层筛子：**只有实测能在 CI 上跑通的才进这个 job**（CI_OK）。
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       SCINTILLA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
-      # 两份清单（HARD_UI / SOFT_UI）的**唯一来源**是 tests/_ui_manifest.py，
-      # 由下面「归类清单」一步现算进环境变量 —— 不许在这里手写名单：
-      # 写死就只能在发版流程里再抄一遍，两份清单迟早分叉（GPT 第五轮）。
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,19 +64,20 @@ jobs:
           python -m pip install psutil astrbot playwright
           python -m playwright install --with-deps chromium
       - name: 归类清单（唯一来源：tests/_ui_manifest.py）
-        run: python run_release_verify.py --emit-env >> "$GITHUB_ENV"
+        # 名单不写在这里：写死就得在发版流程里再抄一遍，两份清单迟早分叉（GPT 第五轮）。
+        # 打进 $GITHUB_ENV 是为了在 job 页面上看得见 —— 跑哪几件由下面的脚本自己决定，
+        # 不读这些变量（emit 出问题时会直接报错，而不是「静默一件都不跑」）。
+        run: |
+          python run_release_verify.py --emit-env >> "$GITHUB_ENV"
+          python run_release_verify.py --list-ui
       - name: 清单守卫（每个 ui_*.py 都必须被归类）
         # 覆盖的是**全部** ui_*.py（不只是 *_check.py）：ui_theme_flash_trace.py
         # 当年就是因为不叫 _check 而绕过了这道守卫（GPT 第五轮）。
         run: python run_release_verify.py --guard
-      - name: 跑 UI 契约类用例（硬门禁）
-        run: |
-          fail=0
-          for b in $HARD_UI; do
-            echo "======== tests/$b.py"
-            python "tests/$b.py" || fail=1
-          done
-          exit $fail
+      - name: 跑 UI 契约类用例（硬门禁，CI 可跑子集）
+        # 走统一跑测器而不是自己写 shell 循环：同样有**逐文件超时**（超时连浏览器
+        # 子进程树一起收掉），与发版前置逐字同一套判据。
+        run: python run_release_verify.py --ui-only --ui-set=ci-hard
       - name: 留档截图（失败时也上传，便于比对）
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,27 +96,18 @@ jobs:
     timeout-minutes: 30
     env:
       SCINTILLA_UI_CHANNEL: bundled
-      # SOFT_UI 同样来自 tests/_ui_manifest.py（下面的「归类清单」一步现算）
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 归类清单（唯一来源：tests/_ui_manifest.py）
-        run: python run_release_verify.py --emit-env >> "$GITHUB_ENV"
       - name: 安装依赖与浏览器
         run: |
           python -m pip install --upgrade pip
           python -m pip install psutil astrbot playwright
           python -m playwright install --with-deps chromium
-      - name: 跑 UI 渲染 / 度量类用例（观察期，不阻断）
-        run: |
-          fail=0
-          for b in $SOFT_UI; do
-            echo "======== tests/$b.py"
-            python "tests/$b.py" || fail=1
-          done
-          exit $fail
+      - name: 跑 UI 渲染 / 度量类用例（观察期，不阻断，CI 可跑子集）
+        run: python run_release_verify.py --ui-only --ui-set=ci-soft
       - name: 留档截图（失败时也上传，便于比对）
         if: always()
         uses: actions/upload-artifact@v4
@@ -119,4 +116,3 @@ jobs:
           path: tests/_shots/
           if-no-files-found: ignore
           retention-days: 7
-
