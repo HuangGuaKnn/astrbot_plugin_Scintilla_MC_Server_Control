@@ -37,7 +37,7 @@ from dataclasses import dataclass
 #: 1.13 以下（1.8~1.12.2）：**预扁平化**世代 —— 数字物品 ID + data 值、
 #: 旧 ``execute <实体> <x y z>`` 语法、``ench`` 数字附魔 ID。
 #: v0.23.2（GPT 续单裁决 Q1/Q4）：本世代**不自动生成任何命令**，仅作能力标注。
-#: 真机验证前不实现（路线见 docs/CONSULT_gpt_cross_version_2.md §5 方案 B / 阶段 2）。
+#: 真机验证前不实现（路线见内部讨论清单 §5 方案 B / 阶段 2）。
 ITEM_SYNTAX_PREFLATTEN = "legacy_preflatten"
 
 #: 已知版本 < 1.13 时**生效**的世代：明确不支持自动生成（fail-closed）。

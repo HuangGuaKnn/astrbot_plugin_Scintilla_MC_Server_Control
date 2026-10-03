@@ -31,3 +31,12 @@ run_ui.py
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- 内审件（核验单 / 咨询单 / 实施单 / 快照 diff）——绝不入库 ----
+# 这类文件是「内部往来件」：含本机绝对路径（C:\Users\...）、未发布的设计取舍与自曝账，
+# 只该躺在本地（docs/_internal/ 已忽略）。公开仓库里不留任何一份、任何一次提交都不留。
+docs/VERIFY_*.md
+docs/CONSULT_*.md
+docs/*.diff
+docs/*实施单*.md
+docs/_internal/

@@ -4,7 +4,7 @@
 运行：
   <python> tests/test_v0232_preflatten_gate.py
 
-背景（GPT 续单裁决，docs/CONSULT_gpt_cross_version_2.md）
+背景（GPT 续单裁决，内部咨询单）
 ========================================================
 前单约束写着「覆盖 1.12 ~ 1.21+」，但实现里语法世代只有两档
 （``legacy_nbt`` / ``components``），``legacy_nbt`` 实际表示的是 **1.13~1.20.4**。
