@@ -9,12 +9,12 @@
 # 发布包（git archive / Release 附件）里不带测试目录
 /tests/ export-ignore
 
-# 内部核验/交接文档：留在仓库备查，但不进发布包
+# 内部核验/交接文档：**不再入库**（第一道闸是 .gitignore，见 v0.23.5 收口）。
+# 下面几条 export-ignore 留作第二道兜底：万一哪份内审件又被跟踪进来，
+# 至少不随 git archive / Release 附件出门（v0.22.6 实施单曾被漏掉过一次）。
 /docs/VERIFY_*.md export-ignore
 /docs/CONSULT_*.md export-ignore
 /docs/*.diff export-ignore
-# 实施单（v0.22.6 的两份）此前被漏掉：第四轮复核实打实 git archive 解包，
-# 发现它们一直被跟踪、也一直躺在发布包里 —— 用户包里没有它们的位置。
 /docs/*实施单*.md export-ignore
 
 # 开发自测脚本：v0.23.1 的插件市场审核报告里，审查员点名
