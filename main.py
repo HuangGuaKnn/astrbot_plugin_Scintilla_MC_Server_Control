@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 import unicodedata
@@ -37,6 +38,7 @@ from .core.command_result import (
     classify_command_output,
 )
 from .core.item_dictionary import ItemDictionary
+from .core.rate_limit import Cooldown
 from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase
 from .core.mod_fingerprint import compute_server_identity
 from .core.player_bindings import PlayerBindings
@@ -1482,6 +1484,62 @@ class McControlPlugin(Star):
     MAX_COMMAND_CHARS = 8000
     MAX_MESSAGE_CHARS = 500
 
+    # ---- v0.23.5（外部审查 ⑧）：喊话的长度与频率闸门 ----
+    # 喊话是**插件自带功能**、默认对全员开放（产品设计），此前却没有长度/频率上限：
+    # 一条超长文本会原样拼进 tellraw（服务器侧截断），群里连点则会霸占共享 RCON 连接、
+    # 把别人的正常指令挤到后面排队。上限做成可配（见 _conf_schema.json 的 commands 分组）。
+    #   · 单条 200 字 —— 聊天栏一行约 256 字符，前缀 [群聊→昵称] 也占位，200 已远超
+    #     正常喊话所需，挡的是「整段贴进来」。
+    #   · 冷却 5 秒 —— 够挡住连点与刷屏，又不至于妨碍正常来回对话。
+    SAY_MAX_CHARS = 200
+    SAY_COOLDOWN_SECONDS = 5.0
+
+    @staticmethod
+    def _as_float(value: Any, default: float) -> float:
+        """宽松转 float：配置里存了字符串 / None / 非法值时回落到默认值。"""
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _say_gate(self, text: str, sender: str, is_admin: bool = False) -> str | None:
+        """喊话闸门（v0.23.5）：返回拒绝文案，``None`` 表示放行。
+
+        两道：① 单条长度上限（0 = 不限）；② 同一个人两次喊话的最小间隔（0 = 不限）。
+        管理员不受冷却限制（与「管理员不受会话闩锁影响」同一口径），长度上限仍适用 ——
+        超长内容对服务器和聊天栏都是负担，与身份无关。
+        """
+        limit = int(self._as_float(self._cfg("say_max_chars", self.SAY_MAX_CHARS),
+                                   float(self.SAY_MAX_CHARS)))
+        if limit > 0 and len(text) > limit:
+            return (
+                f"喊话内容过长（{len(text)} 字符，上限 {limit}）。"
+                "请精简后再喊 —— 服务器聊天栏一行也就 256 字符，多出来的部分玩家看不到。"
+            )
+        cooldown = self._as_float(
+            self._cfg("say_cooldown_seconds", self.SAY_COOLDOWN_SECONDS),
+            self.SAY_COOLDOWN_SECONDS,
+        )
+        if cooldown <= 0 or is_admin:
+            return None
+        wait = self._say_cooldown.hit(sender or "unknown", cooldown)
+        if wait > 0:
+            return (
+                f"喊话太快啦，请等 {max(1, math.ceil(wait))} 秒再试"
+                f"（同一用户 {cooldown:g} 秒内限一次）。"
+            )
+        return None
+
+    @property
+    def _say_cooldown(self) -> Cooldown:
+        """喊话冷却表，惰性创建（与 ``_mc_tool_recent`` 同一做法，省得动 __init__）。"""
+        cd = getattr(self, "_say_cd", None)
+        if cd is None:
+            cd = self._say_cd = Cooldown()
+        return cd
+
     @staticmethod
     def _too_long(value: str, limit: int, label: str) -> str | None:
         """入参超长则返回给 LLM 的拒绝文案，否则返回 None（v0.23.5）。
@@ -2292,6 +2350,14 @@ class McControlPlugin(Star):
             return
         # 喊话属于「插件自带功能」：不受白/黑名单策略影响（想限制就关掉上面的开关）。
         text = str(content).strip()
+        # v0.23.5（外部审查 ⑧）：长度与频率闸门。放在取 RCON **之前** ——
+        # 被拒的喊话不该占一次 RCON 往返，更不该进服务器。
+        sender = self._sender_id(event)
+        denied = self._say_gate(text, sender, is_admin=self._is_admin(event))
+        if denied:
+            self.logger.info("[审计] 请求者=%s 喊话被拒=%s", sender, denied)
+            yield event.plain_result(denied)
+            return
         try:
             rcon = await self._get_rcon()
             nickname = event.get_sender_name() or f"玩家{self._sender_id(event)}"
@@ -2306,7 +2372,7 @@ class McControlPlugin(Star):
             r = await self._exec_checked(rcon, _cmd)
             self.logger.info(
                 "[审计] 请求者=%s 喊话=%s 状态=%s",
-                self._sender_id(event), text, r.status,
+                sender, text, r.status,
             )
             yield event.plain_result(
                 self._render_result(r, f"已在服务器内喊话：{text}", "喊话失败")

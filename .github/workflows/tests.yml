@@ -1,7 +1,10 @@
 name: tests
 
-# push / PR 时自动跑 tests/test_*.py 回归测试。
-# 需要本机浏览器的 ui_*_check.py 用例不在 CI 里跑，留在本机手动执行。
+# push / PR 时自动跑回归测试：
+#   · regression —— tests/test_*.py（纯逻辑，无需浏览器）
+#   · ui         —— tests/ui_*_check.py（真浏览器 + 假后端，量布局 / 主题 / 交互契约）
+# 本机权威环境仍是 Windows + 系统 Edge（`python tests\ui_xxx_check.py`）；
+# CI 上没有 Edge，改走 SCINTILLA_UI_CHANNEL=bundled（playwright 自带 Chromium）。
 on:
   push:
     branches: [main]
@@ -32,3 +35,45 @@ jobs:
             python "$f" || fail=1
           done
           exit $fail
+
+  ui:
+    # 外部审查 D4：UI 用例原本只在用户本机手动跑，CI 完全看不到 —— 前端契约一旦回归，
+    # 要等下次本机实跑才暴露。这里补一个浏览器任务，把 14 个 ui_*_check.py 也纳入 CI。
+    #
+    # 为什么 continue-on-error：Linux + 自带 Chromium 与本机 Windows + Edge 的渲染细节
+    # （字体、滚动条宽度、亚像素取整）不完全一致，个别阈值断言可能先在 CI 上红。
+    # 观察期先「跑起来、看得见」，不阻断 PR；本机 Windows 侧仍是最终判据。
+    # 用户看过几轮绿灯后，删掉本行就升级成硬门槛。
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖与浏览器
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install psutil astrbot playwright
+          python -m playwright install --with-deps chromium
+      - name: 跑 UI 用例
+        env:
+          # bundled = 不指定 channel，直接用 playwright 自带的 Chromium
+          SCINTILLA_UI_CHANNEL: bundled
+        run: |
+          fail=0
+          for f in tests/ui_*_check.py; do
+            echo "======== $f"
+            python "$f" || fail=1
+          done
+          exit $fail
+      - name: 留档截图（失败时也上传，便于比对）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-shots
+          path: tests/_shots/
+          if-no-files-found: ignore
+          retention-days: 7
+

@@ -8,19 +8,22 @@
 > 本项目大量使用 AI 进行辅助开发，但本人承诺已人工批阅所有代码，并保证可用。
 
 <p>
-  <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?label=release&amp;sort=semver"></a>
+  <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?label=release&amp;sort=semver&amp;include_prereleases"></a>
   <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/LICENSE"><img alt="许可证" src="https://img.shields.io/github/license/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?label=license"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab?logo=python&amp;logoColor=white">
   <img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.17.0-1f6feb">
   <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control?color=yellow"></a>
 </p>
 
+> 版本徽章**含预发布**（`include_prereleases`）：`main` 分支当前领先于最新的正式版，
+> 只显示正式版会让徽章与代码状态对不上。想装稳定版请到 Releases 里挑没有 `Pre-release` 标记的那个。
+
 ## 文档
 
 | 页面 | 内容 |
 |---|---|
 | [界面效果](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md) | 六个功能页 + 设置页各分组的实机截图（深浅两套主题） |
-| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、83 项配置逐项说明与默认值 |
+| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、93 项配置逐项说明与默认值 |
 | [使用指南](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
 | [常见问题](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/faq.md) | 安装与使用中容易踩到的坑 |
 
@@ -39,7 +42,7 @@
 | 能力 | 说明 |
 |---|---|
 | 自然语言指令 | 「给 Steve 发一把钻石剑」→ LLM 调 `mc_give_item`；「把天气设成雷雨」→ `mc_execute_command` |
-| 物品 ID 词典 | 扫描服务端 `mods/`（Forge/NeoForge/Fabric）或 `plugins/`（Paper/Spigot 系），生成精确 ID 词典，中英文模糊搜索 |
+| 物品 ID 词典 | 扫服务端 `mods/`（Forge / NeoForge / Fabric）各 mod 的 jar，生成精确 ID 词典，支持中英文模糊搜索。**Paper / Spigot 系没有 `mods/`**，此时退化为从服务端原生 jar 里读**原版**英文物品表 —— 原版物品只有英文名（中文搜不到），模组物品与配方仍需 `mods/` |
 | 服务器事件播报 | 玩家 进入/离开/聊天/死亡/成就/指令 六类事件推送到指定会话，可逐类开关 |
 | 聊天桥接 | 游戏内聊天 ↔ 群聊双向转发（可加符号、区分大小写、留空则转发全部） |
 | 多 Agent 工作流 | 复杂整合包任务走 `分类 → 模板判断 → 前瞻建库 → 实现 → 纠错` 流水线，工具 `mc_workflow` 一键路由 |

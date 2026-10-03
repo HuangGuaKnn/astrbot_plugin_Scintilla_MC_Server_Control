@@ -30,6 +30,7 @@ from ui_theme_check import (  # noqa: E402  （复用同一套假后端 + 驱动
 )
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 BLOCKS = ["sd_box", "cfg_ev_enabled", "cfg_bridge_en", "cfg_dict_en"]
 ROWS = ["cfg_tool_search", "cfg_tool_recipes", "cfg_tool_mods"]
@@ -267,8 +268,9 @@ def main() -> int:
     ids = {"blocks": BLOCKS, "rows": ROWS}
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.launch(channel="msedge")
-        except Exception:
+            browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
+        except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
+            print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
 
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="dark")
