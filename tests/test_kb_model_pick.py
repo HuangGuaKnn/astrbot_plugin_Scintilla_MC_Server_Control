@@ -210,7 +210,12 @@ check("候选来自已加载实例（kb_model_status）", "self.plugin.kb_model_
 check("保存后换重排序模型 → 重新注入",
       "knowledge_rerank_provider_id" in web and "_inject_rerank_fn" in web)
 check("保存后换嵌入模型 → 重新注入 + 整库重算向量",
-      "_inject_embed_fn" in web and "_kb_build_semantic(force=True)" in web)
+      "_inject_embed_fn" in web and "_kb_vector_rounds(delay=0.0, force=True)" in web)
+# v0.23.5 第三轮：换模型不再直接调 build，而是走统一轮次入口（force 只作用于第一轮，
+# 其后的补跑回到增量）—— 这样「整库重算期间又有写入」也不会白丢。
+check("换模型的重算也带补跑（不是一次性 force）",
+      "_kb_vector_rounds(delay=0.0, force=True)" in web
+      and "async def _kb_vector_rounds" in (ROOT / "main.py").read_text(encoding="utf-8"))
 
 check("main.py 读两个配置键（留空 = 自动）",
       '_cfg("knowledge_embed_provider_id", "")' in MAIN_SRC

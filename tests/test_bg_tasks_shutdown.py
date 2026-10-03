@@ -30,6 +30,7 @@ add_sys_paths()
 
 PLUGIN = Path(__file__).resolve().parent.parent
 FAIL: list[str] = []
+PASSED: list[str] = []
 SKIP: list[str] = []
 
 
@@ -53,7 +54,9 @@ STUBBED_ASTRBOT = _ensure_astrbot_api()
 
 
 def check(desc: str, ok: bool, detail: str = "") -> None:
-    if not ok:
+    if ok:
+        PASSED.append(desc)
+    else:
         FAIL.append(desc)
     print(f"[{'PASS' if ok else 'FAIL'}] {desc}" + (f"  <- {detail}" if detail and not ok else ""))
 
@@ -437,10 +440,11 @@ def main() -> int:
     if SKIP:
         print(f"跳过 {len(SKIP)} 项")
     if FAIL:
-        print(f"❌ {len(FAIL)} 项未通过：")
+        print(f"❌ 通过 {len(PASSED)} 项，{len(FAIL)} 项未通过：")
         for f in FAIL:
             print(f"   - {f}")
         return 1
+    print(f"通过 {len(PASSED)} 项，失败 0 项")
     print("✅ 全部通过")
     return 0
 
