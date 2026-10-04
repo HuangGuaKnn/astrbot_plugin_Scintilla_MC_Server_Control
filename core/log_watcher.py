@@ -768,6 +768,8 @@ class LogWatcher:
         #（`exists` / `stat` / 锚点回读 / 头指纹 / 短文件快照 / 编码探测 + 原有的
         # 「读回数据后」与「每个派发点前」）—— 旧任务在等待期间被换代，恢复后
         # 一个状态字段都不许再写。下面所有插入点带同一句 `第九轮` 注释，可 grep 对账。
+        # v0.23.5 第十二轮（GPT 第十一轮 P3）：「文件在 + 缺失清零」的提交点也纳入
+        # 代际协议 —— 从 stat 等待之前后移到其恢复点校验之后（可 grep `第十二轮` 对账）。
         if self._stale(gen):
             return
         # v0.23.5 第六轮（GPT 第五轮 P2）：上一笔 IO 还没回来（慢盘 / 网络盘 / 被独占
@@ -799,8 +801,11 @@ class LogWatcher:
             self.file_present = False
             self.missing_polls += 1
             return
-        self.file_present = True
-        self.missing_polls = 0
+        # v0.23.5 第十二轮（GPT 第十一轮 P3）：「文件在 + 缺失清零」的提交点已**后移**到
+        # stat 返回、且代际校验通过之后（见下方注释）。旧位置写在等待之前：换代发生在
+        # stat 等待期间时，这笔已落账的半提交不会被任何后续 stale 检查撤销 —— 旧代
+        # 阵亡后，health() 会留下「file_present 报『在』、但 _last_size / _sig 从未更新」
+        # 的不一致组合。此处不再写任何字段。
         try:
             st = await self._io_wait(self.log_path.stat, what="读取日志文件属性", gen=gen)
         except OSError as e:
@@ -813,6 +818,12 @@ class LogWatcher:
         # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代（超时 / 正常返回都先挡）
         if self._stale(gen):
             return
+        # v0.23.5 第十二轮（GPT 第十一轮 P3）：**到这里才提交「文件在 + 缺失清零」** ——
+        # 与 `_last_size` / `_sig` 同属这一轮 poll 的观测结果：过闸才落账、整笔落或
+        # 一笔不落。异常分支不提交（exists 与 stat 之间文件被删 / 被换的 TOCTOU 时刻
+        # 正是 OSError 高发区，维持既有观测比抢落「在」更保守；下一轮 exists 会给出真结论）。
+        self.file_present = True
+        self.missing_polls = 0
         if st is None:
             # 超时（_io_wait 已留痕：io_timeouts + last_error）→ 这一轮当作没读到
             self.error_count += 1
