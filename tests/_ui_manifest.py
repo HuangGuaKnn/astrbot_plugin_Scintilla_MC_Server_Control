@@ -132,6 +132,13 @@ def check(root: Path) -> list[str]:
     for s in missing_files(root):
         problems.append(f"清单里有、tests/ 下没有的用例：{s}（改名了？同步清单）")
     graded = set(HARD) | set(SOFT)
+    # v0.23.5 第六轮（GPT 第五轮 P2）：白名单被清空前**守卫就得拦**。旧版只在
+    # test_v0235_review_round5.py 里断言「CI 白名单非空」，而 guard 是独立入口 ——
+    # 于是「CI_OK = []」能让 CI 与发版跑 0 个 UI 用例却报绿（fail-open）。
+    if not CI_OK:
+        problems.append("CI_OK 白名单是空的：CI 与发版会跑 0 个 UI 用例，门禁形同不存在")
+    elif not (set(CI_OK) & set(HARD)):
+        problems.append("CI_OK 里没有任何**硬门禁**用例：发版等于没有 UI 契约门禁")
     for s in CI_OK:
         if s not in graded:
             problems.append(f"CI_OK 里的 {s} 没有判定档（取证脚本不该进 CI；"

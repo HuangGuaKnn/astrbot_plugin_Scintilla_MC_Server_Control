@@ -40,6 +40,9 @@ try:
 except Exception as _e:          # CI（ubuntu-latest）没有 Edge / Playwright —— 第 3 层自动跳过，
     F = None                     # 前两层的后端契约照样跑，不把 CI 弄红。
     UI_SKIP = f"{type(_e).__name__}: {_e}"
+# v0.23.5 第六轮：**「浏览器装了但没装上浏览器本体」也算同一档**（见 main() 里的
+# browser_missing）—— 旧写法只挡住 import 失败，半装环境下这一层会记一条 FAIL，
+# 而它测的其实不是代码。
 import astrbot_plugin_Scintilla_MC_Server_Control.main as m  # noqa: E402
 from astrbot_plugin_Scintilla_MC_Server_Control.core import web_api as wa  # noqa: E402
 
@@ -151,36 +154,49 @@ def main() -> int:
                 return
             F.route(req)
 
+        browser_missing = ""
         try:
             with F.sync_playwright() as pw:
+                browser = None
                 try:
                     browser = pw.chromium.launch(channel="msedge")
                 except Exception:
-                    browser = pw.chromium.launch()
-                ctx = browser.new_context(viewport={"width": 1360, "height": 950})
-                pg = ctx.new_page()
-                errs: list[str] = []
-                pg.on("pageerror", lambda e: errs.append(str(e)))
-                pg.route(F.API_GLOB, route_capture)
-                pg.goto(F.PAGE_URL)
-                pg.wait_for_timeout(1200)
-                pg.click('button.tab[data-page="settings"]')
-                pg.wait_for_timeout(700)
-                pg.click("#btn_save_cfg_top")        # 主人点「保存全部设置」的那个按钮
-                pg.wait_for_timeout(900)
-                ctx.close()
-                browser.close()
+                    try:
+                        browser = pw.chromium.launch()
+                    except Exception as e:                            # noqa: BLE001
+                        # v0.23.5 第六轮（GPT 第五轮发现）：playwright 装了、浏览器却没装
+                        # （半装环境 / 精简镜像 / 没有 msedge）—— 这与「import 失败」同一档：
+                        # **跳过**真浏览器这一层，前两层的后端契约照样跑，不把环境缺件算成
+                        # 代码回归（旧写法在这里直接记一条 FAIL：CI 上全绿的东西换台机器反红）。
+                        browser_missing = f"{type(e).__name__}: {e}"
+                if browser is not None:
+                    ctx = browser.new_context(viewport={"width": 1360, "height": 950})
+                    pg = ctx.new_page()
+                    errs: list[str] = []
+                    pg.on("pageerror", lambda e: errs.append(str(e)))
+                    pg.route(F.API_GLOB, route_capture)
+                    pg.goto(F.PAGE_URL)
+                    pg.wait_for_timeout(1200)
+                    pg.click('button.tab[data-page="settings"]')
+                    pg.wait_for_timeout(700)
+                    pg.click("#btn_save_cfg_top")        # 主人点「保存全部设置」的那个按钮
+                    pg.wait_for_timeout(900)
+                    ctx.close()
+                    browser.close()
 
-            check("点保存真的发出了 settings/save 请求", bool(saves))
-            payload = (saves[-1].get("settings") if saves else None) or {}
-            print(f"      真实载荷 {len(payload)} 个键")
-            parsed, err = api._validate_settings(payload)
-            check("真实载荷通过校验（无 error）", err is None, repr(err))
-            ignored = sorted(k for k in payload if k not in (parsed or {}))
-            check("★真实载荷没有一项会被后端丢弃（ignored 为空）", not ignored, "、".join(ignored))
-            for k in ("server_version_override", "item_syntax_override"):
-                check(f"真实载荷里的 {k} 真的被接受", k in (parsed or {}))
-            check("浏览器无 pageerror", not errs, "; ".join(errs[:3]))
+            if browser_missing:
+                print(f"      [skip] 真浏览器一层跳过（无可用浏览器）：{browser_missing}")
+            else:
+                check("点保存真的发出了 settings/save 请求", bool(saves))
+                payload = (saves[-1].get("settings") if saves else None) or {}
+                print(f"      真实载荷 {len(payload)} 个键")
+                parsed, err = api._validate_settings(payload)
+                check("真实载荷通过校验（无 error）", err is None, repr(err))
+                ignored = sorted(k for k in payload if k not in (parsed or {}))
+                check("★真实载荷没有一项会被后端丢弃（ignored 为空）", not ignored, "、".join(ignored))
+                for k in ("server_version_override", "item_syntax_override"):
+                    check(f"真实载荷里的 {k} 真的被接受", k in (parsed or {}))
+                check("浏览器无 pageerror", not errs, "; ".join(errs[:3]))
         except Exception as e:                                        # noqa: BLE001
             check(f"浏览器端到端可跑（{type(e).__name__}）", False, str(e)[:200])
 

@@ -554,6 +554,9 @@ class ModKnowledgeBase:
         self._sem: SemanticIndex | None = None
         self.embed_fn = None                     # async (list[str]) -> list[list[float]]
         self.vec_path = self.file_path.with_suffix(VECTOR_CACHE_SUFFIX)
+        #: 最近一次「读索引状态」出的错（v0.23.5 第六轮）—— 索引坏掉时不许静默：
+        #: 由 `pending_vectors()` 写入、`semantic_stats()` 摊给界面与诊断看
+        self.index_error: str = ""
         # 重排序精排（默认关，v0.21.42）：候选池交给 Rerank 模型重排
         self.rerank_enabled = bool(rerank_enabled)
         self.rerank_fn = None                    # async (query, docs) -> [(index, score)]
@@ -589,13 +592,25 @@ class ModKnowledgeBase:
         语义通道没开时恒为 0（开关没开就不是「缺」，是没这功能）。
         """
         if self._sem is None:
+            # 开关开着却没有索引实例 = 索引**没加载成**（缓存坏了 / 依赖缺失），
+            # 这不是「没有缺向量」，是「用不了」：摊进 health，但不触发重建 ——
+            # 每次启动都全量重建会白烧额度。
+            if self.semantic_enabled and not self.index_error:
+                self.index_error = "向量索引未加载（缓存损坏或依赖缺失）"
             return 0
+        searchable = self._searchable()
         try:
-            return len(self._sem.missing(self._searchable()))
-        except Exception:                                # noqa: BLE001
-            # 向量索引自己坏了不该让「切预设」这个动作跟着炸：按「无需补算」处理，
-            # 真缺向量时下一轮写入 / 下次启动仍会发现。
-            return 0
+            n = len(self._sem.missing(searchable))
+        except Exception as e:                           # noqa: BLE001
+            # v0.23.5 第六轮（GPT 第五轮 P2）：索引自己坏掉时**不许再报 0** ——
+            # 报「无需补算」会让切换预设静默跳过重建、旧向量一直失效
+            # （纯词法还查得到，外表看不出来）。按保守口径返回「全部可检索条目」，
+            # 触发一次重建，并把原因留给 semantic_stats()["index_error"]。
+            self.index_error = f"向量索引读取失败：{type(e).__name__}: {e}"
+            _log.warning("向量索引读取失败，按「全部待补算」处理：%s", e)
+            return len(searchable)
+        self.index_error = ""
+        return n
 
     def semantic_stats(self) -> dict:
         ready = self.semantic_ready()
@@ -607,6 +622,9 @@ class ModKnowledgeBase:
             "pending": pending,
             "dim": self._sem.dim if self._sem is not None else 0,
             "has_embed_fn": self.embed_fn is not None,
+            # v0.23.5 第六轮（GPT 第五轮 P2）：索引自己坏掉时不许静默 —— 上面那个
+            # `pending` 就是被这件事影响的，谁读它谁也该看得见原因。
+            "index_error": str(self.index_error or ""),
         }
 
     # ================= 重排序精排（v0.21.42） =================
@@ -1645,6 +1663,10 @@ class KnowledgePresetManager:
         except Exception as e:                       # noqa: BLE001
             _log.warning("预设文件指纹回写失败（%s）：%s", p, e)
             return f"预设文件指纹回写失败：{e}"
+        # v0.23.5 第六轮（GPT 第五轮 P2）：这一笔也是**写预设文件**，成功就得清掉这个
+        # 部件自己的红。否则一次失败之后，后面每一次成功的写入都清不掉它 —— 界面与
+        # `/state` 会永远停在「保存失败」（狼来了的反面：红得没有尽头）。
+        self._note_save(self.SAVE_PART_PRESET_FILE, True)
         return ""
 
     def _merge_stamp_error(self, fields: dict | None, err: str) -> dict:
@@ -2012,6 +2034,10 @@ class KnowledgePresetManager:
             dst_p.write_text(json.dumps(dd, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:
             return {"ok": False, "error": f"写入失败: {e}"}
+        # v0.23.5 第六轮（GPT 第五轮 P2）：目标预设**写成功**同样要清掉这个部件的红。
+        # 顺序有意如此：先记成功、后面「源库清空失败」再记失败 —— 一次移动里两笔写入
+        # 各报各的，最后说话的是**真的失败过的那一笔**。
+        self._note_save(self.SAVE_PART_PRESET_FILE, True)
         warning = ""
         if mode == "move":
             sd["entries"] = {}

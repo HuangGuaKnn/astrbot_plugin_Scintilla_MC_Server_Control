@@ -424,7 +424,9 @@ def part_d() -> None:
     check("静态：start() 幂等 —— 重复调用先收掉上一轮（旧任务否则永远停不掉）",
           "await self.stop()" in start_src)
     check("静态：初始化定位整块走线程 + 超时（不再占着事件循环）",
-          "asyncio.to_thread(self._prime_state)" in start_src and "_io_wait" in start_src)
+          # 第六轮：调用形态从 `asyncio.to_thread(...)` 收成统一入口
+          # `self._io_wait(self._prime_state, ...)`（IO 走专属执行器 + 单飞）
+          "self._io_wait(self._prime_state" in start_src)
     prime_src = fn_src(LW_SRC, "_prime_state", cls="LogWatcher")
     check("静态：exists / stat / 头指纹 / 编码探测都在 _prime_state 里（线程内跑）",
           all(k in prime_src for k in ("self.log_path.exists()", "self.log_path.stat()",
@@ -495,9 +497,11 @@ def part_d() -> None:
             old = LW.IO_TIMEOUT
             LW.IO_TIMEOUT = 0.05
             try:
-                async def slow():
-                    await asyncio.sleep(1.0)
-                return await w4._io_wait(slow(), "假装卡住的读盘")
+                def slow() -> int:
+                    # 第六轮起 `_io_wait` 收的是**同步函数**（在线程里跑）
+                    time.sleep(1.0)
+                    return 0
+                return await w4._io_wait(slow, what="假装卡住的读盘")
             finally:
                 LW.IO_TIMEOUT = old
 

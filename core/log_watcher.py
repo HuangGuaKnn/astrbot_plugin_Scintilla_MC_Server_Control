@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -201,6 +203,26 @@ class LogWatcher:
         self._orphaned: set[asyncio.Task] = set()
         # 最近一次 stat 到的文件大小（health() 用它算 lag_bytes）
         self._last_size: int = 0
+        # ---- v0.23.5 第六轮（GPT 第五轮 P2）：IO 生命周期 ----
+        # `_io_wait` 能让协程按时返回，却**取消不了已经陷进系统调用的线程**。旧写法
+        # 每轮都往默认线程池提交一笔：慢盘持续卡住时未完成的 IO 越堆越多，最后把
+        # 整个进程的默认线程池（含知识库那些 to_thread）一起拖下水。现在：
+        #   ① 单飞 —— 上一笔没回来就不再提交新的（未完成数钉在 1）；
+        #   ② 专属有界执行器 —— 卡住的线程只占它自己那个池，不污染默认池。
+        # 单飞的判据放在**线程侧**（`_io_inflight`，由真正跑 IO 的那根线程在
+        # finally 里递减）—— 不用事件循环回调复位：回调绑定的是提交时那个循环，
+        # 跨循环（测试里反复 asyncio.run / 热重载 / 循环已关闭）不保证被调度，
+        # 那样「忙碌」可能永远为真、把监听永久卡死（比旧版更糟的失败模式）。
+        self._io_lock = threading.Lock()
+        self._io_inflight: int = 0
+        self._io_task: asyncio.Future | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        #: 因上一笔还没回来而**放弃提交**的次数（health() 摊开看）
+        self.io_skipped: int = 0
+        #: 未成行片段的缓冲（第六轮）：无换行时不前进 `_pos`，但也不许每轮重读同一段前缀
+        self._partial: bytes = b""
+        #: 读日志的累计字节数（第六轮：读放大可见，也是断言依据）
+        self.read_bytes: int = 0
 
     async def start(self) -> None:
         """从日志文件末尾开始监听（不回溯历史日志）。
@@ -216,15 +238,22 @@ class LogWatcher:
         # 幂等保护：留着旧句柄 = 那个任务永远停不掉（GPT 第四轮 P2）
         if self._running or (self._task is not None and not self._task.done()):
             await self.stop()
-        primed = await self._io_wait(
-            asyncio.to_thread(self._prime_state), "初始化定位日志文件"
-        )
+        # v0.23.5 第六轮（GPT 第五轮 P2）：IO 走**专属、有界**的执行器（1 个线程）——
+        # 卡住的线程只占它自己的池，不再占默认线程池（那是全进程共享的）。
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1,
+                                                thread_name_prefix="logwatch")
+        primed = await self._io_wait(self._prime_state, what="初始化定位日志文件")
         if primed is None:
             # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
             # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
             self._pos = -1
             self._sig, self._head = None, ""
             self._probed = False
+            # v0.23.5 第六轮（GPT 第五轮 P2）：初始化超时/失败时**不许留着上一轮的
+            # 「文件在」** —— 否则健康度会同时报 probed=false 与 file_present=true，
+            # 两个字段互相打架（重启 watcher 且初始化超时时就会撞上）。
+            self.file_present = False
         else:
             self._pos, self._sig, self._head, present = primed
             self.file_present = present
@@ -233,6 +262,8 @@ class LogWatcher:
         # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
         self._anchor, self._anchor_at = b"", -1
         self._skip_to_newline = False
+        # v0.23.5 第六轮：新监听从文件尾起步，旧的未成行缓冲对新 _pos 没有意义
+        self._partial = b""
         self.missing_polls = 0
         self._running = True
         self._task = asyncio.create_task(self._loop())
@@ -257,26 +288,91 @@ class LogWatcher:
             self._enc = "utf-8"
         return pos, sig, head, present
 
-    async def _io_wait(self, awaitable, what: str = ""):
-        """给一次文件 IO 加**超时**（v0.23.5 第五轮）。
+    async def _io_wait(self, fn, *args, what: str = ""):
+        """给一次文件 IO 加**超时**，并把它关进「最多一笔在飞」的笼子里。
 
-        IO 已经在 `asyncio.to_thread` 里跑了，真正卡住事件循环的风险没了；但**这一次
-        await 本身**仍可能永不返回（慢盘 / 网络盘 / 被独占的文件），于是轮询停摆、
-        `stop()` 也只能干等。超过 `IO_TIMEOUT` 就放弃这一次等待，按「没读到」返回
-        `None`，由调用方决定降级口径。
+        v0.23.5 第五轮：IO 已经在 `asyncio.to_thread` 里跑了，真正卡住事件循环的风险
+        没了；但**这一次 await 本身**仍可能永不返回（慢盘 / 网络盘 / 被独占的文件），
+        于是轮询停摆、`stop()` 也只能干等。
 
-        已知边界（如实写在这里）：Python 杀不掉已经陷进系统调用的线程 —— 超时保证的是
-        **等待按时结束**，被放弃的线程由解释器的默认线程池兜着。要连线程一起回收得换
-        专用可回收执行器，本轮先落地「不让它拖住轮询与停止」这条最低承诺。
+        v0.23.5 第六轮（GPT 第五轮 P2）：超时只是「不再等」—— Python 杀不掉已经陷进
+        系统调用的线程，它会一直留在池里。旧写法每轮都再提交一笔，慢盘持续卡住时
+        未完成 IO 会无限累积，最终把**默认线程池**（全进程共享）占满。现在：
+          ① **单飞**：`_io_busy` 期间不再提交新 IO（未完成数最多 1），调用方按
+             「这一轮没读到」处理；
+          ② **专属执行器**：`start()` 里建的 `ThreadPoolExecutor(max_workers=1)`
+             —— 卡住的线程只占它自己的池，不污染默认池；`stop()` 只 `shutdown(wait=False)`。
+        被放弃的那一笔由 `_release_io` 在**真正结束**时收尾（取走异常、解除忙碌标记）。
         """
+        with self._io_lock:
+            if self._io_inflight > 0:
+                # 上一笔还没回来 → 不叠新的（这正是旧写法把线程堆起来的入口）
+                self.io_skipped += 1
+                return None
+            self._io_inflight += 1
+
+        def _run():
+            """真正跑 IO 的那一层：结束时**在 finally 里**把在飞计数减回去。
+
+            放在线程侧是为了跨事件循环也能复位（回调可能根本没机会被调度）。
+            """
+            try:
+                return fn(*args)
+            finally:
+                with self._io_lock:
+                    self._io_inflight -= 1
+
+        loop = asyncio.get_running_loop()
+        ex = self._executor
+        if ex is None:
+            # 兜底：还没 start()（或执行器已关）时走默认线程池，行为与旧版一致
+            fut: asyncio.Future = asyncio.ensure_future(asyncio.to_thread(_run))
+        else:
+            try:
+                fut = loop.run_in_executor(ex, _run)
+            except RuntimeError:
+                # 执行器刚在 stop() 里关掉 —— 这一轮按「没读到」处理
+                with self._io_lock:
+                    self._io_inflight -= 1
+                self.io_skipped += 1
+                return None
+        self._io_task = fut
+        fut.add_done_callback(self._release_io)
         try:
-            return await asyncio.wait_for(awaitable, IO_TIMEOUT)
+            # shield：`wait_for` 超时**不许**取消这笔 IO（取消也杀不掉线程，只会让
+            # 结果无处可去，还给收尾添一句「never retrieved」）
+            return await asyncio.wait_for(asyncio.shield(fut), IO_TIMEOUT)
         except asyncio.TimeoutError:
             self.io_timeouts += 1
             self.last_error = f"文件 IO 超时（{what or '未知操作'} > {IO_TIMEOUT:g}s）"
-            logger.warning("日志监听：%s 超过 %g 秒未返回，本轮按「没读到」处理",
+            logger.warning("日志监听：%s 超过 %g 秒未返回，本轮按「没读到」处理；"
+                           "在它返回前不再提交新的读取（最多 1 笔在飞）",
                            what or "文件 IO", IO_TIMEOUT)
             return None
+
+    @property
+    def _io_busy(self) -> bool:
+        """还有一笔 IO 在飞（判据是**线程侧**的在飞计数，与事件循环无关）。"""
+        return self._io_inflight > 0
+
+    def _release_io(self, fut) -> None:
+        """收尾一笔 IO：取走异常、解除引用（v0.23.5 第六轮）。
+
+        忙碌判据不在这里（它在 `_run` 的 finally 里、线程侧）—— 这个回调只负责
+        不让被放弃的那笔留下 "Task exception was never retrieved"（与
+        `_reap_orphan` 同一个道理）。
+        """
+        if fut is self._io_task:
+            self._io_task = None
+        if fut.cancelled():
+            return
+        try:
+            exc = fut.exception()
+        except Exception:                                # noqa: BLE001
+            return
+        if exc is not None:
+            logger.warning("日志监听：被放弃的那次 IO 以异常收尾：%s: %s",
+                           type(exc).__name__, exc)
 
     def _reap_orphan(self, task: asyncio.Task) -> None:
         """孤儿任务收尾（v0.23.5 第五轮）：取走异常并解除引用。
@@ -313,6 +409,15 @@ class LogWatcher:
         """
         self._running = False
         task, self._task = self._task, None
+        # v0.23.5 第六轮：专属执行器跟着停 —— `wait=False` 表示**不等**卡在系统调用里
+        # 的那笔 IO（它待在它自己的池里；等它会毁掉 stop() 的 5 秒承诺）。
+        ex, self._executor = self._executor, None
+        if ex is not None:
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:                        # 3.8 及更早没有 cancel_futures
+                ex.shutdown(wait=False)
+        self._io_task = None
         if task is None:
             return
         task.cancel()
@@ -360,6 +465,13 @@ class LogWatcher:
             "probed": bool(self._probed),
             "missing_polls": int(self.missing_polls),
             "io_timeouts": int(self.io_timeouts),
+            # v0.23.5 第六轮：单飞后的两笔账 —— 因为上一笔没回来而跳过多少轮、
+            # 还有多少字节的半行挂在缓冲里；读放大也能从 read_bytes 上看出来。
+            "io_skipped": int(self.io_skipped),
+            "io_busy": bool(self._io_busy),
+            "io_inflight": int(self._io_inflight),
+            "partial_bytes": len(self._partial),
+            "read_bytes": int(self.read_bytes),
             "lag_bytes": max(0, int(self._last_size) - int(self._pos)),
             "last_read_at": float(self.last_read_at),
             "orphaned_tasks": len(self._orphaned),
@@ -425,13 +537,23 @@ class LogWatcher:
             return f.read(size)
 
     async def _poll(self) -> None:
+        # v0.23.5 第六轮（GPT 第五轮 P2）：上一笔 IO 还没回来（慢盘 / 网络盘 / 被独占
+        # 的文件）→ 本轮直接跳过，不再往池子里叠一笔。旧写法每轮都提交新的，
+        # 未完成 IO 会无限累积；超时留痕由 `_io_wait` 负责（io_timeouts / last_error）。
+        if self._io_busy:
+            self.io_skipped += 1
+            return
         # v0.23.5 第四轮：**文件 IO 全部移到线程里**。这里原本是同步的
         # `exists / stat / open / read`，一旦底层 IO 真被卡住（慢盘、网络盘、
         # 被独占的文件），阻塞的是**整个事件循环** —— 于是 `stop()` 里那句
         # `asyncio.wait(timeout=5)` 也给不出 wall-clock 保证：事件循环根本没机会
         # 执行超时回调（GPT 第四轮）。判定逻辑一行没动，只是让 IO 不再占着循环。
-        if not await self._io_wait(asyncio.to_thread(self.log_path.exists),
-                                   "检查日志文件是否在"):
+        present = await self._io_wait(self.log_path.exists, what="检查日志文件是否在")
+        if present is None:
+            # 超时：**这一轮没读到** —— 不碰 file_present / missing_polls
+            # （超时 ≠ 文件不在，混为一谈会让健康度报假警）
+            return
+        if not present:
             # v0.23.5 第三轮：文件暂时不在，是轮转窗口里的**正常现象**（旧文件已删、
             # 新文件还没建），所以不记 error；但计数要落进 health()，让「一直不在」
             # 看得见 —— 此前这种情况就是安静地 return，界面绿灯、pos 不动、事件消失。
@@ -441,8 +563,7 @@ class LogWatcher:
         self.file_present = True
         self.missing_polls = 0
         try:
-            st = await self._io_wait(asyncio.to_thread(self.log_path.stat),
-                                     "读取日志文件属性")
+            st = await self._io_wait(self.log_path.stat, what="读取日志文件属性")
         except OSError as e:
             self.error_count += 1
             self.last_error = f"{type(e).__name__}: {e}"
@@ -462,6 +583,7 @@ class LogWatcher:
             self._sig = sig
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
+            self._partial = b""
             return
         head = ""
         # v0.23.5 外部复核：轮转判定不能只看「文件变短」。服主把旧日志挪走、新开的
@@ -487,9 +609,8 @@ class LogWatcher:
         )
         if not rotated and anchor_ok:
             try:
-                now_anchor = await self._io_wait(asyncio.to_thread(
-                    self._read_at, self._anchor_at, len(self._anchor)
-                ), "回读内容锚点")
+                now_anchor = await self._io_wait(self._read_at, self._anchor_at,
+                                                 len(self._anchor), what="回读内容锚点")
             except OSError:
                 now_anchor = None
             if now_anchor is not None and now_anchor != self._anchor:
@@ -497,17 +618,16 @@ class LogWatcher:
         # ③ 头指纹：不再要求 size == _pos。正常追加时文件头永不改变，而这次读取
         #    本来每轮都要做（下面刷新 self._head 用的是同一次调用），等于零额外成本。
         if not rotated and self._head:
-            head = await self._io_wait(asyncio.to_thread(self._head_sig),
-                                      "读取文件头指纹")
+            head = await self._io_wait(self._head_sig, what="读取文件头指纹")
             rotated = bool(head) and head != self._head
         if rotated:
             # latest.log 被重建 → 从头读取（重新嗅探编码）
             self._pos = 0
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
+            self._partial = b""
             try:
-                enc = await self._io_wait(asyncio.to_thread(self._sniff_encoding),
-                                          "探测日志编码")
+                enc = await self._io_wait(self._sniff_encoding, what="探测日志编码")
                 if enc:
                     self._enc = enc
             except Exception:
@@ -515,8 +635,7 @@ class LogWatcher:
             logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
         self._sig = sig
         if not head:
-            head = await self._io_wait(asyncio.to_thread(self._head_sig),
-                                      "读取文件头指纹")
+            head = await self._io_wait(self._head_sig, what="读取文件头指纹")
         # 超时（None）时保留上一次的头指纹：清空等于把判据③关掉一轮，没必要
         self._head = head if head is not None else self._head
         if size == self._pos:
@@ -536,13 +655,23 @@ class LogWatcher:
             # 跳过去的这段没被消费，锚点对它没有意义（留着会误判一次轮转）
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
+            self._partial = b""
             return
+        if self._skip_to_newline:
+            # 丢余部时不该留着半行缓冲（它的前缀已按超长行丢弃）
+            self._partial = b""
+        # v0.23.5 第六轮（GPT 第五轮 P2）：**只读新增部分** —— 未成行的片段留在
+        # `_partial` 里，下一轮从它末尾接着读。旧写法每轮都从同一 offset 重读整段
+        # 前缀，行越长读得越狠（读放大）。
+        read_from = self._pos + len(self._partial)
+        room = MAX_READ_BYTES - len(self._partial)
+        if room <= 0:
+            room = MAX_READ_BYTES
         try:
             # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
             # 读多少有上限，见 MAX_READ_BYTES。
-            data = await self._io_wait(asyncio.to_thread(self._read_at, self._pos,
-                                                        MAX_READ_BYTES),
-                                       "读取日志新增内容")
+            data = await self._io_wait(self._read_at, read_from, room,
+                                       what="读取日志新增内容")
         except OSError as e:
             # 打开/读取失败是**真错误**（权限、被独占、盘掉了）→ 留痕，
             # 别再像以前那样安静地 return 让监听看起来一切正常。
@@ -551,6 +680,11 @@ class LogWatcher:
             return
         if not data:
             return
+        self.read_bytes += len(data)
+        if self._partial:
+            # 接上上一轮留下的半行，再走原来的「只消费完整行」逻辑
+            data = self._partial + data
+            self._partial = b""
         if self._skip_to_newline:
             # v0.23.5 第三轮：上一轮判定为超长单行、已丢掉前半段 → 这里继续丢到
             # 下一个换行（含）为止。否则下一轮从断点读到的**半截行**会被当成一条
@@ -580,6 +714,12 @@ class LogWatcher:
                     self._pos += len(data)
                     # 余部显式丢弃（见上面的 `_skip_to_newline` 分支）
                     self._skip_to_newline = True
+                    return
+                # v0.23.5 第六轮（GPT 第五轮 P2）：这是「还没写完的半行」，不是超长行。
+                # 旧写法直接 return、`_pos` 不动 → 下一轮把这段前缀**整段重读**一遍，
+                # 行一边长一边重读 = 读放大。现在把它存进 `_partial`，下一轮只读新增
+                # 部分；`_pos` 仍不动（它表示「已消费到哪」，这半行还没被消费）。
+                self._partial = data
                 return
             data = data[: cut + 1]
         self._pos += len(data)
