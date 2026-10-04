@@ -358,8 +358,18 @@ class LogWatcher:
             if self._executor is None:
                 self._executor = ThreadPoolExecutor(max_workers=1,
                                                     thread_name_prefix="logwatch")
+            # v0.23.5 第十一轮（GPT 第十轮 P2/P3）：本次初始化的**任务代号**先记下 ——
+            # 编码探测结果兑现后先复核它仍属当前代，才准许落共享字段。编码改由
+            # `_prime_state` **随返回值带出**（不再在线程里直写）：旧代探测线程
+            # 迟到返回时，结果只会落进一笔没人消费的 future。
+            prime_gen = self._task_gen
             primed = await self._io_wait(self._prime_state, what="初始化定位日志文件",
-                                         gen=self._task_gen)
+                                         gen=prime_gen)
+            # v0.23.5 第十一轮（GPT 第十轮 P2/P3）：结果兑现后复核代号 —— 只有仍属
+            # 当前代才准许继续（整个 start() 持生命周期锁，正常路径恒真；这是跨循环
+            # 僵尸调用的最后一道闸）。
+            if self._stale(prime_gen):
+                return
             if primed is None:
                 # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
                 # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
@@ -371,9 +381,11 @@ class LogWatcher:
                 # 两个字段互相打架（重启 watcher 且初始化超时时就会撞上）。
                 self.file_present = False
             else:
-                self._pos, self._sig, self._head, present = primed
+                pos, sig, head, present, enc = primed
+                self._pos, self._sig, self._head = pos, sig, head
                 self.file_present = present
                 self._probed = True
+                self._enc = enc
             # v0.23.5 第三轮：锚点/跳过标记随之重置。重新开监听是从**文件尾**起步，
             # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
             self._anchor, self._anchor_at = b"", -1
@@ -389,11 +401,15 @@ class LogWatcher:
             self._task_gen += 1
             self._task = asyncio.create_task(self._loop(self._task_gen))
 
-    def _prime_state(self) -> tuple[int, tuple[int, int] | None, str, bool]:
+    def _prime_state(self) -> tuple[int, tuple[int, int] | None, str, bool, str]:
         """`start()` 需要的那几件文件活儿（**同步版**，只在 `asyncio.to_thread` 里跑）。
 
         抽出来是为了让初始化 IO 与轮询 IO 走同一条线：`exists / stat / 头指纹 /
         编码探测` 一个都不许占着事件循环（GPT 第四轮 P2）。
+
+        v0.23.5 第十一轮（GPT 第十轮 P2/P3）：编码探测结果**随返回值交给调用方**
+        （第 5 个元素）—— 本函数不再写任何共享字段。旧代探测线程迟到返回时，结果
+        只会落进一笔没人消费的 future，不会再覆盖新代已经拿到的编码。
         """
         try:
             present = self.log_path.exists()
@@ -402,12 +418,13 @@ class LogWatcher:
             present, pos = False, 0
         sig = self._file_sig()
         head = self._head_sig()
-        # 探测日志编码（UTF-8 / GBK），避免固定 UTF-8 导致中文乱码
+        # 探测日志编码（UTF-8 / GBK），避免固定 UTF-8 导致中文乱码。
+        # 只计算、不落字段：兑现与否由 `start()` 按代号复核后决定。
         try:
-            self._enc = self._sniff_encoding()
+            enc = self._sniff_encoding()
         except Exception:                                # noqa: BLE001
-            self._enc = "utf-8"
-        return pos, sig, head, present
+            enc = "utf-8"
+        return pos, sig, head, present, enc
 
     async def _io_wait(self, fn, *args, what: str = "", gen: "int | None" = None):
         """给一次文件 IO 加**超时**，并把它关进「最多一笔在飞」的笼子里。
@@ -430,6 +447,9 @@ class LogWatcher:
         记账（`io_skipped`）一律先验代：旧代任务在新代启动后才兑现的超时 / 异常，
         一个共享健康字段都不许写。`gen is None`（老直调 / 手工诊断）不做代际
         否决，行为与旧版一致。
+
+        v0.23.5 第十一轮（GPT 第十轮 P2）：执行器关闭（stop() 之后提交失败）
+        的减计数路径同样按「IO 代」核对 —— 旧代提交失败不许动新代的在飞计数。
         """
         # v0.23.5 第七轮（GPT 第六轮 P2）：在飞计数绑定「代」—— 上一代（已经
         # stop 的某个执行器）遗留的卡死一笔不属于新代，换代即清零，不再把新代的
@@ -471,9 +491,13 @@ class LogWatcher:
             try:
                 fut = loop.run_in_executor(ex, _run)
             except RuntimeError:
-                # 执行器刚在 stop() 里关掉 —— 这一轮按「没读到」处理
+                # 执行器刚在 stop() 里关掉 —— 这一轮按「没读到」处理。
+                # v0.23.5 第十一轮（GPT 第十轮 P2）：减计数前核对「IO 代」—— 旧代
+                # 提交在新代已接管、且新代有一笔 IO 在飞时失败时，不许把新代的
+                # 在飞计数减掉（那会把「最多一笔在飞」的单飞闸门整扇打开）。
                 with self._io_lock:
-                    self._io_inflight -= 1
+                    if self._io_inflight_gen == io_gen:
+                        self._io_inflight -= 1
                 # v0.23.5 第十轮：跳过记账同样过代际守卫
                 if not self._stale(gen):
                     self.io_skipped += 1
