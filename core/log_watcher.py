@@ -22,6 +22,7 @@ v0.17.3：整合包把 /kill、/advancement grant 的反馈同样写成「[玩�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import threading
 import time
@@ -215,14 +216,49 @@ class LogWatcher:
         # 那样「忙碌」可能永远为真、把监听永久卡死（比旧版更糟的失败模式）。
         self._io_lock = threading.Lock()
         self._io_inflight: int = 0
+        # v0.23.5 第七轮（GPT 第六轮 P2）：在飞计数绑定到「代」—— stop() 后再
+        # start() 会换一代（`_io_gen += 1`），旧代遗留在计数字段里的「卡死一笔」
+        # 不会再挡住新代的 IO 闸门（换代时由下一次 `_io_wait` 清零）。
+        self._io_gen: int = 0                 # 当前代（每次 start() +1）
+        self._io_inflight_gen: int = 0        # 在飞计数属于哪一代
         self._io_task: asyncio.Future | None = None
         self._executor: ThreadPoolExecutor | None = None
+        #: 生命周期锁（第七轮）：start / stop 互斥；惰性创建 + 跨事件循环自动换新
+        self._life_lk: asyncio.Lock | None = None
         #: 因上一笔还没回来而**放弃提交**的次数（health() 摊开看）
         self.io_skipped: int = 0
         #: 未成行片段的缓冲（第六轮）：无换行时不前进 `_pos`，但也不许每轮重读同一段前缀
         self._partial: bytes = b""
         #: 读日志的累计字节数（第六轮：读放大可见，也是断言依据）
         self.read_bytes: int = 0
+        #: v0.23.5 第七轮（GPT 第六轮 P2）：**短文件前缀快照**。文件不足
+        #: `HEAD_BYTES` 时头指纹恒为空串（读不满就不比），「同 inode、同长度、
+        #: 内容被原地替换」的短文件轮转会整类漏掉。这里保存最近一次读到的
+        #: 「已知前缀」（≤ 255 字节）的摘要与长度：每轮回读同窗口比对，不一致 =
+        #: 内容被重写过 = 轮转。只比**固定窗口的前缀**而不是整文件，正常追加
+        #: （只动尾巴）不会误报。
+        self._short_sig: str = ""
+        self._short_len: int = 0
+
+    def _life_lock(self) -> asyncio.Lock:
+        """start / stop 共用的生命周期锁（第七轮：并发调用串行化）。
+
+        惰性创建；若旧锁绑在别的事件循环上（测试里反复 asyncio.run、热重载），
+        直接换一把新的 —— asyncio 原语跨循环复用会直接 RuntimeError，
+        「换个循环就炸」不该发生在监听器的生命周期入口上。
+        """
+        lk = self._life_lk
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if lk is not None:
+            bound = getattr(lk, "_loop", None)
+            if bound is None or bound is running:
+                return lk
+        lk = asyncio.Lock()
+        self._life_lk = lk
+        return lk
 
     async def start(self) -> None:
         """从日志文件末尾开始监听（不回溯历史日志）。
@@ -234,39 +270,51 @@ class LogWatcher:
           IO，慢盘上会把整个事件循环（连同别处的超时回调）一起拖住。
         - `file_present` 初始值改 `False`：**还没探测** ≠「文件在」，健康度上两者必须
           分得开（见 `health()["probed"]`）。
+
+        v0.23.5 第七轮（GPT 第六轮 P2）：
+        - 整段动作套**生命周期锁**，与 `stop()` 互斥（不再有「停止正拆、启动正装」
+          的交错窗口）；
+        - 「先收旧」走 `_stop_locked()`（同一把锁内，不在公开 `stop()` 上重新拿锁）；
+        - **换代**（`_io_gen += 1`）：上一代卡死在系统调用里的那笔 IO，其「在飞」
+          标记从此与新代无关（见 `_io_wait` / `_io_busy`）—— 复用同一对象不会再
+          被旧代挡停。
         """
-        # 幂等保护：留着旧句柄 = 那个任务永远停不掉（GPT 第四轮 P2）
-        if self._running or (self._task is not None and not self._task.done()):
-            await self.stop()
-        # v0.23.5 第六轮（GPT 第五轮 P2）：IO 走**专属、有界**的执行器（1 个线程）——
-        # 卡住的线程只占它自己的池，不再占默认线程池（那是全进程共享的）。
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=1,
-                                                thread_name_prefix="logwatch")
-        primed = await self._io_wait(self._prime_state, what="初始化定位日志文件")
-        if primed is None:
-            # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
-            # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
-            self._pos = -1
-            self._sig, self._head = None, ""
-            self._probed = False
-            # v0.23.5 第六轮（GPT 第五轮 P2）：初始化超时/失败时**不许留着上一轮的
-            # 「文件在」** —— 否则健康度会同时报 probed=false 与 file_present=true，
-            # 两个字段互相打架（重启 watcher 且初始化超时时就会撞上）。
-            self.file_present = False
-        else:
-            self._pos, self._sig, self._head, present = primed
-            self.file_present = present
-            self._probed = True
-        # v0.23.5 第三轮：锚点/跳过标记随之重置。重新开监听是从**文件尾**起步，
-        # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
-        self._anchor, self._anchor_at = b"", -1
-        self._skip_to_newline = False
-        # v0.23.5 第六轮：新监听从文件尾起步，旧的未成行缓冲对新 _pos 没有意义
-        self._partial = b""
-        self.missing_polls = 0
-        self._running = True
-        self._task = asyncio.create_task(self._loop())
+        async with self._life_lock():
+            # 幂等保护：重复调用先收掉上一轮（与 stop() 同一套收尾路）
+            await self._stop_locked()
+            self._io_gen += 1
+            # v0.23.5 第六轮（GPT 第五轮 P2）：IO 走**专属、有界**的执行器（1 个线程）——
+            # 卡住的线程只占它自己的池，不再占默认线程池（那是全进程共享的）。
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1,
+                                                    thread_name_prefix="logwatch")
+            primed = await self._io_wait(self._prime_state, what="初始化定位日志文件")
+            if primed is None:
+                # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
+                # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
+                self._pos = -1
+                self._sig, self._head = None, ""
+                self._probed = False
+                # v0.23.5 第六轮（GPT 第五轮 P2）：初始化超时/失败时**不许留着上一轮的
+                # 「文件在」** —— 否则健康度会同时报 probed=false 与 file_present=true，
+                # 两个字段互相打架（重启 watcher 且初始化超时时就会撞上）。
+                self.file_present = False
+            else:
+                self._pos, self._sig, self._head, present = primed
+                self.file_present = present
+                self._probed = True
+            # v0.23.5 第三轮：锚点/跳过标记随之重置。重新开监听是从**文件尾**起步，
+            # 旧锚点对新 _pos 没有意义，留着会误判一次轮转（→ 从 0 重读 → 重复播报）。
+            self._anchor, self._anchor_at = b"", -1
+            self._skip_to_newline = False
+            # v0.23.5 第六轮：新监听从文件尾起步，旧的未成行缓冲对新 _pos 没有意义
+            self._partial = b""
+            # v0.23.5 第七轮：短文件快照同理 —— 留着旧内容会在重启后的第一轮
+            # 误判一次轮转，把已经播报过的历史整段重播。
+            self._short_sig, self._short_len = "", 0
+            self.missing_polls = 0
+            self._running = True
+            self._task = asyncio.create_task(self._loop())
 
     def _prime_state(self) -> tuple[int, tuple[int, int] | None, str, bool]:
         """`start()` 需要的那几件文件活儿（**同步版**，只在 `asyncio.to_thread` 里跑）。
@@ -304,7 +352,14 @@ class LogWatcher:
              —— 卡住的线程只占它自己的池，不污染默认池；`stop()` 只 `shutdown(wait=False)`。
         被放弃的那一笔由 `_release_io` 在**真正结束**时收尾（取走异常、解除忙碌标记）。
         """
+        # v0.23.5 第七轮（GPT 第六轮 P2）：在飞计数绑定「代」—— 上一代（已经
+        # stop 的某个执行器）遗留的卡死一笔不属于新代，换代即清零，不再把新代的
+        # 所有 IO 挡在闸门外；旧的卡死线程回来时也会因代不符而不动新代计数（见 `_run`）。
+        gen = self._io_gen
         with self._io_lock:
+            if self._io_inflight_gen != gen:
+                self._io_inflight = 0
+                self._io_inflight_gen = gen
             if self._io_inflight > 0:
                 # 上一笔还没回来 → 不叠新的（这正是旧写法把线程堆起来的入口）
                 self.io_skipped += 1
@@ -315,12 +370,14 @@ class LogWatcher:
             """真正跑 IO 的那一层：结束时**在 finally 里**把在飞计数减回去。
 
             放在线程侧是为了跨事件循环也能复位（回调可能根本没机会被调度）。
+            v0.23.5 第七轮：减计数前核对「代」—— 旧代线程自然结束时不误动新代的计数。
             """
             try:
                 return fn(*args)
             finally:
                 with self._io_lock:
-                    self._io_inflight -= 1
+                    if self._io_inflight_gen == gen:
+                        self._io_inflight -= 1
 
         loop = asyncio.get_running_loop()
         ex = self._executor
@@ -352,8 +409,15 @@ class LogWatcher:
 
     @property
     def _io_busy(self) -> bool:
-        """还有一笔 IO 在飞（判据是**线程侧**的在飞计数，与事件循环无关）。"""
-        return self._io_inflight > 0
+        """还有一笔 IO 在飞（判据是**线程侧**的在飞计数，与事件循环无关）。
+
+        v0.23.5 第七轮：只认**当前代**的计数 —— 旧代（已 stop 的执行器）遗留的
+        卡死一笔不该让新代永远「忙」（那正是复用同一 watcher 全面停摆的根因）。
+        """
+        with self._io_lock:
+            if self._io_inflight_gen != self._io_gen:
+                return False
+            return self._io_inflight > 0
 
     def _release_io(self, fut) -> None:
         """收尾一笔 IO：取走异常、解除引用（v0.23.5 第六轮）。
@@ -393,7 +457,17 @@ class LogWatcher:
                            type(exc).__name__, exc)
 
     async def stop(self) -> None:
-        """停止监听。
+        """停止监听（公开入口：拿生命周期锁后走 `_stop_locked`）。
+
+        v0.23.5 第七轮（GPT 第六轮 P2）：停止逻辑抽到 `_stop_locked` —— `start()`
+        的「先收旧」与 `stop()` 共用同一条收尾路（同一把生命周期锁内），
+        「停止正拆、启动正装」的竞态窗口随之关闭。
+        """
+        async with self._life_lock():
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
+        """停止监听的实际逻辑（**调用方须已持有生命周期锁**）。
 
         v0.23.5 外部复核：`await self._task` 此前没有超时 —— 若监听协程恰好卡在
         文件 IO 上不理会取消，terminate() 就会一直挂在这里。
@@ -469,7 +543,9 @@ class LogWatcher:
             # 还有多少字节的半行挂在缓冲里；读放大也能从 read_bytes 上看出来。
             "io_skipped": int(self.io_skipped),
             "io_busy": bool(self._io_busy),
-            "io_inflight": int(self._io_inflight),
+            # v0.23.5 第七轮：只报**当前代**的在飞数（旧代残留对新一代没有意义）
+            "io_inflight": (int(self._io_inflight)
+                            if self._io_inflight_gen == self._io_gen else 0),
             "partial_bytes": len(self._partial),
             "read_bytes": int(self.read_bytes),
             "lag_bytes": max(0, int(self._last_size) - int(self._pos)),
@@ -595,7 +671,11 @@ class LogWatcher:
         # 整类漏掉：既不判轮转、又从旧 _pos 续读错位字节（服主手动清空 latest.log
         # 后服务端继续写、日志被外部工具重排，都落进这一类）。四种情况都算轮转：
         #   ① 文件变短 ② st_ino 变了 ③ 文件头指纹变了 ④ 旧 offset 前的内容锚点变了
-        rotated = size < self._pos
+        # v0.23.5 第七轮（GPT 第六轮 P2）：判据①扩展到**半行缓冲** ——「已读到」
+        # 的范围是 `_pos + len(_partial)`（缓冲里的字节同样来自文件）。文件被原地
+        # 截断到 `_pos < size < _pos + len(_partial)` 时旧判据看不见它：之后从旧
+        # 偏移读到的永远是空 / 错位内容，新日志漏播、旧半行被拼到新内容上。
+        rotated = size < self._pos + len(self._partial)
         if not rotated and self._sig is not None and sig[0] != self._sig[0]:
             rotated = True
         # ④ 锚点比对（主力判据）：回读「上次消费掉的最后 ANCHOR_BYTES 字节」，
@@ -620,12 +700,49 @@ class LogWatcher:
         if not rotated and self._head:
             head = await self._io_wait(self._head_sig, what="读取文件头指纹")
             rotated = bool(head) and head != self._head
+        # ③b v0.23.5 第七轮（GPT 第六轮 P2）：**短文件前缀快照**。文件不足
+        #     HEAD_BYTES 时头指纹恒为空串（读不满就不给指纹），「同 inode、同长度、
+        #     内容被原地替换」整类漏掉 —— 旧内容被换掉之后，新内容永远不会被读取。
+        #     对策：保存「最近一次读到的已知前缀」（≤ 255 字节的摘要 + 长度），
+        #     每轮回读**同窗口**比对；只比固定窗口的前缀（不是整文件），正常追加
+        #     不会误报（追加不改前缀）。文件长过 HEAD_BYTES 后交给头指纹，快照清除。
+        if size < HEAD_BYTES:
+            try:
+                snap = await self._io_wait(self._read_at, 0, size,
+                                           what="回读短文件内容快照")
+            except OSError:
+                snap = None
+            if snap is not None and len(snap) == size:
+                if (not rotated and self._short_len > 0
+                        and len(snap) >= self._short_len
+                        and hashlib.md5(snap[: self._short_len]).hexdigest()
+                        != self._short_sig):
+                    rotated = True
+                if snap:
+                    self._short_sig = hashlib.md5(snap).hexdigest()
+                    self._short_len = len(snap)
+                else:
+                    self._short_sig, self._short_len = "", 0
+        else:
+            if not rotated and self._short_len > 0:
+                try:
+                    snip = await self._io_wait(self._read_at, 0, self._short_len,
+                                               what="回读短文件前缀快照")
+                except OSError:
+                    snip = None
+                if (snip is not None and len(snip) == self._short_len
+                        and hashlib.md5(snip).hexdigest() != self._short_sig):
+                    rotated = True
+            self._short_sig, self._short_len = "", 0
         if rotated:
             # latest.log 被重建 → 从头读取（重新嗅探编码）
             self._pos = 0
             self._anchor, self._anchor_at = b"", -1
             self._skip_to_newline = False
             self._partial = b""
+            # v0.23.5 第七轮：头指纹一并清掉 —— 它认的是**旧文件**的头，新文件的
+            # 头在本轮重读后重新记录；留着会在下一轮误触发一次「轮转」（重复播报）。
+            self._head = ""
             try:
                 enc = await self._io_wait(self._sniff_encoding, what="探测日志编码")
                 if enc:
@@ -721,7 +838,13 @@ class LogWatcher:
                 # 部分；`_pos` 仍不动（它表示「已消费到哪」，这半行还没被消费）。
                 self._partial = data
                 return
+            # v0.23.5 第七轮（GPT 第六轮 P2）：截断掉的「尾巴」必须存回 `_partial`
+            # —— 否则下一轮会从 `_pos` 重新把它整段读一遍（读放大），与第六轮
+            # 「只读新增」的设计承诺相悖。下一轮的 `read_from = _pos + len(_partial)`
+            # 会自动跳过这段已经读进内存的尾巴。
+            tail = data[cut + 1:]
             data = data[: cut + 1]
+            self._partial = tail
         self._pos += len(data)
         # v0.23.5 第三轮：记下刚消费掉的最后一段当**内容锚点**，下轮回读比对 ——
         # 用来认「既不换 inode、也不变短」的原地重写（见上面判据 ④）。
