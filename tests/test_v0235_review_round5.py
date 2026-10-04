@@ -422,7 +422,9 @@ def part_d() -> None:
     print("================ [D] 日志监听：start() 幂等 / 初始化 IO / 探测真假 ================")
     start_src = fn_src(LW_SRC, "start", cls="LogWatcher")
     check("静态：start() 幂等 —— 重复调用先收掉上一轮（旧任务否则永远停不掉）",
-          "await self.stop()" in start_src)
+          # 第七轮：收旧改走 `_stop_locked`（生命周期锁内的同一条收尾路，
+          # 不再在公开 stop() 上重入）—— 判据不变，目标随实现形态更新。
+          "await self._stop_locked()" in start_src)
     check("静态：初始化定位整块走线程 + 超时（不再占着事件循环）",
           # 第六轮：调用形态从 `asyncio.to_thread(...)` 收成统一入口
           # `self._io_wait(self._prime_state, ...)`（IO 走专属执行器 + 单飞）

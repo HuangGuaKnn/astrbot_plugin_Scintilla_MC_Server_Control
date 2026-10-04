@@ -213,7 +213,9 @@ def part_c() -> None:
     check("静态：忙碌判据在**线程侧**（finally 递减），跨事件循环也能复位",
           "self._io_inflight -= 1" in io_src and "_io_busy" in
           fn_src(LW_SRC, "_io_busy", cls="LogWatcher"))
-    stop_src = fn_src(LW_SRC, "stop", cls="LogWatcher")
+    # 第七轮：停止逻辑抽到 `_stop_locked`（start 的「先收旧」与 stop 共用同一条
+    # 收尾路，见 round7）—— 断言目标随实现形态更新，判据（不等卡住的那笔）不变。
+    stop_src = fn_src(LW_SRC, "_stop_locked", cls="LogWatcher")
     check("静态：stop() 关掉专属执行器且**不等**卡住的那笔（5 秒承诺还在）",
           "shutdown(wait=False" in stop_src)
 
@@ -321,9 +323,9 @@ def part_f() -> None:
     print("========== [F] 门禁 fail-open 四处 ==========")
     check("① 末尾输出不再含 ✅（GBK 重定向下 `print` 会 UnicodeEncodeError 崩在终点线）",
           "✅" not in RV_SRC and "全部通过（ALL PASS）" in RV_SRC)
-    check("① main 开头把 stdout / stderr 的错误策略钉成 replace（不崩、也不乱码）",
-          'reconfigure(errors="replace")' in RV_SRC
-          and "reconfigure(encoding=" not in RV_SRC)
+    check("① main 开头把 stdout / stderr 钉成 UTF-8 + replace（第七轮修正："
+          "与子进程链同编码，不再把「不设 encoding」钉成契约）",
+          'reconfigure(encoding="utf-8", errors="replace")' in RV_SRC)
 
     plan_src = fn_src(RV_SRC, "plan")
     check("② plan() 与实际执行同源（认 --ui-only / --no-ui / --only-static）",

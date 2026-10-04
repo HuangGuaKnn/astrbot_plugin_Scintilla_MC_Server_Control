@@ -241,6 +241,10 @@ class SemanticIndex:
         self.hashes: list[str] = []          # 行号 → 内容哈希（判复用/失效）
         self.matrix = None                   # (N, dim) float32，已 L2 归一化
         self._pos: dict[str, int] = {}       # topic → 行号
+        # v0.23.5 第七轮（GPT 第六轮 P2）：最近一次 `load()` 失败的原因 —— 只为
+        # 「文件存在但读不出来 / 结构校验不过」而写；「缓存不存在」不算错（保持空串），
+        # 上层用它把「首次使用」和「缓存坏了」分开（坏缓存要留痕并等重建）。
+        self.load_error: str = ""
 
     # ---------- 构建 ----------
 
@@ -255,8 +259,16 @@ class SemanticIndex:
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     def needs(self, topic: str, entry: dict) -> bool:
-        """该条目是否需要（重）算向量。"""
-        return self._pos.get(topic) is None or self.hashes[self._pos[topic]] != self.content_hash(topic, entry)
+        """该条目是否需要（重）算向量。
+
+        v0.23.5 第七轮：行号越界 / 哈希缺失都按「需要重算」处理 —— 结构被外力
+        弄坏时，missing() 也不该抛 IndexError 把整轮补算带崩。真正的结构治理
+        在三道闸上：load() 的入口校验、prune() / set_vectors() 的对齐检查。
+        """
+        pos = self._pos.get(topic)
+        if pos is None or pos >= len(self.hashes):
+            return True
+        return self.hashes[pos] != self.content_hash(topic, entry)
 
     def missing(self, entries: dict) -> list[str]:
         """尚未建向量 / 内容已变动的 topic 列表。"""
@@ -288,6 +300,12 @@ class SemanticIndex:
         """
         if _np is None or not topics or vectors is None:
             return
+        # v0.23.5 第七轮：三方行数对不上时**绝不按错位下标合并** —— 整库作废重起。
+        # （load() 已做入口校验；这道闸兜的是「内存里的索引被别处搞坏」。）
+        if self.matrix is not None and (
+                self.matrix.shape[0] != len(self.topics)
+                or len(self.hashes) != len(self.topics)):
+            self.matrix, self.topics, self.hashes, self._pos = None, [], [], {}
         mat = _np.asarray(vectors, dtype="float32")
         if mat.ndim == 1:
             mat = mat.reshape(1, -1)
@@ -318,6 +336,12 @@ class SemanticIndex:
     def prune(self, entries: dict) -> int:
         """剔除已删除条目的向量（保持矩阵与条目表一致），返回剔除条数。"""
         if _np is None or self.matrix is None:
+            return 0
+        # v0.23.5 第七轮：结构对不上 → 整个索引作废（= 等待全量重建），绝不在
+        # 错位的下标上裁剪 —— 那正是 GPT 第六轮点名的 IndexError 入口之一。
+        if (self.matrix.shape[0] != len(self.topics)
+                or len(self.hashes) != len(self.topics)):
+            self.matrix, self.topics, self.hashes, self._pos = None, [], [], {}
             return 0
         keep = [i for i, t in enumerate(self.topics) if t in entries]
         drop = len(self.topics) - len(keep)
@@ -388,19 +412,41 @@ class SemanticIndex:
             return False
 
     def load(self, path: Path) -> bool:
+        """从磁盘加载向量缓存。**结构校验不通过一律按「没加载」处理。**
+
+        v0.23.5 第七轮（GPT 第六轮 P2）：此前只验「矩阵是不是 2 维」—— 行数 /
+        主题数 / 哈希数三方对不上、主题重名、含 NaN 的坏 npz 照样进内存，之后
+        `missing()` / `prune()` 拿错位下标当正常数据用，直接 IndexError（普通
+        build 救不回来，只有 force=True 整库重算）。现在校验通过才赋值，失败则
+        **原地清空**（含 dim）并留下 `load_error` 给上层摊进诊断 —— 空索引在
+        语义上就是「等着重建」，普通 build_vectors() 会从它全量补算。
+        """
+        self.load_error = ""
         if _np is None or not path.exists():
             return False
         try:
             with _np.load(path, allow_pickle=True) as z:
-                self.matrix = _np.asarray(z["matrix"], dtype="float32")
-                self.topics = [str(x) for x in z["topics"]]
-                self.hashes = [str(x) for x in z["hashes"]]
-                self.dim = int(self.matrix.shape[1]) if self.matrix.ndim == 2 else 0
-            self._pos = {t: i for i, t in enumerate(self.topics)}
-            return True
-        except Exception:
+                matrix = _np.asarray(z["matrix"], dtype="float32")
+                topics = [str(x) for x in z["topics"]]
+                hashes = [str(x) for x in z["hashes"]]
+            if (matrix.ndim != 2 or matrix.shape[1] <= 0
+                    or matrix.shape[0] != len(topics)
+                    or len(topics) != len(hashes)
+                    or len(set(topics)) != len(topics)
+                    or not bool(_np.isfinite(matrix).all())):
+                raise ValueError(
+                    "结构校验未通过："
+                    f"matrix={matrix.shape} / topics={len(topics)} / hashes={len(hashes)}"
+                )
+        except Exception as e:                       # noqa: BLE001
             self.matrix, self.topics, self.hashes, self._pos = None, [], [], {}
+            self.dim = 0
+            self.load_error = f"{type(e).__name__}: {e}"
             return False
+        self.matrix, self.topics, self.hashes = matrix, topics, hashes
+        self.dim = int(matrix.shape[1])
+        self._pos = {t: i for i, t in enumerate(topics)}
+        return True
 
 
 # 老算法「mods 目录里一个 jar 都没有」时的指纹（= md5 空串）。这种「空整合包指纹」
@@ -557,6 +603,11 @@ class ModKnowledgeBase:
         #: 最近一次「读索引状态」出的错（v0.23.5 第六轮）—— 索引坏掉时不许静默：
         #: 由 `pending_vectors()` 写入、`semantic_stats()` 摊给界面与诊断看
         self.index_error: str = ""
+        #: v0.23.5 第七轮（GPT 第六轮 P2）：**缓存级**错误（`.vec.npz` 读不出 /
+        #: 结构校验不过）。与 index_error 分工：index_error 是「本次读索引状态失败」
+        #: （成功即清）；cache_error 一直留到缓存被重新加载或重建落盘为止 ——
+        #: 不然「上次为什么没向量」这个问题，界面上永远问不出来。
+        self.cache_error: str = ""
         # 重排序精排（默认关，v0.21.42）：候选池交给 Rerank 模型重排
         self.rerank_enabled = bool(rerank_enabled)
         self.rerank_fn = None                    # async (query, docs) -> [(index, score)]
@@ -569,19 +620,33 @@ class ModKnowledgeBase:
         self.semantic_enabled = bool(on)
         if self.semantic_enabled and self._sem is None:
             sem = SemanticIndex()
-            if not sem.load(self.vec_path):
-                self._sem = sem          # 缓存不存在/损坏 → 用空索引，等 build_vectors 补
-            else:
-                self._sem = sem
+            # v0.23.5 第七轮（GPT 第六轮 P2）：load 失败要分两种 —— 「缓存不存在」
+            # 是首次使用的正常态（不留痕）；「存在但读不出来 / 结构校验不过」是
+            # 坏缓存，必须留痕并让它以**空索引**身份去等 build_vectors 重建。
+            if sem.load(self.vec_path):
+                self.cache_error = ""
+            elif sem.load_error:
+                self.cache_error = (
+                    "向量缓存校验未通过（已按空索引处理，待重建）：" + sem.load_error
+                )
+                _log.warning("向量缓存不可用（%s）：%s", self.vec_path, sem.load_error)
+            self._sem = sem
         if self._sem is not None:
             self._sem.prune(self._searchable())
         return self.semantic_enabled
 
     def semantic_ready(self) -> bool:
-        """语义通道是否真正可用（开关开着 + 有向量 + 维度对得上）。"""
+        """语义通道是否真正可用（开关开着 + 有向量 + 结构完整）。
+
+        v0.23.5 第七轮（GPT 第六轮 P2）：**结构不完整的缓存不许上岗** ——
+        此前只看「matrix 非 None 且有 topics」，行数对不上的坏索引也会被判 True，
+        语义通道于是带着错位行号跑检索。三方行数一致是上岗的最低门槛。
+        """
+        sem = self._sem
         return bool(
-            self.semantic_enabled and self._sem is not None
-            and self._sem.matrix is not None and self._sem.topics
+            self.semantic_enabled and sem is not None
+            and sem.matrix is not None and sem.topics
+            and sem.matrix.shape[0] == len(sem.topics) == len(sem.hashes)
         )
 
     def pending_vectors(self) -> int:
@@ -625,6 +690,9 @@ class ModKnowledgeBase:
             # v0.23.5 第六轮（GPT 第五轮 P2）：索引自己坏掉时不许静默 —— 上面那个
             # `pending` 就是被这件事影响的，谁读它谁也该看得见原因。
             "index_error": str(self.index_error or ""),
+            # v0.23.5 第七轮：缓存级错误单独摊 —— 它活得比 index_error 长
+            # （index_error 成功读一次即清；cache_error 留到缓存重建 / 重载成功）。
+            "cache_error": str(self.cache_error or ""),
         }
 
     # ================= 重排序精排（v0.21.42） =================
@@ -735,6 +803,9 @@ class ModKnowledgeBase:
         # v0.23.5 外部复核：落盘结果此前被直接丢掉 —— 向量算完却写不进磁盘时，
         # 界面/日志都以为「语义索引已补齐」，下次启动又得整库重算。
         saved = self._sem.save(self.vec_path)
+        if saved:
+            # v0.23.5 第七轮：新缓存已落盘 = 旧缓存的问题（若有）到此治愈
+            self.cache_error = ""
         out = {
             "ok": True, "added": added, "failed": failed,
             "total": len(self._sem.topics), "dim": self._sem.dim,
@@ -865,7 +936,15 @@ class ModKnowledgeBase:
             return
         sem = SemanticIndex()
         if sem.load(self.vec_path):
+            self.cache_error = ""
             sem.prune(self._searchable())
+        elif sem.load_error:
+            # v0.23.5 第七轮（GPT 第六轮 P2）：坏缓存不许静默 —— 空索引照常上岗
+            # （等 build_vectors 从零补算），但把原因留给界面 / 诊断。
+            self.cache_error = (
+                "向量缓存校验未通过（已按空索引处理，待重建）：" + sem.load_error
+            )
+            _log.warning("向量缓存不可用（%s）：%s", self.vec_path, sem.load_error)
         self._sem = sem
 
     def reload(self) -> None:

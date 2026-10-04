@@ -141,6 +141,13 @@ def run_file(rel: str, timeout: float, env_extra: dict | None = None):
     env = dict(os.environ)
     if env_extra:
         env.update(env_extra)
+    # v0.23.5 第七轮（GPT 第六轮 P2）：子进程的 stdout / stderr 是管道，Windows 上
+    # 默认按 ANSI 代码页（中文机器 = cp936）编码 —— 测试里打印 `⊆` 这类非 GBK 字符
+    # 会在**子进程自己**的 print 阶段就 UnicodeEncodeError，父进程收不到正常输出，
+    # 把一个通过的测试判成失败。这里给整条链统一钉成 UTF-8（父进程已按 utf-8 解码，
+    # 见下面的 kwargs），两头说同一种话。
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     kwargs = {"cwd": str(ROOT), "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
               "text": True, "encoding": "utf-8", "errors": "replace", "env": env}
     if os.name != "nt":
@@ -359,12 +366,14 @@ def main(argv: list[str]) -> int:
     # 某些 runner）时走的是 ANSI 代码页（cp936），任何非 GBK 字符都会让**最后一行**
     # 输出崩成 UnicodeEncodeError —— 明明全绿却以 traceback 收场。
     #
-    # 只把**错误策略**钉成 replace、不动编码：这样中文在任何下游都照旧可读
-    # （改了编码反而会让按本地代码页读管道的人看到乱码），而个别编不出来的字符
-    # 降级成 `?` 而不是抛异常 —— 输出编码绝不该影响门禁的退出码。
+    # v0.23.5 第七轮（GPT 第六轮 P2）：**编码也一起钉成 UTF-8**。只钉 errors 的话，
+    # 子进程链已统一 UTF-8（见 `run_file`），主进程却按本机代码页写管道：`⊆` 这类
+    # 字符被降级成 `?`、下游按 UTF-8 读的人看到的是乱码字节 —— 两头必须说同一种话。
+    # 显式 encoding 后：中文与特殊字符在任何以 UTF-8 打开的下游都无损，
+    # 个别编不出来的字符仍降级成 `?` 而不是抛异常 —— 输出编码绝不该影响门禁的退出码。
     for _s in (sys.stdout, sys.stderr):
         try:
-            _s.reconfigure(errors="replace")
+            _s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:                                    # noqa: BLE001
             pass
     only_plan = "--plan" in argv
