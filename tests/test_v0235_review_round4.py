@@ -290,7 +290,8 @@ def part_d() -> None:
         # ① _poll 自己记错、正常返回（不抛异常）→ 计数必须留下
         w, _ = make_watcher(Path(td))
 
-        async def bad_poll():
+        async def bad_poll(gen=None):
+            # v0.23.5 第八轮：`_poll` 现在接收任务代号（gen），替身签名同步
             w.error_count += 1
             w.last_error = "stat 挂了"
         w._poll = bad_poll
@@ -305,7 +306,8 @@ def part_d() -> None:
         w2, _ = make_watcher(Path(td) / "b")
         w2.error_count = 3
 
-        async def ok_poll():
+        async def ok_poll(gen=None):
+            # v0.23.5 第八轮：`_poll` 现在接收任务代号（gen），替身签名同步
             w2.last_error = ""
         w2._poll = ok_poll
         run_loop_briefly(w2)

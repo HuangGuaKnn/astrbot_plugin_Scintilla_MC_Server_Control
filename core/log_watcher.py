@@ -202,6 +202,16 @@ class LogWatcher:
         # 放弃等待的监听任务（stop() 超时时留下）。丢引用会让半途的任务被 GC 掉，
         # 留着还能在 health() / 诊断里看见「有个没退出的」。
         self._orphaned: set[asyncio.Task] = set()
+        # ---- v0.23.5 第八轮（GPT 第七轮 P2）：监听**任务代** ----
+        # 第七轮把 IO 计数按代隔离了（卡死的旧代 IO 不再挡新代），但 `_loop` 任务
+        # 本身没有代际判据：`on_event` 回调若吞掉 `CancelledError`，`stop()` 超时
+        # 只会把旧任务放进 `_orphaned` 等人；随后新的 `start()` 又把 `_running`
+        # 置回 True —— 旧任务从吞掉取消的地方继续轮询，与新任务并发读写同一个
+        # watcher 的状态（_pos / _partial / 事件派发相互交错）。
+        # 对策：每次 start() 换一代并交给 `_loop`；stop() 在取消**之前**先让旧代
+        # 失效；`_loop` 每轮、`_poll` 各关键节点逐一比对，代不符立即退出 ——
+        # 取消被吞也复活不了（见 `_stale`）。
+        self._task_gen: int = 0
         # 最近一次 stat 到的文件大小（health() 用它算 lag_bytes）
         self._last_size: int = 0
         # ---- v0.23.5 第六轮（GPT 第五轮 P2）：IO 生命周期 ----
@@ -239,6 +249,18 @@ class LogWatcher:
         #: （只动尾巴）不会误报。
         self._short_sig: str = ""
         self._short_len: int = 0
+
+    def _stale(self, gen: "int | None") -> bool:
+        """这个监听任务代号是否已过期（v0.23.5 第八轮，GPT 第七轮 P2）。
+
+        `stop()` 使旧代失效（`_task_gen += 1`）、`start()` 登记新代；`_loop` /
+        `_poll` 在关键节点调用本方法 —— 只要代与当前不符，**哪怕旧任务吞掉了
+        取消、甚至 `_running` 已被再次置 True**（新的 start 已发生），也立即停下：
+        不再读文件、不再改状态、不再派发事件。
+        `gen is None` 表示调用方不在代际协议内（老测试 / 手工诊断直接调 `_poll()`），
+        此时不做代际否决（行为与旧版一致）。
+        """
+        return gen is not None and gen != self._task_gen
 
     def _life_lock(self) -> asyncio.Lock:
         """start / stop 共用的生命周期锁（第七轮：并发调用串行化）。
@@ -278,6 +300,10 @@ class LogWatcher:
         - **换代**（`_io_gen += 1`）：上一代卡死在系统调用里的那笔 IO，其「在飞」
           标记从此与新代无关（见 `_io_wait` / `_io_busy`）—— 复用同一对象不会再
           被旧代挡停。
+
+        v0.23.5 第八轮（GPT 第七轮 P2）：
+        - 再换一个**任务代**（`_task_gen += 1`）并把代号交给 `_loop` —— 它是
+          「吞掉取消的旧任务」与「重启后的新任务」之间的硬隔离点（见 `_stale`）。
         """
         async with self._life_lock():
             # 幂等保护：重复调用先收掉上一轮（与 stop() 同一套收尾路）
@@ -314,7 +340,9 @@ class LogWatcher:
             self._short_sig, self._short_len = "", 0
             self.missing_polls = 0
             self._running = True
-            self._task = asyncio.create_task(self._loop())
+            # v0.23.5 第八轮（GPT 第七轮 P2）：登记新代，并把代号交给 `_loop`。
+            self._task_gen += 1
+            self._task = asyncio.create_task(self._loop(self._task_gen))
 
     def _prime_state(self) -> tuple[int, tuple[int, int] | None, str, bool]:
         """`start()` 需要的那几件文件活儿（**同步版**，只在 `asyncio.to_thread` 里跑）。
@@ -480,8 +508,15 @@ class LogWatcher:
         等到子任务自己结束才返回（0.35s），返回的还是子任务的值 —— 即 5 秒的超时
         承诺是纸面的。`asyncio.wait` 才是「无论如何按时返回」的原语：它不取消、不等待
         收尾，超时就把任务留在 pending 里交给调用方处置。
+
+        v0.23.5 第八轮（GPT 第七轮 P2）：**取消任务之前先让旧任务代失效**
+        （`_task_gen += 1`）—— 这是对「吞掉 CancelledError 的旧任务」的硬隔离：
+        哪怕它一直活到新的 `start()` 把 `_running` 置回 True 之后，也会在任一
+        代际检查点（`_loop` 每轮 / `_poll` 各落点）自行退出。
         """
         self._running = False
+        # v0.23.5 第八轮：先失效旧代、再取消 —— 取消可能被回调吞掉，代际不会。
+        self._task_gen += 1
         task, self._task = self._task, None
         # v0.23.5 第六轮：专属执行器跟着停 —— `wait=False` 表示**不等**卡在系统调用里
         # 的那笔 IO（它待在它自己的池里；等它会毁掉 stop() 的 5 秒承诺）。
@@ -503,13 +538,14 @@ class LogWatcher:
             logger.warning("日志监听任务停止时异常（已忽略）：%s", e)
             return
         if pending:
-            # 保住引用：让它继续跑完（_running 已置 False，它下一轮会自己退出），
-            # 但**别丢引用** —— 半途被 GC 掉的任务连痕迹都不剩，诊断时查无此人。
+            # 保住引用：让它继续跑完（_running 已置 False 且旧代已失效，它到下一个
+            # 检查点会自己退出），但**别丢引用** —— 半途被 GC 掉的任务连痕迹都不剩，
+            # 诊断时查无此人。
             self._orphaned.add(task)
             task.add_done_callback(self._reap_orphan)
             logger.warning(
                 "日志监听任务在 %.1fs 内未退出，已放弃等待（多半卡在文件 IO 上）；"
-                "任务本身会在本轮读取返回后自行退出（进程退出时会一并回收）",
+                "任务本身会在回到下一个代际检查点时自行退出（进程退出时会一并回收）",
                 STOP_TIMEOUT,
             )
 
@@ -551,6 +587,9 @@ class LogWatcher:
             "lag_bytes": max(0, int(self._last_size) - int(self._pos)),
             "last_read_at": float(self.last_read_at),
             "orphaned_tasks": len(self._orphaned),
+            # v0.23.5 第八轮：监听任务代 —— 「第几代在跑」一眼可见（诊断孤儿 /
+            # 新旧并发时对照用；每次 start() / stop() 都会前进）
+            "task_gen": int(self._task_gen),
         }
 
     def _file_sig(self) -> tuple[int, int] | None:
@@ -578,11 +617,17 @@ class LogWatcher:
             return ""
         return hash(head).to_bytes(8, "big", signed=True).hex()
 
-    async def _loop(self) -> None:
-        while self._running:
+    async def _loop(self, gen: "int | None" = None) -> None:
+        # v0.23.5 第八轮（GPT 第七轮 P2）：**任务代**。循环每轮都比对 `gen` 与当前代
+        # —— `stop()` 先使旧代失效，哪怕旧任务吞掉了取消、又赶上 `_running` 被新的
+        # `start()` 置回 True，它也过不了这道检查（旧写法正是从这里继续跟随
+        # `_running` 复活的）。`gen is None` 表示直调（老测试 `w._loop()`），按当前代处理。
+        if gen is None:
+            gen = self._task_gen
+        while self._running and gen == self._task_gen:
             try:
                 before = self.error_count
-                await self._poll()
+                await self._poll(gen)
                 # v0.23.5 第四轮：**不能无条件清零**。`_poll()` 遇到 stat / read
                 # 失败时是「自己递增计数后正常 return」（不抛异常），原先在这里
                 # 直接 `= 0` 会把刚记上的错误当场抹掉 —— health()["error_count"]
@@ -612,7 +657,12 @@ class LogWatcher:
             f.seek(offset)
             return f.read(size)
 
-    async def _poll(self) -> None:
+    async def _poll(self, gen: "int | None" = None) -> None:
+        # v0.23.5 第八轮（GPT 第七轮 P2）：旧代任务不得碰任何状态 —— 进 poll 先验代。
+        # 吞掉取消的旧任务正是从 `await` 恢复处继续往里走的，所以除了这里，
+        # 「读回数据后」与「每个派发点前」还要再验（见下面的三处 `_stale` 检查）。
+        if self._stale(gen):
+            return
         # v0.23.5 第六轮（GPT 第五轮 P2）：上一笔 IO 还没回来（慢盘 / 网络盘 / 被独占
         # 的文件）→ 本轮直接跳过，不再往池子里叠一笔。旧写法每轮都提交新的，
         # 未完成 IO 会无限累积；超时留痕由 `_io_wait` 负责（io_timeouts / last_error）。
@@ -745,10 +795,10 @@ class LogWatcher:
             self._head = ""
             try:
                 enc = await self._io_wait(self._sniff_encoding, what="探测日志编码")
-                if enc:
-                    self._enc = enc
             except Exception:
-                pass
+                enc = None
+            if enc:
+                self._enc = enc
             logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
         self._sig = sig
         if not head:
@@ -796,6 +846,11 @@ class LogWatcher:
             self.last_error = f"{type(e).__name__}: {e}"
             return
         if not data:
+            return
+        # v0.23.5 第八轮（GPT 第七轮 P2）：数据读回来了，但监听器可能已经换代
+        #（stop() 超时 + 新 start()）—— 这一轮结果整段作废：不推进 `_pos` / 锚点 /
+        # 缓存，也不派发。吞掉取消的旧任务恢复执行时首先撞上的就是这组检查。
+        if self._stale(gen):
             return
         self.read_bytes += len(data)
         if self._partial:
@@ -852,6 +907,9 @@ class LogWatcher:
         self._anchor_at = self._pos - len(self._anchor)
         self.last_read_at = time.monotonic()
         for line in self._decode_chunk(data).splitlines():
+            # v0.23.5 第八轮（GPT 第七轮 P2）：逐行消费也验代（旧任务恢复后不得再往下走）
+            if self._stale(gen):
+                return
             if not line.strip():
                 continue
             if len(line) > MAX_LINE_CHARS:
@@ -859,6 +917,11 @@ class LogWatcher:
                 # 免得几十万字符的行拖慢正则回溯、白占内存。
                 line = line[:MAX_LINE_CHARS]
             for etype, player, detail in self._parse_line_multi(line):
+                # v0.23.5 第八轮（GPT 第七轮 P2）：每个派发点前验代 —— 旧任务吞掉
+                # 取消后，恢复执行的位置就在某个 `await self.on_event(...)` 内，
+                # 这里一挡，它再也派发不出下一条（连「下一行」也见不到上面那处检查）。
+                if self._stale(gen):
+                    return
                 try:
                     await self.on_event(etype, player, detail)
                 except Exception:
