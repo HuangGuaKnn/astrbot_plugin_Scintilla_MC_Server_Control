@@ -241,7 +241,8 @@ async def part_b_health(tmp: Path) -> None:
 
     # 轮询连续失败 → 记数 + 留痕；恢复正常 → 清零
     w2 = _watcher(tmp / "err", events)
-    async def boom():
+    async def boom(gen=None):
+        # v0.23.5 第八轮：`_poll` 现在接收任务代号（gen），替身签名同步
         raise OSError("模拟读盘失败")
     w2._poll = boom
     w2._running = True
@@ -270,7 +271,8 @@ async def part_b_stop_timeout(tmp: Path) -> None:
     w = _watcher(tmp / "stuck", events)
     (tmp / "stuck").mkdir(parents=True, exist_ok=True)
 
-    async def stubborn():
+    async def stubborn(gen=None):
+        # v0.23.5 第八轮：`_poll` 现在接收任务代号（gen），替身签名同步
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
