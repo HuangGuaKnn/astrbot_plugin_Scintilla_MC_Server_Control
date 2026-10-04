@@ -18,7 +18,8 @@ GPT 第八轮核验在 3b14caa + 第七、八轮修复的工作区上复查后�
 
 修复判据（本文件，先红后绿）：
   - 静态 H：`_life_lock` 不再读 `asyncio.Lock._loop` 私有属性；显式记录
-    `_owner_loop`；owner 已关闭 / 已停转 → 接管换锁；owner 活着却换循环 →
+    `_owner_loop`；owner 已关闭 → 接管换锁，停转未关闭 → 拒绝（第十轮收紧）；
+    owner 活着却换循环 →
     明确 `RuntimeError`（消息给出 `run_coroutine_threadsafe` 转发办法）；
     `_stop_locked` 对「任务属于别的循环」直接安静收尾（不跨循环 wait/cancel）。
   - 行为 H：① 后台线程跑着 owner loop 时，另一线程 `asyncio.run(w.stop())` 必须
@@ -170,8 +171,8 @@ def part_h_static() -> None:
     check("静态：显式记录 owner loop（__init__ 字段 + _life_lock 里读取）",
           "self._owner_loop: asyncio.AbstractEventLoop | None = None" in LW_SRC
           and "owner = self._owner_loop" in life_src)
-    check("静态：owner 已关闭 / 已停转 → 接管换锁（is_closed / is_running）",
-          "owner.is_closed()" in life_src and "owner.is_running()" in life_src)
+    check("静态：owner 已关闭 → 接管换锁；停转未关闭 → 拒绝（第十轮收紧，is_running 退出判定）",
+          "owner.is_closed()" in life_src and "not owner.is_running" not in life_src)
     check("静态：owner 活着却换循环 → 明确 RuntimeError（附转发指引）",
           "raise RuntimeError" in life_src and "run_coroutine_threadsafe" in life_src)
     check("静态：_stop_locked 对「任务属于别的循环」安静收尾（不跨循环 wait/cancel）",

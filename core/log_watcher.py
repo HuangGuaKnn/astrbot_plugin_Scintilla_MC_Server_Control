@@ -285,10 +285,13 @@ class LogWatcher:
         不保证被送达，B 线程会持续卡住。现在三种情形分开处理：
 
           - 首用 / owner 还是当前循环 → 复用（正常路径）；
-          - owner 循环已关闭或已停转（测试反复 asyncio.run、热重载换循环）→
+          - owner 循环**已关闭**（测试反复 asyncio.run、热重载换循环）→
             接管：换一把新锁（旧锁随旧循环退役，不存在需要唤醒的等待者）；
-          - owner 循环仍活着却换了循环 → 跨循环误用，抛**明确的 RuntimeError**
-            （不再静默换锁让互斥悄悄失效，更不许复用同一把锁互相卡死）。
+          - owner 循环仍活着（运行中，或**停转但未关闭**）却换了循环 → 跨循环
+            误用，抛**明确的 RuntimeError**（不再静默换锁让互斥悄悄失效，更不许
+            复用同一把锁互相卡死）。第十轮收紧：停转未关闭不再接管 —— 其中可能
+            仍有挂起的 start / 锁等待任务，旧循环恢复运行后会继续写状态、创建
+            旧任务；只有已关闭的循环才允许自动接管。
             其他线程的正确做法：把调用转发到 owner 循环上执行 ——
             `asyncio.run_coroutine_threadsafe(w.stop(), owner_loop)`。
         """
@@ -300,19 +303,27 @@ class LogWatcher:
                 self._life_lk = asyncio.Lock()
             return self._life_lk
         owner = self._owner_loop
-        if owner is None or owner is loop or owner.is_closed() or not owner.is_running():
-            if owner is not loop:
-                # 首用或接管：旧锁随旧循环退役（新循环不替旧循环背等待者）
+        if owner is None or owner is loop:
+            # 首用 / 同循环复用（正常路径）：owner 记录本循环，锁对象不换
+            if owner is None:
                 self._owner_loop = loop
-                self._life_lk = None
             if self._life_lk is None:
                 self._life_lk = asyncio.Lock()
             return self._life_lk
+        if owner.is_closed():
+            # owner 循环已关闭（反复 asyncio.run / 热重载形态）：彻底退役，
+            # 接管换锁 —— 关闭过的循环不会再调度任何任务，不存在要唤醒的等待者。
+            self._owner_loop = loop
+            self._life_lk = asyncio.Lock()
+            return self._life_lk
         raise RuntimeError(
             "LogWatcher 的 start() / stop() 只能在它所属的事件循环里调用："
-            f"当前 owner loop {owner!r} 仍在运行，本次调用却来自另一个循环 {loop!r}。"
-            "跨线程请转发到 owner 循环执行："
-            "asyncio.run_coroutine_threadsafe(w.stop(), owner_loop)（start 同理）。"
+            f"当前 owner loop {owner!r} 尚未关闭，本次调用却来自另一个循环 {loop!r}。"
+            "（owner 循环停转但未关闭时也一律拒绝：其中可能仍有挂起的生命周期调用，"
+            "静默接管会让旧循环恢复后继续写状态。）跨线程 / 跨循环请转发到 owner "
+            "循环执行：asyncio.run_coroutine_threadsafe(w.stop(), owner_loop)"
+            "（start 同理）；若旧循环确已弃用，请先把它关闭（loop.close()），"
+            "新循环才能自动接管。"
         )
 
     async def start(self) -> None:
@@ -347,7 +358,8 @@ class LogWatcher:
             if self._executor is None:
                 self._executor = ThreadPoolExecutor(max_workers=1,
                                                     thread_name_prefix="logwatch")
-            primed = await self._io_wait(self._prime_state, what="初始化定位日志文件")
+            primed = await self._io_wait(self._prime_state, what="初始化定位日志文件",
+                                         gen=self._task_gen)
             if primed is None:
                 # 定位失败：位置标成「未知」，第一轮轮询直接落到文件尾（不重播历史）；
                 # `probed` 归 False —— 这一轮**确实没探测成功**，健康度不许自称看过了
@@ -397,7 +409,7 @@ class LogWatcher:
             self._enc = "utf-8"
         return pos, sig, head, present
 
-    async def _io_wait(self, fn, *args, what: str = ""):
+    async def _io_wait(self, fn, *args, what: str = "", gen: "int | None" = None):
         """给一次文件 IO 加**超时**，并把它关进「最多一笔在飞」的笼子里。
 
         v0.23.5 第五轮：IO 已经在 `asyncio.to_thread` 里跑了，真正卡住事件循环的风险
@@ -412,18 +424,28 @@ class LogWatcher:
           ② **专属执行器**：`start()` 里建的 `ThreadPoolExecutor(max_workers=1)`
              —— 卡住的线程只占它自己的池，不污染默认池；`stop()` 只 `shutdown(wait=False)`。
         被放弃的那一笔由 `_release_io` 在**真正结束**时收尾（取走异常、解除忙碌标记）。
+
+        v0.23.5 第十轮（GPT 第九轮 P2）：新增 `gen` 参数 —— 调用方声明「这笔 IO
+        的结果归属哪一代任务」。超时记账（`io_timeouts` / `last_error`）与跳过
+        记账（`io_skipped`）一律先验代：旧代任务在新代启动后才兑现的超时 / 异常，
+        一个共享健康字段都不许写。`gen is None`（老直调 / 手工诊断）不做代际
+        否决，行为与旧版一致。
         """
         # v0.23.5 第七轮（GPT 第六轮 P2）：在飞计数绑定「代」—— 上一代（已经
         # stop 的某个执行器）遗留的卡死一笔不属于新代，换代即清零，不再把新代的
         # 所有 IO 挡在闸门外；旧的卡死线程回来时也会因代不符而不动新代计数（见 `_run`）。
-        gen = self._io_gen
+        # 注意：本变量是**IO 代**（在飞计数口径）；参数 `gen` 是**任务代**
+        #（`_stale` 代际否决口径）—— 两者是不同的计数体系，不要混用。
+        io_gen = self._io_gen
         with self._io_lock:
-            if self._io_inflight_gen != gen:
+            if self._io_inflight_gen != io_gen:
                 self._io_inflight = 0
-                self._io_inflight_gen = gen
+                self._io_inflight_gen = io_gen
             if self._io_inflight > 0:
                 # 上一笔还没回来 → 不叠新的（这正是旧写法把线程堆起来的入口）
-                self.io_skipped += 1
+                # v0.23.5 第十轮：跳过记账同样过代际守卫（旧代不许写共享计数）
+                if not self._stale(gen):
+                    self.io_skipped += 1
                 return None
             self._io_inflight += 1
 
@@ -437,7 +459,7 @@ class LogWatcher:
                 return fn(*args)
             finally:
                 with self._io_lock:
-                    if self._io_inflight_gen == gen:
+                    if self._io_inflight_gen == io_gen:
                         self._io_inflight -= 1
 
         loop = asyncio.get_running_loop()
@@ -452,7 +474,9 @@ class LogWatcher:
                 # 执行器刚在 stop() 里关掉 —— 这一轮按「没读到」处理
                 with self._io_lock:
                     self._io_inflight -= 1
-                self.io_skipped += 1
+                # v0.23.5 第十轮：跳过记账同样过代际守卫
+                if not self._stale(gen):
+                    self.io_skipped += 1
                 return None
         self._io_task = fut
         fut.add_done_callback(self._release_io)
@@ -461,8 +485,12 @@ class LogWatcher:
             # 结果无处可去，还给收尾添一句「never retrieved」）
             return await asyncio.wait_for(asyncio.shield(fut), IO_TIMEOUT)
         except asyncio.TimeoutError:
-            self.io_timeouts += 1
-            self.last_error = f"文件 IO 超时（{what or '未知操作'} > {IO_TIMEOUT:g}s）"
+            # v0.23.5 第十轮（GPT 第九轮 P2）：超时记账先验代 —— 旧代 IO 在新代
+            # 启动后才兑现的超时，不许记进新代的 `io_timeouts` / `last_error`
+            #（日志仍照打：那是「真实发生过」的诊断留痕，不是健康度）。
+            if not self._stale(gen):
+                self.io_timeouts += 1
+                self.last_error = f"文件 IO 超时（{what or '未知操作'} > {IO_TIMEOUT:g}s）"
             logger.warning("日志监听：%s 超过 %g 秒未返回，本轮按「没读到」处理；"
                            "在它返回前不再提交新的读取（最多 1 笔在飞）",
                            what or "文件 IO", IO_TIMEOUT)
@@ -729,7 +757,8 @@ class LogWatcher:
         # 被独占的文件），阻塞的是**整个事件循环** —— 于是 `stop()` 里那句
         # `asyncio.wait(timeout=5)` 也给不出 wall-clock 保证：事件循环根本没机会
         # 执行超时回调（GPT 第四轮）。判定逻辑一行没动，只是让 IO 不再占着循环。
-        present = await self._io_wait(self.log_path.exists, what="检查日志文件是否在")
+        present = await self._io_wait(self.log_path.exists, what="检查日志文件是否在",
+                                      gen=gen)
         # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代 —— 旧任务不得再写任何
         # 状态（被 stop() 换代后恢复执行的旧任务在这里立即退场，不碰
         # file_present / missing_polls）
@@ -749,7 +778,7 @@ class LogWatcher:
         self.file_present = True
         self.missing_polls = 0
         try:
-            st = await self._io_wait(self.log_path.stat, what="读取日志文件属性")
+            st = await self._io_wait(self.log_path.stat, what="读取日志文件属性", gen=gen)
         except OSError as e:
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代（异常分支同样不许记账）
             if self._stale(gen):
@@ -806,7 +835,8 @@ class LogWatcher:
         if not rotated and anchor_ok:
             try:
                 now_anchor = await self._io_wait(self._read_at, self._anchor_at,
-                                                 len(self._anchor), what="回读内容锚点")
+                                                 len(self._anchor), what="回读内容锚点",
+                                                 gen=gen)
             except OSError:
                 now_anchor = None
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
@@ -817,7 +847,7 @@ class LogWatcher:
         # ③ 头指纹：不再要求 size == _pos。正常追加时文件头永不改变，而这次读取
         #    本来每轮都要做（下面刷新 self._head 用的是同一次调用），等于零额外成本。
         if not rotated and self._head:
-            head = await self._io_wait(self._head_sig, what="读取文件头指纹")
+            head = await self._io_wait(self._head_sig, what="读取文件头指纹", gen=gen)
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
             if self._stale(gen):
                 return
@@ -831,7 +861,7 @@ class LogWatcher:
         if size < HEAD_BYTES:
             try:
                 snap = await self._io_wait(self._read_at, 0, size,
-                                           what="回读短文件内容快照")
+                                           what="回读短文件内容快照", gen=gen)
             except OSError:
                 snap = None
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
@@ -852,7 +882,7 @@ class LogWatcher:
             if not rotated and self._short_len > 0:
                 try:
                     snip = await self._io_wait(self._read_at, 0, self._short_len,
-                                               what="回读短文件前缀快照")
+                                               what="回读短文件前缀快照", gen=gen)
                 except OSError:
                     snip = None
                 # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
@@ -872,7 +902,7 @@ class LogWatcher:
             # 头在本轮重读后重新记录；留着会在下一轮误触发一次「轮转」（重复播报）。
             self._head = ""
             try:
-                enc = await self._io_wait(self._sniff_encoding, what="探测日志编码")
+                enc = await self._io_wait(self._sniff_encoding, what="探测日志编码", gen=gen)
             except Exception:
                 enc = None
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
@@ -883,7 +913,7 @@ class LogWatcher:
             logger.info("检测到日志轮转（%s），已从头开始读取", self.log_path)
         self._sig = sig
         if not head:
-            head = await self._io_wait(self._head_sig, what="读取文件头指纹")
+            head = await self._io_wait(self._head_sig, what="读取文件头指纹", gen=gen)
             # v0.23.5 第九轮（GPT 第八轮 P2）：IO 恢复点先验代
             if self._stale(gen):
                 return
@@ -922,8 +952,13 @@ class LogWatcher:
             # 二进制读取：编码在解码阶段逐行自适应（GBK/UTF-8）。
             # 读多少有上限，见 MAX_READ_BYTES。
             data = await self._io_wait(self._read_at, read_from, room,
-                                       what="读取日志新增内容")
+                                       what="读取日志新增内容", gen=gen)
         except OSError as e:
+            # v0.23.5 第十轮（GPT 第九轮 P2）：IO 恢复点先验代 —— 等待期间被
+            # 换代的旧任务，这笔迟到的 OSError 属于旧代；`error_count` /
+            # `last_error` 是新代健康度，不许被它写。
+            if self._stale(gen):
+                return
             # 打开/读取失败是**真错误**（权限、被独占、盘掉了）→ 留痕，
             # 别再像以前那样安静地 return 让监听看起来一切正常。
             self.error_count += 1
