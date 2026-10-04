@@ -346,14 +346,16 @@ def part_e() -> None:
     check("静态：_poll 里不再直接 stat / exists", "self.log_path.stat()" not in poll_src
           and "self.log_path.exists()" not in poll_src)
     check("静态：_poll 里不再自己 open 日志文件", "with open(" not in poll_src)
-    check("静态：都是 to_thread（事件循环不再被同步 IO 占住）",
+    check("静态：每一处文件 IO 都走统一入口 `_io_wait`（事件循环不再被同步 IO 占住）",
+          # 第六轮：IO 从 `asyncio.to_thread(...)` 收成 `self._io_wait(fn, ...)`
+          # （专属执行器 + 单飞）—— 判据跟着新形态走，强度不变
           all(s in poll_src for s in (
-              "asyncio.to_thread(self.log_path.exists",
-              "asyncio.to_thread(self.log_path.stat)",
-              "asyncio.to_thread(self._head_sig)",
-              "asyncio.to_thread(self._sniff_encoding)",
-              "asyncio.to_thread(self._read_at",
-          )), poll_src[:500])
+              "self._io_wait(self.log_path.exists",
+              "self._io_wait(self.log_path.stat",
+              "self._io_wait(self._head_sig",
+              "self._io_wait(self._sniff_encoding",
+              "self._io_wait(self._read_at",
+          )) and poll_src.count("self._io_wait(") >= 6, poll_src[:500])
     read_src = fn_src(LW_SRC, "_read_at")
     check("静态：块读仍走可替换的 open（测试与注入点都还活着）",
           "open(self.log_path, \"rb\")" in read_src)

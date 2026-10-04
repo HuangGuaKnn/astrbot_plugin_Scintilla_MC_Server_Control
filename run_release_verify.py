@@ -171,7 +171,7 @@ def _is_internal_doc(p: str) -> bool:
             or name.endswith(".diff") or "实施单" in name)
 
 
-def check_export_ignore() -> list:
+def check_export_ignore(strict: bool = False) -> list:
     """发布包卫生：**把发布包真的打出来看**（`git archive HEAD` → tar → 列名单）。
 
     为什么不用 `git check-attr` 逐条问：gitattributes 的属性**不递归** ——
@@ -179,27 +179,36 @@ def check_export_ignore() -> list:
     照着写只会得到一堆假阴性。而 `git archive` 正是发版流程里生成附件的那一条命令：
     **它说包里有谁，才算数**。两头都看：该挡的必须不在（测试 / 开发脚本 / 内部文档），
     该留的必须还在（补一条 export-ignore 顺手挡掉用户文件，同样是发布事故）。
+
+    v0.23.5 第六轮（GPT 第五轮 P2）：**环境缺件不再等于「这项检查通过」**。
+    `strict=True`（CI / 发版）时，`.gitattributes` 缺失、没有 git、`git archive`
+    不可用、tar 解析失败都记一条失败 —— 否则「环境里没 git」就成了卫生检查的
+    免死金牌（fail-open）。本机开发环境仍只警告，不折腾开发者。
     """
     out: list = []
+
+    def env_missing(msg: str) -> list:
+        if strict:
+            print(f"[FAIL] 发布包卫生无法实测：{msg}")
+            return ["发布包卫生：环境缺件，卫生未实测"]
+        print(f"[WARN] {msg}")
+        return []
+
     if not (ROOT / ".gitattributes").exists():
-        print("[WARN] 没有 .gitattributes —— 发布包会带上测试与内部文档")
-        return out
+        return env_missing("没有 .gitattributes —— 发布包会带上测试与内部文档")
     try:
         r = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
                            cwd=str(ROOT), capture_output=True)   # 二进制，别加 text=True
     except Exception:                                            # noqa: BLE001
-        print("[WARN] 没有 git（或不是仓库）—— 跳过发布包卫生实测")
-        return out
+        return env_missing("没有 git（或不是仓库）—— 跳过发布包卫生实测")
     if r.returncode != 0:
-        print("[WARN] git archive HEAD 不可用 —— 跳过发布包卫生实测")
-        return out
+        return env_missing("git archive HEAD 不可用 —— 跳过发布包卫生实测")
     try:
         # 中文文件名按 UTF-8 解（别让它落到系统 locale 上）
         names = tarfile.open(fileobj=io.BytesIO(r.stdout),
                              encoding="utf-8", errors="replace").getnames()
     except Exception as e:                                       # noqa: BLE001
-        print(f"[WARN] 解包发布包失败：{e}")
-        return out
+        return env_missing(f"解包发布包失败：{e}")
     files = [n for n in names if not n.endswith("/")]
     leaked = [n for n in files if n.startswith("tests/")
               or (n.startswith("run_") and n.endswith(".py")) or _is_internal_doc(n)]
@@ -221,8 +230,12 @@ def check_export_ignore() -> list:
     return out
 
 
-def static_checks() -> list[str]:
-    """① 静态：编译、schema / metadata 合法性、UI 归类守卫、发布包卫生。"""
+def static_checks(strict_env: bool = False) -> list[str]:
+    """① 静态：编译、schema / metadata 合法性、UI 归类守卫、发布包卫生。
+
+    `strict_env`（CI / 发版）= 发布包卫生的**环境缺件**也算失败（见
+    `check_export_ignore` 的说明）—— 本机手跑时留 WARN，不折腾开发者。
+    """
     print("=" * 68)
     print("① 静态检查（编译 / schema / 元数据 / 归类守卫 / 发布包卫生）")
     print("=" * 68)
@@ -267,7 +280,7 @@ def static_checks() -> list[str]:
               f"取证 {len(TOOLS)}；其中 CI 可跑 {len(ci_hard())}+{len(ci_soft())} 件，"
               f"本机专属 {len(local_only())} 件，无未归类用例）")
 
-    fails.extend(check_export_ignore())
+    fails.extend(check_export_ignore(strict=strict_env))
     return fails
 
 
@@ -293,18 +306,35 @@ def test_plan() -> list[str]:
     return sorted(p.name for p in TESTS.glob("test_*.py"))
 
 
-def plan(all_ui: bool = False, ci: bool = False, ui_set: str = "") -> None:
+def plan(all_ui: bool = False, ci: bool = False, ui_set: str = "",
+         ui_only: bool = False, no_ui: bool = False, only_static: bool = False) -> None:
+    """打印「这一轮到底会跑什么」。
+
+    v0.23.5 第六轮（GPT 第五轮 P2）：计划必须与 `main()` 的实际分支**同源** ——
+    旧版不论 `--ui-only` 还是 `--no-ui`，都把「静态检查 + 全部回归」照抄一遍，
+    与实际执行对不上。门禁的第一条性质是「它说的话可信」，计划也算它说的话。
+    """
+    run_static = not ui_only
+    run_tests = not ui_only and not only_static
+    run_ui = not no_ui and not only_static
     print("将要执行：")
     print(f"  解释器：{PY}")
-    print(f"  ① 静态检查：compileall / _conf_schema.json / metadata.yaml / UI 归类守卫 / 发布包卫生")
-    print(f"  ② 回归 {len(test_plan())} 个 test_*.py（单文件超时 {TIMEOUT_TEST:g}s）")
-    uis = ui_plan(all_ui, ci, ui_set)
-    print(f"  ③ UI {len(uis)} 个用例（单文件超时 {TIMEOUT_UI:g}s）")
-    for name in test_plan():
-        print(f"      · tests/{name}")
+    if run_static:
+        print(f"  ① 静态检查：compileall / _conf_schema.json / metadata.yaml / UI 归类守卫 / 发布包卫生"
+              + ("（严格：环境缺件也算失败）" if (ci or os.environ.get("CI")) else ""))
+    if run_tests:
+        print(f"  ② 回归 {len(test_plan())} 个 test_*.py（单文件超时 {TIMEOUT_TEST:g}s）")
+    uis = ui_plan(all_ui, ci, ui_set) if run_ui else []
+    if run_ui:
+        print(f"  ③ UI {len(uis)} 个用例（单文件超时 {TIMEOUT_UI:g}s）")
+    if not (run_static or run_tests or run_ui):
+        print("  （什么都不跑：--ui-only / --no-ui / --only-static 互相抵消了）")
+    if run_tests:
+        for name in test_plan():
+            print(f"      · tests/{name}")
     for name in uis:
         print(f"      · tests/{name}.py")
-    if not all_ui:
+    if run_ui and not all_ui:
         skip = [s for s in (list(HARD) + list(SOFT)) if s not in uis]
         if skip:
             print(f"  ④ 本机专属（不在 CI 上跑，改了它们得在本机复现）："
@@ -325,6 +355,18 @@ def list_ui() -> None:
 
 
 def main(argv: list[str]) -> int:
+    # v0.23.5 第六轮（GPT 第五轮 P2）：Windows 上 stdout 被重定向（管道 / 任务计划 /
+    # 某些 runner）时走的是 ANSI 代码页（cp936），任何非 GBK 字符都会让**最后一行**
+    # 输出崩成 UnicodeEncodeError —— 明明全绿却以 traceback 收场。
+    #
+    # 只把**错误策略**钉成 replace、不动编码：这样中文在任何下游都照旧可读
+    # （改了编码反而会让按本地代码页读管道的人看到乱码），而个别编不出来的字符
+    # 降级成 `?` 而不是抛异常 —— 输出编码绝不该影响门禁的退出码。
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(errors="replace")
+        except Exception:                                    # noqa: BLE001
+            pass
     only_plan = "--plan" in argv
     only_guard = "--guard" in argv
     only_static = "--only-static" in argv
@@ -359,11 +401,13 @@ def main(argv: list[str]) -> int:
         print(f"UI_LOCAL_ONLY={' '.join(local_only())}")
         return 0
     if only_plan:
-        plan(all_ui, ci_mode, ui_set)
+        plan(all_ui, ci_mode, ui_set, ui_only, no_ui, only_static)
         return 0
 
     print(f"解释器：{PY}")
-    total_fail: list[str] = [] if ui_only else static_checks()
+    # 发版 / CI 环境：发布包卫生的「环境缺件」也算失败（fail-closed）
+    strict_env = bool(ci_mode or os.environ.get("CI", "").lower() in ("1", "true"))
+    total_fail: list[str] = [] if ui_only else static_checks(strict_env=strict_env)
     if not only_static:
         groups = []
         labels = []
@@ -400,7 +444,7 @@ def main(argv: list[str]) -> int:
     if total_fail:
         print("失败项：", ", ".join(total_fail))
         return 1
-    print("全部通过 ✅")
+    print("全部通过（ALL PASS）")
     return 0
 
 
