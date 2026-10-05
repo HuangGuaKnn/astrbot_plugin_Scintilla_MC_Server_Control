@@ -25,7 +25,7 @@
 
 逐文件**超时**（v0.23.5 第五轮）：超时按失败处理，并且**连子进程树一起收掉** ——
 UI 用例会拉起浏览器，只杀父进程会留下一堆孤儿进程继续占着端口，下一个用例就跟着倒。
-超时秒数可用 `PIRIKA_TEST_TIMEOUT` / `PIRIKA_UI_TIMEOUT` 覆盖。
+超时秒数可用 `SCINTILLA_TEST_TIMEOUT` / `SCINTILLA_UI_TIMEOUT` 覆盖。
 `--ui-only` 让 tests.yml 的两个 UI job 也走这套超时（此前它们自己写 shell 循环，
 同样的循环、不同的判据 —— 又是「一份判据两处实现」）。
 """
@@ -66,8 +66,8 @@ UI_SETS = {
 
 # 逐文件超时（秒）：正常一条用例 1~30 秒，UI 用例含浏览器冷启动也就 40 秒上下。
 # 给足两个数量级的余量，同时把「挂死」钉在有限的等待里。
-TIMEOUT_TEST = float(os.environ.get("PIRIKA_TEST_TIMEOUT", "600"))
-TIMEOUT_UI = float(os.environ.get("PIRIKA_UI_TIMEOUT", "900"))
+TIMEOUT_TEST = float(os.environ.get("SCINTILLA_TEST_TIMEOUT", "600"))
+TIMEOUT_UI = float(os.environ.get("SCINTILLA_UI_TIMEOUT", "900"))
 
 # 解释器选择：测试依赖 AstrBot 运行时（UI 用例还要真实浏览器）。
 # 注意：不能用 `import astrbot` 当探针 —— AstrBot 的 astrbot 包在 backend/app/ 下，

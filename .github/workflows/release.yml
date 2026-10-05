@@ -38,7 +38,7 @@ jobs:
     # `run_v0230_all.py` 全量覆盖。依据见 tests/_ui_manifest.py 顶部。
     runs-on: ubuntu-latest
     env:
-      PIRIKA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
+      SCINTILLA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

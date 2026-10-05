@@ -35,7 +35,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.knowledge_base import (  # 
 )
 
 FP = "bench0000fp"
-PROXY = os.environ.get("PIRIKA_PROXY", "http://127.0.0.1:7897")
+PROXY = os.environ.get("SCINTILLA_PROXY", "http://127.0.0.1:7897")
 CFG = Path(os.environ.get("ASTRBOT_CFG", r"C:\Users\10316\.astrbot\data\cmd_config.json"))
 K = 6          # 与 workflow.KB_RESULT_LIMIT 对齐
 RRF_K = 60     # RRF 平滑常数（业界默认）
@@ -185,7 +185,7 @@ def _opener():
         urllib.request.ProxyHandler({"https": PROXY, "http": PROXY}))
 
 
-EMBED_MODEL = os.environ.get("PIRIKA_EMBED_MODEL", "Qwen/Qwen3-Embedding-4B")
+EMBED_MODEL = os.environ.get("SCINTILLA_EMBED_MODEL", "Qwen/Qwen3-Embedding-4B")
 # Qwen3-Embedding 系列是指令感知模型：查询侧加 instruct 前缀有小幅增益
 INSTRUCT = ("Instruct: Given a Chinese question about a Minecraft modded server, "
             "retrieve the knowledge entry that answers it.\nQuery: ")
@@ -273,7 +273,7 @@ def main() -> int:
 
         import hashlib
         sig = hashlib.md5("\n".join(docs).encode("utf-8")).hexdigest()[:10]
-        cache = Path(tempfile.gettempdir()) / f"pirika_bench_vec_{len(corpus)}_{sig}.json"
+        cache = Path(tempfile.gettempdir()) / f"scintilla_bench_vec_{len(corpus)}_{sig}.json"
         t0 = time.perf_counter()
         if cache.exists():
             mat = json.loads(cache.read_text(encoding="utf-8"))

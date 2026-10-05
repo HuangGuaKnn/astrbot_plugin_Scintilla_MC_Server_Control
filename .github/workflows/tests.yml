@@ -5,7 +5,7 @@ name: tests
 #   · ui-contract —— tests/ui_*.py 里的**契约类**且**已在 CI 上实测可跑**的那些 → 硬门禁
 #   · ui-render   —— 同目录里的**渲染 / 度量类**且已在 CI 上实测可跑的 → 观察期不阻断
 # 本机权威环境仍是 Windows + 系统 Edge（`python tests\ui_xxx_check.py`）；
-# CI 上没有 Edge，改走 PIRIKA_UI_CHANNEL=bundled（playwright 自带 Chromium）。
+# CI 上没有 Edge，改走 SCINTILLA_UI_CHANNEL=bundled（playwright 自带 Chromium）。
 #
 # v0.23.5 第五轮：三档归类（硬门禁 / 观察期 / 取证脚本）**唯一来源**是
 # `tests/_ui_manifest.py` —— 本文件不再手写名单（写死就得在发版流程里再抄一遍，
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PIRIKA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
+      SCINTILLA_UI_CHANNEL: bundled          # 不指定 channel，直接用 playwright 自带 Chromium
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -95,7 +95,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 30
     env:
-      PIRIKA_UI_CHANNEL: bundled
+      SCINTILLA_UI_CHANNEL: bundled
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
