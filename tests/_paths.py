@@ -51,9 +51,9 @@ LIVE_CFG = (DATA_DIR / "config" / f"{PLUGIN_NAME}_config.json") if DATA_DIR else
 
 # UI 用例（tests/ui_*_check.py）用的浏览器通道。
 #   · 本机（Windows）：默认 "msedge" —— 用主人系统里现成的 Edge，不用下载 Chromium；
-#   · CI（ubuntu）：没有 Edge → 设 PIRIKA_UI_CHANNEL=chromium，用 playwright 自带的。
+#   · CI（ubuntu）：没有 Edge → 设 SCINTILLA_UI_CHANNEL=chromium，用 playwright 自带的。
 # 其它通道名（chrome / chromium / msedge / msedge-beta…）都按 playwright 原样透传。
-UI_CHANNEL = os.environ.get("PIRIKA_UI_CHANNEL", "msedge")
+UI_CHANNEL = os.environ.get("SCINTILLA_UI_CHANNEL", "msedge")
 
 # 真正传给 playwright 的参数：特殊值 "bundled"（或空串）= 不指定 channel，
 # 直接用 playwright 自带的 Chromium —— CI 上最省事，不必赌 channel 名字对不对。

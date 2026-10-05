@@ -12,7 +12,7 @@
 不再各自维护一份 —— v0.23.5 第五轮：旧版本是一次性 `subprocess.run()` 且**没有超时**，
 UI 用例挂死时整条命令就再也出不来了（GPT 复核）。
 
-UI 用例需要真实浏览器：本机走系统 Edge（默认），CI 上设 PIRIKA_UI_CHANNEL=bundled。
+UI 用例需要真实浏览器：本机走系统 Edge（默认），CI 上设 SCINTILLA_UI_CHANNEL=bundled。
 """
 import sys
 from pathlib import Path
