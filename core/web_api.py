@@ -1181,7 +1181,7 @@ class McControlWebApi:
             rcon = await plugin._get_rcon()
             # v0.23.7：两种署名分家 ——
             #   · 「聊天栏」= 正常输出 → 固定 [Server]（谁都能拿它跟玩家闲聊，
-            #     顶着「机器人昵称」说话会像 Bot 本人在发言）；
+            #     顶着机器人昵称说话会像 Bot 本人在发言）；
             #   · 「模拟任务输出」= 任务反馈的复刻 → 仍用 feedback_name。
             # 「全屏标题」是标题，本来就不带前缀。署名常量见 McControlPlugin.BROADCAST_NAME。
             # getattr 兜底：WebUI 与插件可能正处在「换代码的重载窗口」，

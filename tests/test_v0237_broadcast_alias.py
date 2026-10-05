@@ -4,8 +4,8 @@
 背景（2026-10-05）
 ==================
 WebUI 广播控制台的「聊天栏」格此前与任务反馈共用 `feedback_name` ——
-用户配的是「机器人昵称」，于是拿广播跟服务器里的玩家闲聊时，公屏上是
-「[机器人昵称] 你好」，看着像 Bot 本人在发言。现在：
+用户配的署名就是机器人昵称，于是拿广播跟服务器里的玩家闲聊时，公屏上是
+「[<机器人昵称>] 你好」，看着像 Bot 本人在发言。现在：
 
   · 「正常输出」（对全服公开说话：工具广播 mc_broadcast 的 chat 模式、
     WebUI 广播控制台的「聊天栏」格）→ 固定署名 [Server]；
@@ -60,7 +60,7 @@ class FakeRcon:
         return "ok"
 
 
-def make_plugin(fb_name: str = "机器人昵称"):
+def make_plugin(fb_name: str = "TestBot"):
     """真身插件实例（绕过 __init__，只喂被调用到的那些依赖）。"""
     m = main.McControlPlugin.__new__(main.McControlPlugin)
     m.config = {"appearance": {
@@ -124,27 +124,27 @@ check('McControlPlugin.BROADCAST_NAME == "Server"（广播署名收敛在一处�
 
 print("")
 print("=========== 二、行为：工具广播 mc_broadcast ===========")
-m = make_plugin(fb_name="机器人昵称")
+m = make_plugin(fb_name="TestBot")
 broadcast(m, message="大家好", mode="chat")
 check("chat 模式发出一条 tellraw", len(m._fake_rcon.sent) == 1, str(m._fake_rcon.sent))
 check("chat 模式署名固定 [Server]（不再写 feedback_name）",
       text_of(m._fake_rcon.sent[0], "tellraw @a ") == "[Server] 大家好",
       str(m._fake_rcon.sent[:1]))
-check("chat 命令里不出现反馈署名", "机器人昵称" not in m._fake_rcon.sent[0])
+check("chat 命令里不出现反馈署名", "TestBot" not in m._fake_rcon.sent[0])
 
-m3 = make_plugin(fb_name="机器人昵称")
+m3 = make_plugin(fb_name="TestBot")
 broadcast(m3, message="嗨")
 check("不传 mode（默认 chat）也带 [Server]",
       text_of(m3._fake_rcon.sent[0], "tellraw @a ") == "[Server] 嗨",
       str(m3._fake_rcon.sent[:1]))
 
-m2 = make_plugin(fb_name="机器人昵称")
+m2 = make_plugin(fb_name="TestBot")
 broadcast(m2, message="集合啦", mode="title")
 check("title 模式不带任何前缀",
       text_of(m2._fake_rcon.sent[0], "title @a title ") == "集合啦",
       str(m2._fake_rcon.sent[:1]))
 
-m4 = make_plugin(fb_name="机器人昵称")
+m4 = make_plugin(fb_name="TestBot")
 broadcast(m4, message="集合啦", mode="actionbar")
 check("actionbar 模式不带任何前缀",
       text_of(m4._fake_rcon.sent[0], "title @a actionbar ") == "集合啦",
@@ -154,10 +154,10 @@ check("actionbar 模式不带任何前缀",
 
 print("")
 print("=========== 三、行为：任务反馈 _send_feedback ===========")
-m5 = make_plugin(fb_name="机器人昵称")
+m5 = make_plugin(fb_name="TestBot")
 asyncio.run(m5._send_feedback(m5._fake_rcon, "已给 Steve 发了一把锋利5的下界合金剑"))
 fb_text = text_of(m5._fake_rcon.sent[0], "tellraw @a ")
-check("任务反馈仍用 feedback_name", fb_text.startswith("[机器人昵称] "), fb_text)
+check("任务反馈仍用 feedback_name", fb_text.startswith("[TestBot] "), fb_text)
 check("任务反馈没有被广播署名污染", not fb_text.startswith("[Server] "), fb_text)
 
 m6 = make_plugin(fb_name="小助手")
