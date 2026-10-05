@@ -196,6 +196,36 @@ _FAILURE_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ===================== 「没有接收者」回执（v0.23.7 · N2） =====================
+#
+# 背景（2026-10-05 全版本矩阵巡礼实测）：同一条 ``tellraw @a "hi"`` 打到**空服**，
+# 各世代的表述完全不同：
+#   · ≤1.13.2：**静默成功**（RCON 不回文本）；
+#   · ≥1.16.5：回 ``No player was found``。
+# 后者落进 :data:`_PHRASE_FAILURE_MARKERS`，于是回执被判 ``failed`` ——
+# 「广播到底成没成」随服务端版本号时好时坏（同一事实、两种表述）。
+# 这里把「**通配选择器没人可选**」单独识别出来：命令确实被解析并执行了，
+# 只是当前没有接收者 —— 那是**结果**，不是**失败**。
+# 点名目标（``give Steve`` / ``tellraw Steve``）**不在**此列：那才是真的没送到，
+# 照旧判 ``failed`` —— 否则打错玩家名会被静默成「成功」。
+
+#: 消息投递类命令：目标写的是「谁在线就给谁」的通配选择器。
+MESSAGE_DELIVERY_COMMANDS = frozenset({
+    "tellraw", "title", "subtitle", "actionbar", "tm", "teammsg", "say",
+})
+
+#: 服务端的「没有匹配对象」表述（1.16.5+ 英文端 / 中文端）。
+_NO_RECIPIENT_MARKERS = (
+    "no player was found",
+    "no players were found",
+    "no entity was found",
+    "没有找到玩家",
+)
+
+#: 通配选择器目标：``@a`` / ``@p`` / ``@r`` / ``@e``（含 ``@a[…]`` 带参形态）。
+#: 限定这四个字母：``@s``（自己）在空服上无效属于**命令写错**，不该被温和化。
+_SELECTOR_WILDCARD_RE = re.compile(r"^@[apre](?:\[|\b)", re.IGNORECASE)
+
 #: **锚定**命令级成功模式：输出必须以这些文本**开头**才算命中。
 #:
 #: 原版反馈文本固定且可枚举，因此可以给白名单；模组命令的反馈不可枚举，
@@ -303,6 +333,10 @@ class CommandResult:
     #: ``explicit`` = 命中显式成功标记；``inferred`` = 非空且无错误标记（推断成功）；
     #: ``""`` = 与成功无关。
     confidence: str = ""
+    #: v0.23.7 · N2：命令已执行，但目标选择器当前没有匹配对象（空服广播）。
+    #: 只在 ``status == "success"`` 且 ``confidence == "no_recipient"`` 时为真 ——
+    #: 用来把回执渲染成「消息已发出、暂无接收者」，而不是含糊的「成功」或误报的「失败」。
+    no_recipient: bool = False
     extra: dict = field(default_factory=dict)
 
     @property
@@ -517,6 +551,30 @@ def is_explicit_failure_output(output: str) -> bool:
     return _FAILURE_WORD_RE.search(low) is not None
 
 
+def is_no_recipient_output(command: str, output: str) -> bool:
+    """「没有接收者」回执 —— 命令执行了，只是当前没人可收（v0.23.7 · N2）。
+
+    只对 **消息投递类命令 + 通配选择器目标** 的组合放行；点名目标照旧走失败判定。
+    语法错误 / 命令不存在这两类**硬错误优先**：即便文本里混着失败字样，
+    也由调用方先判它们，不被这里的温和化吞掉。
+    """
+    if base_name(command) not in MESSAGE_DELIVERY_COMMANDS:
+        return False
+    low = _low(output)
+    if not low:
+        return False
+    if not any(m in low for m in _NO_RECIPIENT_MARKERS):
+        return False
+    if is_unknown_command_output(low) or is_syntax_error_output(low):
+        return False
+    # 注意：下面取的是**命令**的词（不是回执的词）—— 回执里只有一句
+    # "No player was found"，选择器在命令里。
+    parts = _low(command).split()
+    if len(parts) < 2:
+        return False
+    return _SELECTOR_WILDCARD_RE.match(parts[1]) is not None
+
+
 def is_anchored_success_output(command: str, output: str) -> bool:
     """输出是否以**该命令自己的**锚定成功模式开头（= 拿到正面证据）。
 
@@ -566,17 +624,23 @@ def classify_command_output(
        保护（``give`` 空响应 → 后续命令照发 = 可能重复发物品）。
     2. ``Unknown command`` → ``failed``（命令不存在，重试徒劳）
     3. 明确解析错误 → ``syntax_error``（命令从未执行，可安全重写）
-    4. **先取正面证据**：命中本命令的锚定成功模式（``^gave\\b`` 等）时，
-       第 5 步跳过失败词扫描 —— 否则玩家名叫 ``Error`` 会把真成功翻成失败
-    5. 其它明确失败 → ``failed``
-    6. **边界未确认**（``boundary_confirmed is False`` + 已收到响应）：
+    4. **「没有接收者」不算失败**（v0.23.7 · N2）：消息投递类命令 + 通配选择器
+       打到空服 → ``success`` + ``no_recipient=True``。空服广播在 ≥1.16.5 回
+       ``No player was found``、在 ≤1.13.2 干脆静默 —— 同一事实两种表述，
+       统一到「已执行、暂无接收者」。**本步必须早于第 6 步**，否则失败词扫描
+       会把它判成 ``failed``。
+       点名目标（``give Steve``）不走这里，照旧判失败。
+    5. **先取正面证据**：命中本命令的锚定成功模式（``^gave\\b`` 等）时，
+       第 6 步跳过失败词扫描 —— 否则玩家名叫 ``Error`` 会把真成功翻成失败
+    6. 其它明确失败 → ``failed``
+    7. **边界未确认**（``boundary_confirmed is False`` + 已收到响应）：
        非幂等 → ``unknown``（继续熔断）；消息类 / 幂等 → ``dispatched_unconfirmed``。
        **本步必须在「返回成功」之前** —— idle 截断的输出不能冒充完整成功
-    7. 明确成功（锚定证据 或 通用成功标记）→ ``success``
-    8. 非空、无错误标记、也**没有成功证据** → 消息类命令视为成功（输出即消息回显）；
+    8. 明确成功（锚定证据 或 通用成功标记）→ ``success``
+    9. 非空、无错误标记、也**没有成功证据** → 消息类命令视为成功（输出即消息回显）；
        非幂等命令 → ``unknown``（不确认副作用，宁可熔断也不谎报）；
        其余 → ``inferred_success``（**不是** ``success``：``ok=False``）
-    9. 兜底 → ``unknown``
+    10. 兜底 → ``unknown``
     """
     out_s = str(output or "").strip()
     res = CommandResult(
@@ -626,6 +690,16 @@ def classify_command_output(
         res.status = "syntax_error"
         res.reason = "服务端明确拒绝解析（命令未执行，可安全重写后重试）"
         res.retryable = True
+        return res
+
+    # ---- 3.5) 「没有接收者」不是失败（v0.23.7 · N2） ----
+    # 空服广播：≥1.16.5 回 ``No player was found``、≤1.13.2 静默 —— 同一事实。
+    # 必须插在第 5 步（失败词扫描）**之前**，否则这条回执会被判成 failed。
+    if is_no_recipient_output(command, out_s):
+        res.status = "success"
+        res.confidence = "no_recipient"
+        res.no_recipient = True
+        res.reason = "命令已执行：选择器当前没有匹配对象（服务器内没有玩家在线）"
         return res
 
     # ---- 4) 先取正面证据：是否命中**本命令的**锚定成功模式 ----
