@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gzip
 import json
 import math
 import re
@@ -1614,6 +1615,9 @@ class McControlPlugin(Star):
                 except Exception as e:  # noqa: BLE001
                     self.logger.warning(f"重建 RCON 时关闭旧连接失败（已忽略）: {e}")
             self._rcon = self._build_rcon()
+            # v0.23.7（N3）：版本快照缓存跟着连接一起作废 —— 重置 / 换站点后，
+            # 旧缓存最长会让出站文本按**上一台**服务端判门控 60 秒。
+            self._text_version_cache = None
             return self._rcon
 
     # ================= 权限护栏（v0.21.0「拦截即终局」） =================
@@ -2151,11 +2155,19 @@ class McControlPlugin(Star):
         """把判定结果渲染成用户可见回执（统一措辞）。
 
         · success                → ok_text
+        · success + no_recipient → ok_text + 「当前没有玩家在线」提示（v0.23.7 · N2：
+                                   空服广播不是失败，也不假装有人看见）
         · dispatched_unconfirmed → ok_text + 边界未确认说明（**不报失败**，
                                    也不报「结果未知」：消息确实发出去了）
         · 其它                   → fail_prefix + 服务器原文
         """
         if r.status == "success":
+            if getattr(r, "no_recipient", False):
+                # v0.23.7 · N2：命令确实执行了，只是当前没人能收到 ——
+                # 报「失败」会让人以为广播坏了（1.16.5+ 的空服回执正是这么来的），
+                # 报「成功」又不诚实（没人看见）。如实说：发出去了，暂无接收者。
+                # getattr 兜底：热重载窗口里旧实例的 CommandResult 没有这个字段。
+                return f"{ok_text}（当前服务器内没有玩家在线：消息已发出，暂无接收者）"
             return ok_text
         if r.status == "dispatched_unconfirmed":
             return (
@@ -3259,6 +3271,30 @@ class McControlPlugin(Star):
     #: 服务端版本快照缓存 TTL（秒）——洗白/渐变门控共用，避免每条消息都读启动日志
     _TEXT_VERSION_TTL = 60.0
 
+    #: 版本探测的日志读取预算（v0.23.7 · N3）：单文件最多读这么多字符，
+    #: 归档最多回退看这么多个文件 / 这么多字符 —— 探测不得变成「扫全盘」。
+    _STARTUP_LOG_READ_CHARS = 200000
+    _ARCHIVE_LOG_MAX_FILES = 12
+    _ARCHIVE_LOG_BUDGET_CHARS = 2_000_000
+
+    @staticmethod
+    def _match_startup_version(head: str) -> str:
+        """从服务端日志正文里抠出版本串（Forge 两种措辞优先，其次原版启动行）。
+
+        抽成独立函数的理由：``latest.log`` 与**归档日志**（``*.log.gz``）要用
+        同一套判据解析 —— 两处各写一份正则，迟早会漂移。
+        """
+        m = re.search(r"Forge mod loading, version ([\w.\-]+), for MC ([\d.]+)", head)
+        if m:
+            return f"MC {m.group(2)} · Forge {m.group(1)}"
+        m = re.search(r"Loading Minecraft ([\d.]+) with Forge ([\w.\-]+)", head)
+        if m:
+            return f"MC {m.group(1)} · Forge {m.group(2)}"
+        m = re.search(r"Starting minecraft server version ([\d.]+)", head)
+        if m:
+            return f"MC {m.group(1)}"
+        return ""
+
     def _server_mc_cached(self):
         """取服务端 MC 版本（带 TTL 缓存）；解析不出/出错 → None（按未知处理）。"""
         now = time.monotonic()
@@ -3404,21 +3440,46 @@ class McControlPlugin(Star):
         root = Path(sd)
         if not root.is_dir():
             return ""
-        # 1) 日志启动行
+        # 1) 日志启动行（现役 latest.log）
         try:
             log = root / "logs" / "latest.log"
             if log.is_file():
                 with log.open("r", encoding="utf-8", errors="replace") as f:
-                    head = f.read(200000)
-                m = re.search(r"Forge mod loading, version ([\w.\-]+), for MC ([\d.]+)", head)
-                if m:
-                    return f"MC {m.group(2)} · Forge {m.group(1)}"
-                m = re.search(r"Loading Minecraft ([\d.]+) with Forge ([\w.\-]+)", head)
-                if m:
-                    return f"MC {m.group(1)} · Forge {m.group(2)}"
-                m = re.search(r"Starting minecraft server version ([\d.]+)", head)
-                if m:
-                    return f"MC {m.group(1)}"
+                    head = f.read(self._STARTUP_LOG_READ_CHARS)
+                got = self._match_startup_version(head)
+                if got:
+                    return got
+        except Exception:
+            pass
+        # 1.5) 归档日志回退（v0.23.7 · N3）—— 只看 latest.log 是不够的：
+        #      原版 / Forge 的 latest.log **每日轮转**，跨零点后的第一条写入会把
+        #      当天内容整段压进 logs/<日期>-N.log.gz，latest.log 里只剩几行连接记录。
+        #      启动行一旦不在，版本就解析成「未知」，而「未知」是**保守档**
+        #      （洗白开、带数据命令不自动生成）—— 服务端长期不重启的用户每到
+        #      零点就会静默退化一次，重启服务端才「神奇恢复」。
+        #      这里只读压缩包**头部**、自新到旧、总量封顶，不是扫全盘。
+        try:
+            logs_dir = root / "logs"
+            if logs_dir.is_dir():
+                archives = sorted(
+                    (q for q in logs_dir.glob("*.log.gz") if q.is_file()),
+                    key=lambda q: q.stat().st_mtime, reverse=True,
+                )[: self._ARCHIVE_LOG_MAX_FILES]
+                budget = self._ARCHIVE_LOG_BUDGET_CHARS
+                for ap in archives:
+                    if budget <= 0:
+                        break
+                    # 单个归档损坏**不牵连**其余（截断的 .gz、手工改名、
+                    # 半写状态都真实存在）：跳过它，继续看下一个。
+                    try:
+                        with gzip.open(ap, "rt", encoding="utf-8", errors="replace") as f:
+                            head = f.read(self._STARTUP_LOG_READ_CHARS)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    budget -= len(head)
+                    got = self._match_startup_version(head)
+                    if got:
+                        return got
         except Exception:
             pass
         # 2) libraries/net/minecraftforge/forge/<mc>-<forge>
