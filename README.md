@@ -29,9 +29,9 @@
 
 ## 界面预览
 
-[![概览页](https://cdn.jsdelivr.net/gh/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control@main/docs/images/overview-dark.png)](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md)
+[![概览页](https://cdn.jsdelivr.net/gh/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control@main/docs/images/overview-dark.png?v=20261005)](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md)
 
-[![服务器页](https://cdn.jsdelivr.net/gh/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control@main/docs/images/server-dark.png)](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md)
+[![服务器页](https://cdn.jsdelivr.net/gh/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control@main/docs/images/server-dark.png?v=20261005)](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md)
 
 > 更多界面（知识库 / 工作流 / 提示词 / 设置页十个分组）见 [界面效果](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md)。
 
