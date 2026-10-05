@@ -1209,23 +1209,52 @@ class McControlWebApi:
     UI_THEMES = ("light", "dark")
 
     def _ui_pref_path(self) -> Path:
-        """界面偏好文件路径（优先 AstrBot 数据目录，取不到则退回插件 data/）。"""
+        """界面偏好文件路径（优先 AstrBot 插件数据目录，取不到则退回插件 data/）。
+
+        v0.23.6 市场审核（持久化审计建议）后：落点由 ``data/config/`` 迁移到
+        ``data/plugin_data/<插件名>/`` —— 它是插件运行期偏好、不是用户配置；
+        旧位置的存量文件由 ``_legacy_ui_pref_path`` 兜底读取并一次性迁移。
+        """
         try:
-            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-            base = Path(get_astrbot_data_path()) / "config"
+            from astrbot.api.star import StarTools
+            base = Path(StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control"))
         except Exception:                                     # noqa: BLE001
             base = Path(__file__).resolve().parents[1] / "data"
         return base / self.UI_PREF_NAME
 
-    def _read_ui_pref(self) -> dict:
+    def _legacy_ui_pref_path(self):
+        """v0.23.5~v0.23.6 的旧落点（``data/config/``），仅供一次性迁移读取。"""
         try:
-            p = self._ui_pref_path()
-            if p.exists():
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            return Path(get_astrbot_data_path()) / "config" / self.UI_PREF_NAME
+        except Exception:                                     # noqa: BLE001
+            return None
+
+    def _migrate_ui_pref(self, old: Path, data: dict) -> None:
+        """把旧落点的偏好一次性搬到插件数据目录；失败不抛（下次读取会再试）。"""
+        try:
+            new = self._ui_pref_path()
+            if new == old:
+                return
+            new.parent.mkdir(parents=True, exist_ok=True)
+            new.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            old.unlink(missing_ok=True)
         except Exception:                                     # noqa: BLE001
             pass
+
+    def _read_ui_pref(self) -> dict:
+        for p, is_current in ((self._ui_pref_path(), True), (self._legacy_ui_pref_path(), False)):
+            if p is None or not p.exists():
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:                                 # noqa: BLE001
+                continue
+            if not isinstance(data, dict):
+                continue
+            if not is_current:
+                self._migrate_ui_pref(p, data)
+            return data
         return {}
 
     async def get_ui_theme(self):
