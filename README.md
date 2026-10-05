@@ -23,7 +23,7 @@
 | 页面 | 内容 |
 |---|---|
 | [界面效果](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md) | 六个功能页 + 设置页各分组的实机截图（深浅两套主题） |
-| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、93 项配置逐项说明与默认值 |
+| [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、95 项配置逐项说明与默认值 |
 | [使用指南](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
 | [常见问题](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/faq.md) | 安装与使用中容易踩到的坑 |
 

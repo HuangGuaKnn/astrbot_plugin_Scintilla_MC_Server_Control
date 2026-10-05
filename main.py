@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import math
 import re
@@ -70,6 +71,18 @@ from .core.version_caps import (
     describe_capabilities,
     preflatten_block_reason,
     resolve_version_info,
+)
+from .core.text_outbound import (
+    RCON_SAFE_BYTES,
+    SUSPECT_SINGLE_PACKET_BYTES,
+    clip_text_to_bytes,
+    nearest_vanilla_color,
+    needs_hex_color_downgrade,
+    needs_legacy_wash,
+    parse_section_color,
+    split_text_by_bytes,
+    utf8_len,
+    wash_legacy_text,
 )
 from .core.java_commands import check_command as check_command_policy
 from .core.tool_guard import (
@@ -354,9 +367,93 @@ class McControlPlugin(Star):
 
     # ================= 生命周期 =================
 
+    # ---- v0.23.7（B1）：LLM 工具自清（重载风暴的幽灵除积）----
+
+    @staticmethod
+    def _llm_tool_entry_is_ours(entry) -> bool:
+        """判断 ``llm_tools.func_list`` 里的一条条目是否属于本插件。
+
+        条目形态随加载器而变（原始函数 / 绑定实例的方法 /
+        ``functools.partial(raw, star_cls)``），逐个形态都留了识别口径；
+        只认「本插件包名下的模块」或「本插件类的实例」，绝不误伤其它插件。
+        """
+        pkg = str(__package__ or "").strip()
+
+        def _mod_matches(modname: str) -> bool:
+            if not modname or not pkg:
+                return False
+            return modname == pkg or modname.startswith(pkg + ".")
+
+        if _mod_matches(str(getattr(entry, "handler_module_path", "") or "")):
+            return True
+        h = getattr(entry, "handler", None)
+        if _mod_matches(str(getattr(h, "__module__", "") or "")):
+            return True
+        raw = getattr(h, "func", None)  # functools.partial 的原始函数
+        if raw is not None and _mod_matches(str(getattr(raw, "__module__", "") or "")):
+            return True
+        owner = getattr(h, "__self__", None)
+        if owner is not None and _mod_matches(
+            str(getattr(type(owner), "__module__", "") or "")
+        ):
+            return True
+        if isinstance(h, functools.partial) and h.args:
+            cls = h.args[0]  # star_manager 的绑定形态：partial(raw_handler, star_cls)
+            if isinstance(cls, type) and _mod_matches(
+                str(getattr(cls, "__module__", "") or "")
+            ):
+                return True
+        return False
+
+    def _dedupe_own_llm_tools(self) -> int:
+        """B1：清掉本插件同名的历史陈注册，让每个名字只留**最后一次**注册。
+
+        背景（2026-10-05 幽灵工具事故）：AstrBot 的 ``add_func`` 是
+        「删一个（首个同名）再追加」—— 一旦某名字上积到 ≥3 条（停用/启用 +
+        连环重载的风暴路径），单删一加就**永远收敛不回 1 条**；陈旧条目的
+        handler 还绑着旧实例/旧配置（死连旧端口的幽灵即由此而来）。
+        ``get_func`` 取的是**最后一个**同名条目，所以「保留最后、移除其余」
+        与核心的解析口径完全一致。只动本插件名下条目，不碰核心与其它插件。
+
+        返回移除条数（0 = 本来就干净）。
+        """
+        try:
+            from astrbot.core.provider.register import llm_tools
+        except Exception:  # 拿不到注册表就静默跳过（绝不影响插件加载）
+            return 0
+        flist = getattr(llm_tools, "func_list", None)
+        if not isinstance(flist, list):
+            return 0
+        last_index: dict[str, int] = {}
+        for i, f in enumerate(flist):
+            if self._llm_tool_entry_is_ours(f):
+                last_index[str(getattr(f, "name", ""))] = i  # 越后越新
+        to_remove = [
+            i
+            for i, f in enumerate(flist)
+            if self._llm_tool_entry_is_ours(f)
+            and last_index.get(str(getattr(f, "name", ""))) != i
+        ]
+        for i in sorted(to_remove, reverse=True):
+            try:
+                flist.pop(i)
+            except IndexError:  # pragma: no cover - 并发快照错位时的兜底
+                pass
+        if to_remove:
+            self.logger.info(
+                "[工具自清] 清理本插件陈旧 LLM 工具注册 %d 条（每名字保留最后一次注册）",
+                len(to_remove),
+            )
+        return len(to_remove)
+
     async def initialize(self):
         # 双重保障：刷新管理员列表，兼容 __init__ 阶段配置未就绪的情况
         self._admins = set(self._cfg("admin_ids", []))
+        # v0.23.7（B1）：自清历史陈注册（重载风暴下会积累同名幽灵工具）
+        try:
+            self._dedupe_own_llm_tools()
+        except Exception as e:
+            self.logger.warning("LLM 工具自清失败（不影响其它功能）: %s", e)
         self.logger.info(
             "MC控制插件初始化完成，管理员: %s", self._admins or "（未设置）"
         )
@@ -944,14 +1041,17 @@ class McControlPlugin(Star):
         return str(getattr(inst, "provider_id", "") or "").strip()
 
     def _provider_insts(self, kind: str) -> list:
-        """取 AstrBot 已加载的嵌入 / 重排序 Provider **实例**列表（挑模型用）。
+        """取 AstrBot 已加载的 Provider **实例**列表（挑模型用）。
 
-        kind：embedding | rerank。AstrBot 侧接口异常时给空列表 —— 对调用方而言只是
-        「没得选」，检索照常回落，不报错。
+        kind：chat | embedding | rerank（v0.23.7 · B7 增加 chat —— 工作流区
+        6 个 Provider 位用）。AstrBot 侧接口异常时给空列表 —— 对调用方而言
+        只是「没得选」，运行时会回落，不报错。
         """
         try:
             if kind == "rerank":
                 return list(self.context.provider_manager.rerank_provider_insts or [])
+            if kind == "chat":
+                return list(self.context.provider_manager.provider_insts or [])
             return list(self.context.get_all_embedding_providers() or [])
         except Exception:
             return []
@@ -1591,6 +1691,16 @@ class McControlPlugin(Star):
     MAX_COMMAND_CHARS = 8000
     MAX_MESSAGE_CHARS = 500
 
+    # ---- v0.23.7（用户点名）：广播的固定署名 ----
+    # 「正常输出」= 对全服公开说话的两处：工具广播 mc_broadcast 的 chat 模式、
+    # WebUI 广播控制台的「聊天栏」格。它跟任务反馈不是一回事 ——
+    # 反馈是「我替你办好了」的回执，署插件自己的名字正合适；
+    # 而广播谁都能拿它跟服务器里的玩家闲聊，署名若还是「机器人昵称」，
+    # 看着就像 Bot 本人在发言。故广播一律固定署「Server」：
+    # 一眼就知道是服务器在说话，不冒充任何身份。
+    # 想换名字改这一处（工具广播与 WebUI 共用；任务反馈不受影响）。
+    BROADCAST_NAME = "Server"
+
     # ---- v0.23.5（外部审查 ⑧）：喊话的长度与频率闸门 ----
     # 喊话是**插件自带功能**、默认对全员开放（产品设计），此前却没有长度/频率上限：
     # 一条超长文本会原样拼进 tellraw（服务器侧截断），群里连点则会霸占共享 RCON 连接、
@@ -1955,12 +2065,14 @@ class McControlPlugin(Star):
             return
         name = str(self._cfg("feedback_name", "RCON") or "RCON")
         try:
-            payload = self._colored_payload(
-                f"[{name}] {text}", "color_feedback", "gradient_colors_feedback", "gold"
+            cmds = self._build_text_cmds(
+                f"[{name}] {text}", "tellraw @a ",
+                "color_feedback", "gradient_colors_feedback", "gold",
             )
-            cmd = f"tellraw @a {payload}"
-            self.logger.info("发送反馈 → %s", cmd)
-            out = await rcon.command(cmd)
+            out = ""
+            for cmd in cmds:
+                self.logger.info("发送反馈 → %s", cmd)
+                out = await rcon.command(cmd)
             self.logger.info("反馈发送完成，返回: %r", out)
         except Exception as e:
             self.logger.error("反馈发送失败: %s", e, exc_info=True)
@@ -1999,13 +2111,21 @@ class McControlPlugin(Star):
                     command=command, status="failed",
                     reason=f"未建立连接 / 未发送，命令未执行：{e}",
                 )
-            return CommandResult(
-                command=command, status="unknown",
-                reason=(
-                    f"RCON 通信异常（阶段：{getattr(e, 'phase', 'unknown')}），"
-                    f"命令可能已执行，结果未知（不会自动重发）：{e}"
-                ),
+            reason = (
+                f"RCON 通信异常（阶段：{getattr(e, 'phase', 'unknown')}），"
+                f"命令可能已执行，结果未知（不会自动重发）：{e}"
             )
+            # v0.23.7（B2③）：read 阶段断开 + 命令包已接近/超过单包上限 → 提示疑似超限
+            #（≈1460B 为原版全世代同构、非旧版专属；2026-10-05 B4 反编译十版实锤）
+            if (getattr(e, "phase", "") == RconError.PHASE_READ
+                    and utf8_len(command) >= SUSPECT_SINGLE_PACKET_BYTES):
+                reason += (
+                    f"\n注：本条命令包约 {utf8_len(command)} 字节，疑似超过 RCON "
+                    "单包读取上限（≈1460B；该上限为原版全世代同构，并非旧版专属）——"
+                    "服务端在读取阶段会静默断开，症状与此一致。可缩短内容、或关闭渐变"
+                    "（<1.16 的 hex 渐变既渲染不出又撑大包）后重试。"
+                )
+            return CommandResult(command=command, status="unknown", reason=reason)
         return classify_command_output(
             command,
             str(out),
@@ -2013,6 +2133,19 @@ class McControlPlugin(Star):
             boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
             response_received=bool(getattr(rcon, "last_response_received", False)),
         )
+
+    async def _exec_text_cmds(self, rcon, cmds: list[str]) -> CommandResult:
+        """B2：执行 1..N 条出站文本命令并合并成一个结果。
+
+        任一条非 success 立即返回该条结果（不继续发后续段，避免在异常
+        状态下继续扩大影响）；全部成功 → 返回最后一条的结果。
+        """
+        result: CommandResult | None = None
+        for c in cmds:
+            result = await self._exec_checked(rcon, c)
+            if result.status != "success":
+                return result
+        return result
 
     def _render_result(self, r: CommandResult, ok_text: str, fail_prefix: str) -> str:
         """把判定结果渲染成用户可见回执（统一措辞）。
@@ -2234,7 +2367,9 @@ class McControlPlugin(Star):
 
         Args:
             message(string): 要广播的消息内容
-            mode(string): 广播方式，chat=聊天栏(say)，title=全屏标题，actionbar=动作栏，默认 chat
+            mode(string): 广播方式，chat=聊天栏(say)，title=全屏标题，actionbar=动作栏，默认 chat。
+                chat 模式会固定加上 `[Server]` 前缀（对全服公开说话，不署任务反馈的名字）；
+                title / actionbar 不加任何前缀
         """
         if not self._tool_enabled("mc_broadcast"):
             return "该功能已在插件配置中停用。"
@@ -2249,24 +2384,32 @@ class McControlPlugin(Star):
                 return latched
         try:
             rcon = await self._get_rcon()
-            name = str(self._cfg("feedback_name", "RCON") or "RCON")
             if mode == "title":
-                payload = self._colored_payload(message, "color_title", "gradient_colors_title", "gold")
-                cmd = f"title @a title {payload}"
+                cmds = self._build_text_cmds(
+                    message, "title @a title ", "color_title", "gradient_colors_title",
+                    "gold", allow_multi=False,
+                )
             elif mode == "actionbar":
-                payload = self._colored_payload(message, "color_title", "gradient_colors_title", "gold")
-                cmd = f"title @a actionbar {payload}"
+                cmds = self._build_text_cmds(
+                    message, "title @a actionbar ", "color_title", "gradient_colors_title",
+                    "gold", allow_multi=False,
+                )
             else:
-                payload = self._colored_payload(f"[{name}] {message}", "color_say", "gradient_colors_say", "white")
-                cmd = f"tellraw @a {payload}"
+                # v0.23.7：聊天栏属于「正常输出」→ 固定署 [Server]，
+                # 不再跟随 feedback_name（那是任务回执的名字，不是公屏发言的名字）。
+                cmds = self._build_text_cmds(
+                    f"[{self.BROADCAST_NAME}] {message}", "tellraw @a ",
+                    "color_say", "gradient_colors_say", "white",
+                )
             # 命令工具（广播）：白名单策略下非管理员一律被挡下
-            denied = await self._safe_command(event, cmd, tool="mc_broadcast")
+            denied = await self._safe_command(event, cmds[0], tool="mc_broadcast")
             if denied:
                 return denied
-            blocked = self._guard_command_for_version(cmd, source="mc_broadcast")
-            if blocked:
-                return blocked
-            r = await self._exec_checked(rcon, cmd)
+            for c in cmds:
+                blocked = self._guard_command_for_version(c, source="mc_broadcast")
+                if blocked:
+                    return blocked
+            r = await self._exec_text_cmds(rcon, cmds)
             return self._render_result(r, f"已在服务器内广播：{message}", "广播失败")
         except RconError as e:
             return f"广播失败：{e}"
@@ -2482,15 +2625,16 @@ class McControlPlugin(Star):
         try:
             rcon = await self._get_rcon()
             nickname = event.get_sender_name() or f"玩家{self._sender_id(event)}"
-            payload = self._colored_payload(
-                f"[群聊→{nickname}] {text}", "color_say", "gradient_colors_say", "white"
+            cmds = self._build_text_cmds(
+                f"[群聊→{nickname}] {text}", "tellraw @a ",
+                "color_say", "gradient_colors_say", "white",
             )
-            _cmd = f"tellraw @a {payload}"
-            blocked = self._guard_command_for_version(_cmd, source="mcs_say")
-            if blocked:
-                yield event.plain_result(blocked)
-                return
-            r = await self._exec_checked(rcon, _cmd)
+            for _c in cmds:
+                blocked = self._guard_command_for_version(_c, source="mcs_say")
+                if blocked:
+                    yield event.plain_result(blocked)
+                    return
+            r = await self._exec_text_cmds(rcon, cmds)
             self.logger.info(
                 "[审计] 请求者=%s 喊话=%s 状态=%s",
                 sender, text, r.status,
@@ -2517,15 +2661,16 @@ class McControlPlugin(Star):
             return
         try:
             rcon = await self._get_rcon()
-            payload = self._colored_payload(
-                text, "color_title", "gradient_colors_title", "gold"
+            cmds = self._build_text_cmds(
+                text, "title @a title ", "color_title", "gradient_colors_title",
+                "gold", allow_multi=False,
             )
-            _cmd = f"title @a title {payload}"
-            blocked = self._guard_command_for_version(_cmd, source="mcs_title_cmd")
-            if blocked:
-                yield event.plain_result(blocked)
-                return
-            r = await self._exec_checked(rcon, _cmd)
+            for _c in cmds:
+                blocked = self._guard_command_for_version(_c, source="mcs_title_cmd")
+                if blocked:
+                    yield event.plain_result(blocked)
+                    return
+            r = await self._exec_text_cmds(rcon, cmds)
             self.logger.info(
                 "[审计] 请求者=%s 全屏喊话=%s 状态=%s",
                 self._sender_id(event), text, r.status,
@@ -2912,7 +3057,8 @@ class McControlPlugin(Star):
         """把用户配置的颜色值统一为 MC 文本组件可用的 color。
 
         支持：hex（#FF0000 / FF0000）、RGB（255,0,0 / rgb(255,0,0)）、
-        十进制 RGB（16711680）、MC 内置色名（red/gold/white...）。
+        十进制 RGB（16711680）、MC 内置色名（red/gold/white...）、
+        格式化符号色码（§6 / &6，v0.23.7 B2④）。
         解析失败时回退到 fallback。
         """
         if value is None:
@@ -2928,6 +3074,10 @@ class McControlPlugin(Star):
         }
         if v in named:
             return v
+        # v0.23.7（B2④）：格式化符号色码简写（§6 / &6 → gold；全世代通用、零近似）
+        code = parse_section_color(v)
+        if code:
+            return code
         # #RRGGBB 或 RRGGBB
         m = re.fullmatch(r"#?([0-9a-f]{6})", v)
         if m:
@@ -2952,10 +3102,18 @@ class McControlPlugin(Star):
 
     # 渐变输出格式（key -> 说明）
     GRADIENT_FORMATS = {
-        "json": "Vanilla（JSON 文本组件）",
-        "compat_section": "Vanilla 兼容（§x§R§R§G§G§B§B）",
-        "compat_amp": "Vanilla 兼容（&x&R&R&G&G&B&B）",
-        "legacy_amp": "Legacy（&#RRGGBB，EssentialsX / CMI 等插件）",
+        "json": "Vanilla（JSON 文本组件）｜客户端 1.16+",
+        "compat_section": "Vanilla 兼容（§x§R§R§G§G§B§B）｜客户端 1.16+",
+        "compat_amp": "Vanilla 兼容（&x&R&R&G&G&B&B）｜客户端 1.16+",
+        "legacy_amp": "Legacy（&#RRGGBB，EssentialsX / CMI 等插件）｜插件侧渲染",
+    }
+
+    # 单色输出格式（不开渐变 / 渐变超限降级为单色时生效；key -> 说明，带客户端版本号）
+    # v0.23.7（B2④，用户点名）：默认 hex（1.16+ 精确），已知旧版**自动回退固定
+    # 格式化色**；也可手动选 named 强制走 16 色名（全世代通用）。与渐变格式下拉同款。
+    PLAIN_FORMATS = {
+        "hex": "精确 hex #RRGGBB｜客户端 1.16+（已知旧版自动回退固定格式化色）",
+        "named": "固定格式化色·16 色名（§0-§f 同款）｜全世代通用",
     }
 
     @staticmethod
@@ -3061,23 +3219,171 @@ class McControlPlugin(Star):
         ]
         return json.dumps({"text": "", "extra": extra}, ensure_ascii=False)
 
-    def _colored_payload(self, text: str, base_key: str, stops_key: str, default: str) -> str:
+    def _colored_payload(
+        self, text: str, base_key: str, stops_key: str, default: str,
+        *, gradient: bool | None = None,
+    ) -> str:
         """构建 JSON 文本组件字符串（供 tellraw / title 使用）。
 
         渐变色开关开启且锚点含多种颜色时逐字符渐变，否则退回单色。
+
+        v0.23.7（B2）：``gradient=False`` 强制单色（字节预算降级用）；
+        默认（``None``）时若**已知服务端 < 1.16** 且为 Vanilla hex 系格式，
+        也自动走单色 —— hex 渐变是 1.16+ 才支持的客户端特性，旧版上既渲染
+        不出、逐字符 JSON 还会把 RCON 包撑爆（1.13.2 实测 ≈1.7KB 即静默断线）。
         """
         base = self._parse_color(self._cfg(base_key, default), default)
-        if self._cfg("gradient_enabled", False):
+        base = self._single_color_for_server(base)  # v0.23.7（B2③/B2④）：单色格式 + 版本门控
+        use_gradient = (
+            bool(self._cfg("gradient_enabled", False))
+            if gradient is None else bool(gradient)
+        )
+        fmt = str(self._cfg("gradient_format", "json") or "json").strip().lower()
+        if fmt not in self.GRADIENT_FORMATS:
+            fmt = "json"
+        if (use_gradient and gradient is None
+                and fmt in ("json", "compat_section", "compat_amp")
+                and not self._hex_gradient_supported()):
+            use_gradient = False  # B2②：已知 <1.16 → 不用 hex 渐变
+        if use_gradient:
             stops = self._gradient_stops(self._cfg(stops_key, ""), base)
-            fmt = str(self._cfg("gradient_format", "json") or "json").strip().lower()
-            if fmt not in self.GRADIENT_FORMATS:
-                fmt = "json"
             if len(set(stops)) > 1:
                 rendered = self._render_gradient(text, stops, fmt)
                 if fmt == "json":
                     return rendered
                 return json.dumps({"text": rendered}, ensure_ascii=False)
         return json.dumps({"text": text, "color": base}, ensure_ascii=False)
+
+    # =============== v0.23.7（B2/B6）出站文本兼容层 ===============
+
+    #: 服务端版本快照缓存 TTL（秒）——洗白/渐变门控共用，避免每条消息都读启动日志
+    _TEXT_VERSION_TTL = 60.0
+
+    def _server_mc_cached(self):
+        """取服务端 MC 版本（带 TTL 缓存）；解析不出/出错 → None（按未知处理）。"""
+        now = time.monotonic()
+        cache = getattr(self, "_text_version_cache", None)
+        if cache and (now - cache[0]) < self._TEXT_VERSION_TTL:
+            return cache[1]
+        mc = None
+        try:
+            mc = self._resolve_version_info().mc
+        except Exception:  # noqa: BLE001 —— 版本解析异常不得影响出站文本
+            mc = None
+        self._text_version_cache = (now, mc)
+        return mc
+
+    def _single_color_for_server(self, color: str) -> str:
+        """单色渲染的色值裁决（v0.23.7 · B2③ 版本门控 + B2④「单色格式」下拉框）。
+
+        两种格式（``plain_color_format``，默认 ``hex``）：
+
+        - ``hex``：精确下发 ``#RRGGBB``；**已知 < 1.16 自动回退**固定格式化色 ——
+          旧客户端不认 hex，原样下发既不报错也不变色（会被静默忽略，用户的
+          自定义色等于人间蒸发），降级成最接近的官方 16 色之一至少**可见**且
+          语义接近；版本未知不猜，原样下发。
+        - ``named``：强制固定格式化色（16 色名，全世代通用）—— 填 hex 时近似为
+          最近色名；命名色与格式化符号色码（§6 / &6）本身就是色名，原样返回。
+        """
+        if not color or not str(color).startswith("#"):
+            return color                      # 命名色 / 已解析的 § 码：两种格式都原样
+        fmt = str(self._cfg("plain_color_format", "hex") or "hex").strip().lower()
+        if fmt not in self.PLAIN_FORMATS:
+            fmt = "hex"
+        if fmt == "named":
+            name = nearest_vanilla_color(color)
+            if name:
+                self.logger.info(
+                    "[颜色格式] 单色格式=固定格式化色：%s → %s", color, name)
+                return name
+            return color
+        if needs_hex_color_downgrade(self._server_mc_cached()):
+            name = nearest_vanilla_color(color)
+            if name:
+                self.logger.info(
+                    "[颜色门控] 服务端 < 1.16 不支持 hex 单色：%s → %s", color, name)
+                return name
+        return color
+
+    def _hex_gradient_supported(self) -> bool:
+        """hex 系渐变是否可用：1.16+ 才支持；版本未知时不拦（交给字节预算兜底）。"""
+        mc = self._server_mc_cached()
+        if mc is None:
+            return True
+        return tuple(mc) >= (1, 16)
+
+    def _wash_text_for_version(self, text: str) -> str:
+        """B6：旧版字符洗白（已知 <1.9 或版本未知时生效；``legacy_text_wash`` 可关）。"""
+        if not text:
+            return text
+        if not bool(self._cfg("legacy_text_wash", True)):
+            return text
+        if not needs_legacy_wash(self._server_mc_cached()):
+            return text
+        washed = wash_legacy_text(text)
+        if washed != text:
+            self.logger.debug("[文本洗白] 全角括号 → 半角：%r → %r",
+                              text[:40], washed[:40])
+        return washed
+
+    def _build_text_cmds(
+        self, text: str, prefix: str, base_key: str, stops_key: str, default: str,
+        *, allow_multi: bool = True,
+    ) -> list[str]:
+        """B6+B2：构建出站文本命令（1..N 条），保证单条 RCON 包不超限。
+
+        顺序：洗白 → 渲染（含渐变门控）→ 字节预算：
+          1) 整条在预算内 → 原样；
+          2) 超限 → 降级单色（渐变是超限大头）；
+          3) 仍超限 → 按字符切段多条发送；``allow_multi=False``（title 类）
+             不允许切段（多段会互相顶掉）→ 截断兜底（宁可截短，
+             也不能让老服务端在读包阶段静默断线）。
+        """
+        if not text:
+            return [f"{prefix}{json.dumps({'text': ''}, ensure_ascii=False)}"]
+        text = self._wash_text_for_version(text)
+        cmd = f"{prefix}{self._colored_payload(text, base_key, stops_key, default)}"
+        if utf8_len(cmd) <= RCON_SAFE_BYTES:
+            return [cmd]
+        plain = f"{prefix}{self._colored_payload(text, base_key, stops_key, default, gradient=False)}"
+        if utf8_len(plain) <= RCON_SAFE_BYTES:
+            self.logger.info(
+                "[文本预算] 渲染后超限，降级单色：%d 字节 → %d 字节",
+                utf8_len(cmd), utf8_len(plain),
+            )
+            return [plain]
+        overhead = utf8_len(plain) - utf8_len(text)
+        if not allow_multi:
+            allow_text = RCON_SAFE_BYTES - overhead - 3  # 给省略号留位
+            keep = clip_text_to_bytes(text, allow_text)
+            kept = (keep + "…") if keep != text else keep
+            self.logger.warning(
+                "[文本预算] 标题类超限且不可切段，截断发送：%d 字 → %d 字",
+                len(text), len(keep),
+            )
+            return [
+                f"{prefix}{self._colored_payload(kept, base_key, stops_key, default, gradient=False)}"
+            ]
+        budget = max(64, RCON_SAFE_BYTES - overhead)
+        chunks = split_text_by_bytes(text, budget)
+        cmds = [
+            f"{prefix}{self._colored_payload(c, base_key, stops_key, default, gradient=False)}"
+            for c in chunks
+        ]
+        # 保险：逐条复核（极端颜色值撑大 overhead 的情形），仍超限的再对半切
+        final: list[str] = []
+        for c, one in zip(chunks, cmds):
+            if utf8_len(one) <= RCON_SAFE_BYTES:
+                final.append(one)
+            else:
+                for sc in split_text_by_bytes(c, max(32, budget // 2)):
+                    final.append(
+                        f"{prefix}{self._colored_payload(sc, base_key, stops_key, default, gradient=False)}"
+                    )
+        self.logger.info(
+            "[文本预算] 超限切段：%d 字节/条 → %d 段", utf8_len(plain), len(final)
+        )
+        return final
 
     def detect_server_version(self) -> str:
         """探测服务端版本。
@@ -3840,8 +4146,10 @@ class McControlPlugin(Star):
             return
         try:
             rcon = await self._get_rcon()
+            # v0.23.7（B6 落点收口）：洗白通管；定额短文本（≈90B）无单包预算问题
+            receipt = self._wash_text_for_version("✓ 已转发到群聊")
             payload = json.dumps(
-                {"text": "✓ 已转发到群聊", "color": "#AAAAAA"}, ensure_ascii=False
+                {"text": receipt, "color": "#AAAAAA"}, ensure_ascii=False
             )
             await rcon.command(f"tellraw @a[name={player}] {payload}")
         except Exception:

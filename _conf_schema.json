@@ -493,13 +493,19 @@
     "items": {
       "feedback_name": {
         "description": "反馈署名",
-        "hint": "命令反馈与广播中显示的名字",
+        "hint": "命令反馈（游戏内任务播报）中显示的名字；广播 / 聊天栏发言固定署名 [Server]，不受此项影响",
         "type": "string",
         "default": "RCON"
       },
       "feedback_tellraw": {
         "description": "游戏内任务完成后将在公屏反馈",
         "hint": "开启后，任务执行完成会在游戏公屏发送署名反馈；反馈文字颜色可在 WebUI「服务器」页的『文本颜色』卡片更改",
+        "type": "bool",
+        "default": true
+      },
+      "legacy_text_wash": {
+        "description": "旧版字符洗白（1.8.x「（」吞字适配）",
+        "hint": "1.8.x 官方客户端会把全角「（」当格式码哨兵吞掉其后整句（官方字体数据缺陷，实测仅 1.8.x 线受影响）；开启后插件在发送文本前把（）［］｛｝｜ 洗成半角。仅在 ≤1.8.x 或版本未知时生效，1.9+ 自动豁免；可随时关闭。",
         "type": "bool",
         "default": true
       },
@@ -511,7 +517,7 @@
       },
       "gradient_format": {
         "description": "渐变输出格式",
-        "hint": "json=Vanilla（JSON 文本组件，推荐）｜compat_section=Vanilla 兼容（§x§R§R§G§G§B§B）｜compat_amp=Vanilla 兼容（&x&R&R&G&G&B&B）｜legacy_amp=Legacy（&#RRGGBB）",
+        "hint": "json=Vanilla（JSON 文本组件，客户端 1.16+，推荐）｜compat_section=Vanilla 兼容（§x§R§R§G§G§B§B，1.16+）｜compat_amp=Vanilla 兼容（&x&R&R&G&G&B&B，1.16+）｜legacy_amp=Legacy（&#RRGGBB，EssentialsX/CMI 等插件侧渲染）",
         "type": "string",
         "options": [
           "json",
@@ -521,9 +527,19 @@
         ],
         "default": "json"
       },
+      "plain_color_format": {
+        "description": "单色颜色格式（不开渐变时生效）",
+        "hint": "hex=精确 hex（#RRGGBB）· 客户端 1.16+，已知旧版自动回退固定格式化色｜named=固定格式化色·原版 16 色名（§0-§f 同款）· 全世代通用，填 hex 会自动近似最近色名",
+        "type": "string",
+        "options": [
+          "hex",
+          "named"
+        ],
+        "default": "hex"
+      },
       "color_say": {
         "description": "聊天栏颜色（普通喊话）",
-        "hint": "mcs 喊话 的聊天栏颜色。支持 hex(#FF0000) / RGB(255,0,0) / 十进制(16711680) 或色名(white/red/gold…)",
+        "hint": "mcs 喊话 的聊天栏颜色。支持 hex(#FF0000) / RGB(255,0,0) / 十进制(16711680) / 色名(white/red/gold…) / 格式化符号（§6 或 &6，全世代通用）",
         "type": "string",
         "default": "white"
       },

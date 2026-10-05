@@ -119,6 +119,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/kb/presets/transfer", self.transfer_preset, ["POST"], "复制/移动预设知识")
         reg(f"{PAGE_PREFIX}/kb/presets/notice", self.preset_notice, ["POST"], "指纹变化提醒操作")
         reg(f"{PAGE_PREFIX}/kb/models", self.get_kb_models, ["GET"], "知识库可选的嵌入/重排序模型")
+        reg(f"{PAGE_PREFIX}/wf/models", self.get_wf_models, ["GET"], "工作流多Agent可选模型（对话类 Provider）")
         reg(f"{PAGE_PREFIX}/rescan", self.rescan, ["POST"], "重建词典与知识库")
         reg(f"{PAGE_PREFIX}/workflow/status", self.get_workflow_status, ["GET"], "多Agent工作流状态")
         reg(f"{PAGE_PREFIX}/prompts", self.get_prompts, ["GET"], "读取多Agent提示词")
@@ -189,6 +190,19 @@ class McControlWebApi:
             "semantic_stats": kb.semantic_stats() if kb is not None else {},
             "rerank_stats": kb.rerank_stats() if kb is not None else {},
         })
+
+    async def get_wf_models(self):
+        """设置页用：工作流区 6 个 Provider 位的可选模型清单（v0.23.7 · B7）。
+
+        choices 与 /kb/models 同源：直接来自 AstrBot **已加载**的对话类
+        Provider 实例（不读配置文件）—— 下拉里能选的就一定可用；
+        留空 = 运行时自动回退（会话默认 / 主 Provider）。
+        """
+        try:
+            choices = self.plugin._provider_choices("chat")
+        except Exception as e:                            # noqa: BLE001
+            return json_response({"ok": False, "error": f"读取模型列表失败：{e}"})
+        return json_response({"ok": True, "choices": choices})
 
     async def get_state(self):
         kb = self._kb()
@@ -348,6 +362,9 @@ class McControlWebApi:
         "enable_mc_give_item", "enable_mc_kick", "enable_mc_ban",
         "enable_mc_connection_status", "enable_mc_search_item",
         "enable_mc_get_recipes", "enable_mc_list_mods",
+        # v0.23.7（活体验收发现）：GET /settings 会全量回显本键，白名单漏登记 → 保存时
+        # 长期误报「后端未识别」（与 v0.23.5 say_max_chars 同类）。补齐。
+        "enable_mc_reload_plugin",
         "enable_bind_command", "enable_say_command", "say_command_public",
         "enable_status_command", "enable_kick_command", "enable_ban_command",
         "enable_unban_command", "enable_banlist_command",
@@ -358,6 +375,8 @@ class McControlWebApi:
         "enable_mc_search_knowledge", "enable_mc_save_knowledge",
         "enable_mc_correct_knowledge", "agent_workflow_enabled",
         "enable_mc_workflow", "gradient_enabled",
+        # v0.23.7（B6）：旧版字符洗白开关
+        "legacy_text_wash",
         "permission_hint_injection", "permission_latch",
         # v0.23.5：黑名单下未知命令的闸门（bool，默认 false = 拒绝）
         "allow_unknown_commands",
@@ -407,6 +426,8 @@ class McControlWebApi:
     ENUM_SETTING_KEYS = {
         # 与 _conf_schema.json / main.py 的闸门实现保持一致
         "danger_command_policy": ("whitelist", "blacklist"),
+        # v0.23.7（B2④）：单色颜色格式（hex=客户端 1.16+ 精确 / named=固定格式化色·全世代）
+        "plain_color_format": ("hex", "named"),
         # v0.23.3：权限前置提醒的触发时机（默认 on_demand，日常闲聊不注入）
         "permission_hint_mode": HINT_MODES,
         # v0.21.40：知识库检索引擎（bm25=默认 / legacy=旧版兼容）
@@ -509,7 +530,7 @@ class McControlWebApi:
                 if not pv:
                     return None, (
                         f"{k} 颜色无法识别：{settings.get(k)!r}，"
-                        "支持 #RRGGBB / RGB(255,0,0) / 十进制 / 色名"
+                        "支持 #RRGGBB / RGB(255,0,0) / 十进制 / 色名 / 格式化符号（§6 或 &6）"
                     )
                 parsed[k] = pv
         for k in self.GRADIENT_COLOR_KEYS:
@@ -1158,17 +1179,36 @@ class McControlWebApi:
             return json_response({"ok": False, "error": gate})
         try:
             rcon = await plugin._get_rcon()
-            name = str(self._cfg("feedback_name", "RCON") or "RCON")
+            # v0.23.7：两种署名分家 ——
+            #   · 「聊天栏」= 正常输出 → 固定 [Server]（谁都能拿它跟玩家闲聊，
+            #     顶着「机器人昵称」说话会像 Bot 本人在发言）；
+            #   · 「模拟任务输出」= 任务反馈的复刻 → 仍用 feedback_name。
+            # 「全屏标题」是标题，本来就不带前缀。署名常量见 McControlPlugin.BROADCAST_NAME。
+            # getattr 兜底：WebUI 与插件可能正处在「换代码的重载窗口」，
+            # 那种时候宁可发出一句署名正确的广播，也不要整个接口 500。
+            say_name = str(getattr(plugin, "BROADCAST_NAME", "") or "Server")
+            fb_name = str(self._cfg("feedback_name", "RCON") or "RCON")
+            # v0.23.7（B2/B6）：统一走插件的出站文本构建 —— 洗白 + 字节预算 +
+            # 渐变门控；超长自动切段（title 类改为截断兜底）。
             if mode == "title":
-                payload = plugin._colored_payload(message, "color_title", "gradient_colors_title", "gold")
-                await rcon.command(f"title @a title {payload}")
+                cmds = plugin._build_text_cmds(
+                    message, "title @a title ", "color_title", "gradient_colors_title",
+                    "gold", allow_multi=False,
+                )
             elif mode == "task":
-                # 模拟任务输出：与命令执行反馈同款署名 + 任务输出色
-                payload = plugin._colored_payload(f"[{name}] {message}", "color_feedback", "gradient_colors_feedback", "gold")
-                await rcon.command(f"tellraw @a {payload}")
+                # 模拟任务输出：与命令执行反馈同款署名（feedback_name）+ 任务输出色
+                cmds = plugin._build_text_cmds(
+                    f"[{fb_name}] {message}", "tellraw @a ",
+                    "color_feedback", "gradient_colors_feedback", "gold",
+                )
             else:
-                payload = plugin._colored_payload(f"[{name}] {message}", "color_say", "gradient_colors_say", "white")
-                await rcon.command(f"tellraw @a {payload}")
+                # v0.23.7：聊天栏 = 「正常输出」→ 固定 [Server]
+                cmds = plugin._build_text_cmds(
+                    f"[{say_name}] {message}", "tellraw @a ",
+                    "color_say", "gradient_colors_say", "white",
+                )
+            for c in cmds:
+                await rcon.command(c)
             return json_response({"ok": True, "mode": mode, "message": message})
         except Exception as e:
             return json_response({"ok": False, "error": str(e)})
@@ -1304,6 +1344,10 @@ class McControlWebApi:
                 },
                 "formats": self.plugin.GRADIENT_FORMATS,
             },
+            "plain": {
+                "format": self._cfg("plain_color_format", "hex"),
+                "formats": self.plugin.PLAIN_FORMATS,
+            },
         })
 
     async def save_colors(self):
@@ -1316,7 +1360,7 @@ class McControlWebApi:
                 if not pv:
                     return json_response({
                         "ok": False,
-                        "error": f"{k} 颜色无法识别：{data.get(k)!r}，支持 #RRGGBB / RGB(255,0,0) / 十进制 / 色名",
+                        "error": f"{k} 颜色无法识别：{data.get(k)!r}，支持 #RRGGBB / RGB(255,0,0) / 十进制 / 色名 / 格式化符号（§6 或 &6）",
                     })
                 parsed[k] = pv
         for k in self.GRADIENT_COLOR_KEYS:
@@ -1336,6 +1380,15 @@ class McControlWebApi:
                         "error": f"{k} 至少需要 2 个渐变颜色（当前 {len(clean)} 个）",
                     })
                 parsed[k] = ",".join(clean)
+        if "plain_color_format" in data:
+            plain = str(data.get("plain_color_format") or "").strip().lower()
+            if plain not in self.plugin.PLAIN_FORMATS:
+                return json_response({
+                    "ok": False,
+                    "error": (f"未知的单色格式：{plain!r}，可选："
+                              f"{', '.join(self.plugin.PLAIN_FORMATS)}"),
+                })
+            parsed["plain_color_format"] = plain
         if "gradient_format" in data:
             fmt = str(data.get("gradient_format") or "").strip().lower()
             if fmt not in self.plugin.GRADIENT_FORMATS:
@@ -1365,6 +1418,7 @@ class McControlWebApi:
             return json_response({"ok": False, "error": f"配置写入失败: {e}"})
         grad = bool(self._cfg("gradient_enabled", False))
         fmt_now = self._cfg("gradient_format", self.DEFAULT_FORMAT)
+        plain_now = self._cfg("plain_color_format", "hex")
         return json_response({
             "ok": True,
             "save_warning": self._cfg_save_warning(),
@@ -1380,9 +1434,14 @@ class McControlWebApi:
                     for k in self.GRADIENT_COLOR_KEYS
                 },
             },
+            "plain": {
+                "format": plain_now,
+                "formats": self.plugin.PLAIN_FORMATS,
+            },
             "notice": (
                 f"设置已保存并即时生效，渐变色已{'开启' if grad else '关闭'}"
-                f"（格式：{self.plugin.GRADIENT_FORMATS.get(fmt_now, fmt_now)}）"
+                + (f"（格式：{self.plugin.GRADIENT_FORMATS.get(fmt_now, fmt_now)}）" if grad
+                   else f"（单色格式：{self.plugin.PLAIN_FORMATS.get(plain_now, plain_now)}）")
             ),
         })
 
