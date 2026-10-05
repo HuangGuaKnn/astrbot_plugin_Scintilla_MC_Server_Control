@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) · [界面效果](gallery.md) · [使用指南](usage.md) · [常见问题](faq.md)
 
-插件全部配置共 **10 个分组、93 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
+插件全部配置共 **10 个分组、95 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
 
 > 本页每一项的说明与插件内的提示文字一致。「默认」标注的是开箱值。
 
@@ -442,17 +442,23 @@
 
 ## 8. 外观 · 反馈与渐变颜色
 
-`appearance` · 共 10 项
+`appearance` · 共 12 项
 
 **`feedback_name`** — 反馈署名  
 <sub>文本 · 默认：RCON</sub>
 
-> 命令反馈与广播中显示的名字
+> 命令反馈（游戏内任务播报）与 WebUI「模拟任务输出」预览中显示的名字。**广播 / 聊天栏发言固定署名 `[Server]`**，不受此项影响
 
 **`feedback_tellraw`** — 游戏内任务完成后将在公屏反馈  
 <sub>开关 · 默认：开</sub>
 
 > 开启后，任务执行完成会在游戏公屏发送署名反馈；反馈文字颜色可在 WebUI「服务器」页的『文本颜色』卡片更改
+
+**`legacy_text_wash`** — 旧版字符洗白（1.8.x「（」吞字适配）  
+<sub>开关 · 默认：开</sub>
+
+> 1.8.x 官方客户端会把全角「（」当格式码哨兵、吞掉其后整句（官方字体数据缺陷，实测仅 1.8.x 线受影响）；
+> 开启后插件在发送文本前把 `（）［］｛｝｜` 洗成半角。仅在 **≤1.8.x 或版本未知**时生效，1.9+ 自动豁免；可随时关闭。
 
 **`gradient_enabled`** — 启用渐变色（MC 1.16+）  
 <sub>开关 · 默认：关</sub>
@@ -462,7 +468,14 @@
 **`gradient_format`** — 渐变输出格式  
 <sub>文本 · 默认：json</sub>
 
-可选值：`json` / `compat_section` / `compat_amp` / `legacy_amp`
+可选值：`json` / `compat_section` / `compat_amp` / `legacy_amp`（前三者需客户端 **1.16+**；`legacy_amp` 走 EssentialsX / CMI 插件侧渲染）
+
+**`plain_color_format`** — 单色颜色格式（不开渐变时生效）  
+<sub>文本 · 默认：hex</sub>
+
+可选值：`hex`（精确 hex `#RRGGBB` · 客户端 **1.16+**；已知旧版自动回退固定格式化色）/ `named`（固定格式化色 · 原版 16 色名 · **全世代通用**；填 hex 时自动近似最近色名）
+
+> 三项单色颜色（`color_title` / `color_say` / `color_feedback`）额外支持**格式化符号色码**：直接写 `§6` 或 `&6`（= gold）即可，全世代通用、零近似。WebUI 设置页每项单色右侧都配了一个「格式化符号」下拉，选中即写入 `§+码`（服务器页『文本颜色』卡片另有取色器，两处值互通）。
 
 > json=Vanilla（JSON 文本组件，推荐）｜compat_section=Vanilla 兼容（§x§R§R§G§G§B§B）｜compat_amp=Vanilla 兼容（&x&R&R&G&G&B&B）｜legacy_amp=Legacy（&#RRGGBB）
 

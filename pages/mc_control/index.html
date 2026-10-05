@@ -206,6 +206,11 @@ input:focus,select:focus,textarea:focus{border-color:var(--cyan)}
 textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5px;line-height:1.5}
 .frow{display:flex;gap:8px}
 .frow>*{flex:1}
+/* v0.23.7：设置页三项单色各带一个「格式化符号」下拉（§0-§f）。取色器不在这里 —— 
+   可视化调色是服务器页『文本颜色』卡片的活，设置页只做「原始值」层面最省的表达。 */
+.fcell{display:flex;gap:6px;min-width:0}
+.fcell>input{flex:1;min-width:0}
+.fcell>select{flex:0 0 auto;width:auto;max-width:190px}
 .hint{font-size:10.5px;color:var(--faint);margin-top:4px}
 
 /* ===== 命令工具 白名单 / 黑名单（v0.20.0） ===== */
@@ -803,13 +808,19 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     </div>
     <div class="frow"><input type="text" id="bc_msg" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
     <div class="bc-out" id="bc_out">广播结果会显示在这里</div>
-    <div class="hint" style="margin-top:8px">颜色跟随下方「文本颜色」卡片：聊天栏 / 全屏标题 / 模拟任务输出，各用同名那一格的颜色</div>
+    <div class="hint" style="margin-top:8px">颜色跟随下方「文本颜色」卡片：聊天栏 / 全屏标题 / 模拟任务输出，各用同名那一格的颜色。署名：聊天栏固定 <b>[Server]</b>（对全服公开说话，不冒充任何身份）；模拟任务输出按「反馈署名」配置加前缀；全屏标题不带前缀</div>
   </div>
   <div class="card" id="srv_color_card">
     <h3><span class="dot" style="background:var(--ok)"></span>文本颜色 <span class="right muted" style="font-weight:normal">保存后即时生效</span></h3>
     <div class="sw-row" style="border-top:none">
       <div class="sw-t"><b>启用渐变色</b><span>MC 1.16+ 逐字符渐变 · 支持多锚点（可添加多个颜色）· 空格不参与渐变</span></div>
       <label class="sw"><input type="checkbox" id="clr_grad_en"><span class="sl"></span></label>
+    </div>
+    <!-- v0.23.7（B2④ 追加·主人点名）：单色格式在上、渐变输出格式在下（两组下拉对调位置） -->
+    <div class="frow" id="plain_fmt_row" style="margin-bottom:10px">
+      <span class="muted" style="flex:0 0 auto;font-size:12px">单色格式</span>
+      <select id="clr_plain_fmt" style="flex:1"></select>
+      <span class="muted" style="flex:0 0 auto;font-size:11px">hex 需客户端 1.16+ · 旧版自动回退</span>
     </div>
     <div class="frow grad-wrap" id="grad_fmt_row" style="display:none;margin-bottom:10px">
       <span class="muted" style="flex:0 0 auto;font-size:12px">输出格式</span>
@@ -820,6 +831,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <div style="font-size:13px;margin-bottom:6px">聊天栏 <span class="muted">chat</span></div>
         <div class="frow">
           <input type="color" id="clr_say" value="#ffffff" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_say_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_say_sel" style="display:none"></select>
           <input type="text" id="clr_say_txt" placeholder="#FFFFFF 或 255,255,255" value="#ffffff">
         </div>
         <div class="grad-wrap" id="grad_block_say" style="display:none">
@@ -832,6 +845,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <div style="font-size:13px;margin-bottom:6px">全屏标题 <span class="muted">title</span></div>
         <div class="frow">
           <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_title_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_title_sel" style="display:none"></select>
           <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
         </div>
         <div class="grad-wrap" id="grad_block_title" style="display:none">
@@ -844,6 +859,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <div style="font-size:13px;margin-bottom:6px">模拟任务输出 <span class="muted">反馈</span></div>
         <div class="frow">
           <input type="color" id="clr_fb" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_fb_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_fb_sel" style="display:none"></select>
           <input type="text" id="clr_fb_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
         </div>
         <div class="grad-wrap" id="grad_block_fb" style="display:none">
@@ -856,7 +873,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <div class="btnrow" style="margin-top:10px">
       <button class="btn primary" id="clr_save">保存颜色</button>
       <button class="btn sm" id="clr_reset">恢复默认</button>
-      <span class="muted">取色器点选 / 文本框填 hex 或 RGB，保存后立即生效；渐变开启时按锚点逐字符渐变</span>
+      <span class="muted" id="clr_color_hint">取色器点选 / 文本框填 hex 或 RGB，保存后立即生效；渐变开启时按锚点逐字符渐变</span>
     </div>
     <div class="notice" id="clr_notice"></div>
   </div>
@@ -1394,6 +1411,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <h3><span class="dot" style="background:var(--amber)"></span>反馈署名</h3>
       <label class="f">署名 feedback_name</label>
       <input type="text" id="cfg_feedback_name" placeholder="RCON">
+      <div class="hint" style="margin-top:6px">仅用于任务反馈与「模拟任务输出」预览：广播 / 聊天栏发言固定署名 <b>[Server]</b>，不受此项影响</div>
       <div class="sw-row" style="border-bottom:none;margin-top:6px">
         <div class="sw-t"><b>游戏内任务完成后将在公屏反馈</b><span>命令执行成功后发送署名提示；反馈文字颜色可在「服务器」页的『文本颜色』卡片更改</span></div>
         <label class="sw"><input type="checkbox" id="cfg_feedback_tellraw"><span class="sl"></span></label>
@@ -1405,24 +1423,35 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <div class="sw-t"><b>启用渐变色（MC 1.16+）</b><span>按锚点逐字符渐变 · 空格不参与<br>更推荐去「服务器」页的『文本颜色』卡片调色，那里有取色器、可视化预览 <a class="jump" id="jump_text_color">前往该卡片 →</a></span></div>
         <label class="sw"><input type="checkbox" id="cfg_grad_en"><span class="sl"></span></label>
       </div>
+      <label class="f">单色格式（不开渐变时生效）</label>
+      <select id="cfg_plain_fmt"></select>
       <label class="f">渐变输出格式</label>
       <select id="cfg_grad_fmt"></select>
       <label class="f">聊天栏 · 单色 / 渐变锚点</label>
       <div class="frow">
-        <input type="text" id="cfg_color_say_t" placeholder="white 或 #FFFFFF">
+        <div class="fcell">
+          <input type="text" id="cfg_color_say_t" placeholder="white 或 #FFFFFF">
+          <select id="cfg_color_say_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
+        </div>
         <input type="text" id="cfg_grad_say_t" placeholder="#FFFFFF,#55FFFF">
       </div>
       <label class="f">全屏标题 · 单色 / 渐变锚点</label>
       <div class="frow">
-        <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
+        <div class="fcell">
+          <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
+          <select id="cfg_color_title_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
+        </div>
         <input type="text" id="cfg_grad_title_t" placeholder="#FFAA00,#FF00FF">
       </div>
       <label class="f">模拟任务输出 · 单色 / 渐变锚点</label>
       <div class="frow">
-        <input type="text" id="cfg_color_fb_t" placeholder="gold 或 #FFAA00">
+        <div class="fcell">
+          <input type="text" id="cfg_color_fb_t" placeholder="gold 或 #FFAA00">
+          <select id="cfg_color_fb_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
+        </div>
         <input type="text" id="cfg_grad_fb_t" placeholder="#FFAA00,#55FF55">
       </div>
-      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0)；渐变锚点 ≥2 个、逗号分隔。需要取色器可视化调色请到「服务器」页的『文本颜色』卡片（<a class="jump" id="jump_text_color2">点这里过去 →</a>）</div>
+      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0) / 格式化符号（<code>§0</code>-<code>§f</code> 或 <code>&amp;0</code>-<code>&amp;f</code>）；每项单色右侧的「§」下拉可直接挑一个符号色（全世代通用，选中即写入左边框）。渐变锚点 ≥2 个、逗号分隔。需要<b>取色器</b>可视化调色请到「服务器」页的『文本颜色』卡片（<a class="jump" id="jump_text_color2">点这里过去 →</a>）</div>
     </div>
   </div>
 
@@ -1435,19 +1464,20 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     </div>
     <div class="cv-tip" id="cfg_wf_tip"></div>
     <label class="f">主 Provider（llm_provider_id）</label>
-    <input type="text" id="cfg_wf_provider" placeholder="留空 = 自动回退会话默认">
+    <select id="cfg_wf_provider"></select>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 14px;margin-top:4px">
-      <div><label class="f">分类器 Provider</label><input type="text" id="cfg_wf_p_classifier" placeholder="留空=默认"></div>
-      <div><label class="f">模板判断器 Provider</label><input type="text" id="cfg_wf_p_judge" placeholder="留空=默认"></div>
-      <div><label class="f">模板工程师 Provider</label><input type="text" id="cfg_wf_p_engineer" placeholder="留空=默认"></div>
-      <div><label class="f">实现器 Provider</label><input type="text" id="cfg_wf_p_implementer" placeholder="留空=默认"></div>
-      <div><label class="f">纠错器 Provider</label><input type="text" id="cfg_wf_p_corrector" placeholder="留空=默认"></div>
+      <div><label class="f">分类器 Provider</label><select id="cfg_wf_p_classifier"></select></div>
+      <div><label class="f">模板判断器 Provider</label><select id="cfg_wf_p_judge"></select></div>
+      <div><label class="f">模板工程师 Provider</label><select id="cfg_wf_p_engineer"></select></div>
+      <div><label class="f">实现器 Provider</label><select id="cfg_wf_p_implementer"></select></div>
+      <div><label class="f">纠错器 Provider</label><select id="cfg_wf_p_corrector"></select></div>
     </div>
     <div class="frow" style="margin-top:6px;max-width:460px">
       <div style="flex:1"><label class="f">实现器最大尝试轮数</label><input type="number" id="cfg_wf_rounds_impl" min="1" max="10" placeholder="3"></div>
       <div style="flex:1"><label class="f">纠错循环最大轮数</label><input type="number" id="cfg_wf_rounds_correct" min="0" max="10" placeholder="2"></div>
     </div>
     <div class="hint" style="margin-top:8px">开关与「工作流」页状态同步；各 Agent Provider 留空则沿用主 Provider / 会话默认</div>
+    <div class="hint" id="wf_model_tip" style="margin-top:6px"></div>
   </div>
 </div>
 
@@ -2505,6 +2535,7 @@ const CFG_FIELDS = [
   ["cfg_feedback_tellraw","feedback_tellraw","b",true],
   ["cfg_grad_en","gradient_enabled","b",false],
   ["cfg_grad_fmt","gradient_format","s"],
+  ["cfg_plain_fmt","plain_color_format","s"],
   ["cfg_color_title_t","color_title","s"],
   ["cfg_grad_title_t","gradient_colors_title","s"],
   ["cfg_color_say_t","color_say","s"],
@@ -2535,6 +2566,7 @@ const S_DEFAULTS = {
   "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
   "cfg_grad_title_t": "#FFAA00,#FF00FF", "cfg_grad_say_t": "#FFFFFF,#55FFFF", "cfg_grad_fb_t": "#FFAA00,#55FF55",
   "cfg_grad_fmt": "json",
+  "cfg_plain_fmt": "hex",
 };
 
 // ============ RCON 进阶设置折叠（v0.23.0） ============
@@ -3261,6 +3293,76 @@ async function loadKbModels(){
   if(!KB_MODELS) renderKbModelTips();
 }
 
+// ============ 工作流模型选择（v0.23.7 · B7） ============
+// 6 个 Provider 位（主 + 分类/判断/工程/实现/纠错）与知识库同款下拉：
+// 候选来自 /wf/models（AstrBot **已加载**的对话类 Provider 实例，不读配置文件），
+// 留空 = 运行时自动回退（会话默认 / 主 Provider）。列表没回来时用
+// ensureProviderOption 保住已配置值，绝不因为列表没加载就把主人的选择悄悄清空。
+let WF_MODELS = null;         // 后端返回的模型信息；null = 还没取到
+let WF_MODELS_ERR = "";       // 取列表失败的原因（仅用于提示文案）
+let WF_MODELS_BUSY = false;
+const WF_MODEL_SEL_IDS = [
+  "cfg_wf_provider", "cfg_wf_p_classifier", "cfg_wf_p_judge",
+  "cfg_wf_p_engineer", "cfg_wf_p_implementer", "cfg_wf_p_corrector",
+];
+function fillWfModelSelects(){
+  const list = (WF_MODELS && WF_MODELS.choices) || [];
+  for(const id of WF_MODEL_SEL_IDS){
+    const sel = $(id);
+    if(!sel) continue;
+    const saved = sel.value;                     // 保住当前值（配置值或主人刚选的）
+    if(WF_MODELS){
+      sel.innerHTML = [`<option value="">自动 · 回退会话默认 / 主 Provider</option>`]
+        .concat(list.map(p=>`<option value="${esc(p.id)}">${esc(p.model ? p.id+" · "+p.model : p.id)}</option>`))
+        .join("");
+    }
+    ensureProviderOption(sel, saved);            // 列表未到 / 值不在列表里 → 先补位
+    sel.value = saved || "";
+  }
+  renderWfModelTip();
+}
+function renderWfModelTip(){
+  const tip = $("wf_model_tip");
+  if(!tip) return;
+  if(!WF_MODELS){
+    tip.innerHTML = WF_MODELS_ERR
+      ? `读不到模型列表（${esc(WF_MODELS_ERR)}）—— 不影响功能：留空即自动回退会话默认`
+      : "正在读取 AstrBot 已加载的模型…";
+    return;
+  }
+  const list = WF_MODELS.choices || [];
+  if(!list.length){
+    tip.innerHTML = "没检测到已加载的对话类模型：先去 AstrBot「服务提供商」里添加一个再回来"
+      + "（本页会自动刷新）。此处留空即可 —— 工作流会照常回退到会话默认模型。";
+    return;
+  }
+  const lines = [`已加载 <b>${list.length}</b> 个可选模型（这里能选的就一定可用）；留空 = 自动回退`];
+  const miss = [];
+  for(const id of WF_MODEL_SEL_IDS){
+    const sel = $(id);
+    const v = sel ? sel.value : "";
+    if(v && !list.some(p=>p.id===v)) miss.push(v);
+  }
+  if(miss.length){
+    lines.push(`⚠ 配置里指定的 <code>${esc(miss.join("、"))}</code> 在已加载的模型里找不到`
+      + `（可能没启用、改名或已删除），运行时会自动回退`);
+  }
+  tip.innerHTML = lines.join("<br>");
+}
+async function loadWfModels(){
+  if(WF_MODELS_BUSY) return;
+  WF_MODELS_BUSY = true;
+  try{
+    const r = await callGet("wf/models");
+    if(r && r.ok){ WF_MODELS = r; WF_MODELS_ERR = ""; }
+    else WF_MODELS_ERR = (r && r.error) || "后端未返回";
+  }catch(e){
+    WF_MODELS_ERR = String(e && e.message || e);
+  }
+  WF_MODELS_BUSY = false;
+  fillWfModelSelects();
+}
+
 async function loadSettings(){
   let cfg = (OV&&OV.config)||{};
   const r = await callGet("settings").catch(()=>({ok:false}));
@@ -3281,6 +3383,12 @@ async function loadSettings(){
   if(fmtSel && !fmtSel.options.length){
     fmtSel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
   }
+  const plainSel = $("cfg_plain_fmt");
+  if(plainSel && !plainSel.options.length){
+    plainSel.innerHTML = Object.entries(PLAIN_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  }
+  // 设置页三项单色的「格式化符号」下拉（v0.23.7）：先把选项与联动备好，等值写完再对位
+  bindSecPickers();
   for(const [id,key,ty,dft] of CFG_FIELDS){
     const el = $(id);
     if(!el) continue;
@@ -3299,6 +3407,8 @@ async function loadSettings(){
       el.value = val;
     }
   }
+  // 三项单色的值已经落进文本框，现在让「格式化符号」下拉对上（认不出就「原样保留」）
+  syncSecPickers();
   // v0.21.15：异地 RCON 模式 → 目录框置灰 + 明确告知哪些能力被禁用
   // v0.21.19：此刻开关里的值就是**后端已保存**的值 —— 把它钉成基准（RMT.saved），
   // 之后主人随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
@@ -3327,6 +3437,10 @@ async function loadSettings(){
   // 知识库模型下拉：改动后即时刷新提示（v0.21.43）
   ["cfg_kb_embed_p","cfg_kb_rerank_p"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderKbModelTips;
+  });
+  // 工作流 Provider 下拉：改动后即时刷新提示（v0.23.7 · B7）
+  WF_MODEL_SEL_IDS.forEach(id=>{
+    const el = $(id); if(el) el.onchange = renderWfModelTip;
   });
   // 区分大小写开关：切换后同步符号去重规则 + 提示（v0.17.8）
   const caseEl = $("cfg_bridge_case");
@@ -3377,6 +3491,14 @@ async function loadSettings(){
   }else{
     renderKbModelTips();
     loadKbModels();
+  }
+  // v0.23.7（B7）：工作流 6 个 Provider 下拉 —— 与知识库模型下拉同刷
+  if(WF_MODELS){
+    fillWfModelSelects();
+    loadWfModels();
+  }else{
+    renderWfModelTip();
+    loadWfModels();
   }
   // v0.22.7：版本能力与设置页同刷 —— 保存后会回到这里，因此改完版本**不必重启插件**
   // 就能看见新结论（「来源：手动声明」会立刻亮出来）。
@@ -3665,12 +3787,160 @@ const CLR_ITEMS = [["clr_title","clr_title_txt","color_title"],["clr_say","clr_s
 const GRAD_KEYS = {title:"gradient_colors_title",say:"gradient_colors_say",fb:"gradient_colors_feedback"};
 const GRAD_DEFAULTS = {title:"#FFAA00,#FF00FF",say:"#FFFFFF,#55FFFF",fb:"#FFAA00,#55FF55"};
 const FORMAT_LABELS = {
-  json:"Vanilla（JSON 文本组件）",
-  compat_section:"Vanilla 兼容（§x§R§R§G§G§B§B）",
-  compat_amp:"Vanilla 兼容（&x&R&R&G&G&B&B）",
-  legacy_amp:"Legacy（&#RRGGBB）"
+  json:"Vanilla（JSON 文本组件）· 客户端 1.16+",
+  compat_section:"Vanilla 兼容（§x§R§R§G§G§B§B）· 客户端 1.16+",
+  compat_amp:"Vanilla 兼容（&x&R&R&G&G&B&B）· 客户端 1.16+",
+  legacy_amp:"Legacy（&#RRGGBB）· 插件侧渲染"
+};
+// 单色格式（不开渐变时生效）· 与后端 main.PLAIN_FORMATS 保持一致
+const PLAIN_LABELS = {
+  hex:"精确 hex（#RRGGBB）· 客户端 1.16+｜已知旧版自动回退固定格式化色",
+  named:"固定格式化色 · 16 色名（§0-§f 同款）· 全世代通用"
 };
 let gradState = {title:["#FFAA00","#FF00FF"],say:["#FFFFFF","#55FFFF"],fb:["#FFAA00","#55FF55"]};
+
+// ===== v0.23.7（B2④ 追加·主人点名）：单色格式=「固定格式化色」时，颜色格弹 16 色名选项框 =====
+// 与后端 core/text_outbound 严格同源：
+//   · 顺序 = VANILLA_COLORS = §0-§f（下拉里把符号一并标出，一眼对得上游戏内写法）；
+//   · 近似算法 = nearest_vanilla_color（4·s·Δh² + Δs² + 2·Δl² + 0.15·邻近度，同分比邻近度）。
+// 前端显示的「最近色名」必须和日志里那条 [颜色格式] / [颜色门控] 判定一模一样，
+// 否则就是骗主人 —— 这一条有任何改动都要两边同步改。
+const MC_NAME_ORDER = ["black","dark_blue","dark_green","dark_aqua","dark_red","dark_purple",
+  "gold","gray","dark_gray","blue","green","aqua","red","light_purple","yellow","white"];
+const MC_NAME_CN = {black:"黑",dark_blue:"深蓝",dark_green:"深绿",dark_aqua:"深青",dark_red:"深红",
+  dark_purple:"深紫",gold:"金",gray:"灰",dark_gray:"深灰",blue:"蓝",green:"绿",aqua:"青",
+  red:"红",light_purple:"粉紫",yellow:"黄",white:"白"};
+const SECTION_TO_NAME = {"0":"black","1":"dark_blue","2":"dark_green","3":"dark_aqua",
+  "4":"dark_red","5":"dark_purple","6":"gold","7":"gray","8":"dark_gray","9":"blue",
+  "a":"green","b":"aqua","c":"red","d":"light_purple","e":"yellow","f":"white"};
+function _h2rgb(v){
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(v||"").trim());
+  if(!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n>>16)&255, (n>>8)&255, n&255];
+}
+function _rgb2hsl(r,g,b){
+  const fr=r/255, fg=g/255, fb=b/255;
+  const mx=Math.max(fr,fg,fb), mn=Math.min(fr,fg,fb), l=(mx+mn)/2;
+  if(mx===mn) return [0,0,l];
+  const d=mx-mn, s = l>0.5 ? d/(2-mx-mn) : d/(mx+mn);
+  let h; if(mx===fr) h=((fg-fb)/d)%6; else if(mx===fg) h=(fb-fr)/d+2; else h=(fr-fg)/d+4;
+  if(h<0) h+=6;
+  return [h*60, s, l];
+}
+function _prox(a,b){
+  const dr=a[0]-b[0], dg=a[1]-b[1], db=a[2]-b[2];
+  return (2*dr*dr + 4*dg*dg + 3*db*db) / (9*255*255);
+}
+// 色名 → 自身；§6 / &6 → 对应色名；hex → 后端同款最近色名；其余 → null
+function nearestNamedColor(v){
+  const s = String(v==null?"":v).trim().toLowerCase();
+  if(!s) return null;
+  if(MC_NAME_ORDER.includes(s)) return s;
+  const m = /^[§&]([0-9a-f])$/.exec(s);
+  if(m) return SECTION_TO_NAME[m[1]] || null;
+  const rgb = _h2rgb(s);
+  if(!rgb) return null;
+  const [th,ts,tl] = _rgb2hsl(rgb[0],rgb[1],rgb[2]);
+  let best=null, bestKey=null;
+  for(const name of MC_NAME_ORDER){
+    const c = _h2rgb(MC_HEX[name]);
+    const [ch,cs,cl] = _rgb2hsl(c[0],c[1],c[2]);
+    let dh = Math.abs(th-ch)%360; dh = Math.min(dh, 360-dh)/180;
+    const ds = Math.abs(ts-cs), dl = Math.abs(tl-cl), px = _prox(rgb,c);
+    const d = 4.0*ts*dh*dh + ds*ds + 2.0*dl*dl + 0.15*px;
+    const key = [Math.round(d*1e6)/1e6, px];
+    if(bestKey===null || key[0]<bestKey[0] || (key[0]===bestKey[0] && key[1]<bestKey[1])){
+      best = name; bestKey = key;
+    }
+  }
+  return best;
+}
+// ── 设置页：三项单色各配一个「格式化符号」下拉（v0.23.7）──────────────────────
+// 为什么设置页给符号、不给取色器：`§6` 与色名 `gold` 在后端 _parse_color 里是**同一条路**
+// （parse_section_color → gold），但符号是「全世代通用、零近似」的最省表达 —— 
+// 设置页本来就以原始值为准，配一个符号下拉正好；可视化取色器留给服务器页『文本颜色』卡片
+// （那边有取色器与预览，设置页有引导跳转）。
+const SEC_PICKER_PAIRS = [["cfg_color_say_t",   "cfg_color_say_sec"],
+                          ["cfg_color_title_t", "cfg_color_title_sec"],
+                          ["cfg_color_fb_t",    "cfg_color_fb_sec"]];
+const SEC_KEEP_LABEL = "（原样保留）";
+const SEC_BY_NAME = {};                 // 色名 → §码；顺序即 MC_NAME_ORDER（0-15）
+MC_NAME_ORDER.forEach((n,i)=>{ SEC_BY_NAME[n] = i.toString(16); });
+
+function fillSecPickers(){
+  for(const [,sid] of SEC_PICKER_PAIRS){
+    const sel = $(sid);
+    if(!sel || sel.options.length) continue;
+    sel.innerHTML = `<option value="">${SEC_KEEP_LABEL}</option>`
+      + MC_NAME_ORDER.map((n,i)=>
+          `<option value="${i.toString(16)}">§${i.toString(16)} ${MC_NAME_CN[n]} ${n}</option>`).join("");
+  }
+}
+// 文本框 → 下拉（只同步显示，绝不改值）：
+//   认得出固定色就选中（hex 走与后端 nearest_vanilla_color 同源的最近色名）；
+//   认不出（RGB() / 十进制 / 空）就回到「原样保留」，不假装自己是某个符号色。
+function syncSecPickers(){
+  for(const [tid,sid] of SEC_PICKER_PAIRS){
+    const t = $(tid), sel = $(sid);
+    if(!t || !sel) continue;
+    const n = nearestNamedColor(t.value);
+    sel.value = n ? (SEC_BY_NAME[n] || "") : "";
+  }
+}
+function bindSecPickers(){
+  fillSecPickers();
+  for(const [tid,sid] of SEC_PICKER_PAIRS){
+    const t = $(tid), sel = $(sid);
+    if(!t || !sel || sel.dataset.secBound === "1") continue;
+    sel.dataset.secBound = "1";
+    sel.addEventListener("change", ()=>{
+      if(!sel.value){ syncSecPickers(); return; }        // 「原样保留」＝什么都不动
+      const code = sel.value, name = MC_NAME_ORDER[parseInt(code,16)];
+      t.value = "§" + code;
+      setSaveNotice(`已填入 §${code}（${MC_NAME_CN[name] || name}）——格式化符号全世代通用，`
+        + "点上方「保存全部设置」后生效", false);
+    });
+    t.addEventListener("input", syncSecPickers);          // 手打 hex / 色名 / §码 也跟着走
+  }
+}
+function fillNameSelects(){
+  for(const [pick] of CLR_ITEMS){
+    const s = $(pick+"_sel");
+    if(!s || s.options.length) continue;
+    s.innerHTML = MC_NAME_ORDER.map((n,i)=>
+      `<option value="${n}">§${i.toString(16)} ${MC_NAME_CN[n]} ${n}</option>`).join("");
+  }
+}
+function applyPlainMode(){
+  const sel = $("clr_plain_fmt");
+  if(!sel) return;
+  const named = (sel.value === "named");
+  for(const [pick,txt] of CLR_ITEMS){
+    const s = $(pick+"_sel"), sw = $(pick+"_sw");
+    $(pick).style.display = named ? "none" : "";
+    $(txt).style.display  = named ? "none" : "";
+    if(s)  s.style.display  = named ? "" : "none";
+    if(sw) sw.style.display = named ? "" : "none";
+  }
+  const hint = $("clr_color_hint");
+  if(hint) hint.textContent = named
+    ? "单色格式＝固定格式化色：颜色从 16 色名里选（§0-§f 同款，全世代通用）；色块显示的是服务端会用的近似色"
+    : "取色器点选 / 文本框填 hex、RGB 或格式化符号（§6），保存后立即生效；渐变开启时按锚点逐字符渐变";
+}
+// 把当前色值同步到色名下拉 + 近似色块（下拉永远显示后端会用的那个色名）
+function syncNameCells(colors){
+  for(const [pick,txt,key] of CLR_ITEMS){
+    const s = $(pick+"_sel"), sw = $(pick+"_sw");
+    const raw = (colors && colors[key] !== undefined) ? colors[key] : $(txt).value;
+    const name = nearestNamedColor(raw) || "white";
+    if(s) s.value = name;
+    if(sw){
+      sw.style.background = MC_HEX[name] || "#888";
+      sw.title = `固定格式化色近似：${raw} → ${name}`;
+    }
+  }
+}
 
 function clrHex(v){
   v = String(v||"").trim().toLowerCase();
@@ -3711,9 +3981,22 @@ function refreshGradVisibility(){
   document.querySelectorAll(".grad-wrap").forEach(el=>{ el.style.display = on ? "" : "none"; });
 }
 function bindColors(){
+  fillNameSelects();
   for(const [pick,txt] of CLR_ITEMS){
-    $(pick).addEventListener("input", ()=>{ $(txt).value = $(pick).value.toUpperCase(); });
-    $(txt).addEventListener("input", ()=>{ const v=$(txt).value.trim(); if(/^#[0-9a-fA-F]{6}$/.test(v)) $(pick).value = v; });
+    $(pick).addEventListener("input", ()=>{ $(txt).value = $(pick).value.toUpperCase(); syncNameCells(); });
+    $(txt).addEventListener("input", ()=>{
+      const v = $(txt).value.trim();
+      if(/^#[0-9a-fA-F]{6}$/.test(v)) $(pick).value = v;
+      const n = nearestNamedColor(v), s = $(pick+"_sel"), sw = $(pick+"_sw");
+      if(n){ if(s) s.value = n; if(sw) sw.style.background = MC_HEX[n]; }
+    });
+    const s = $(pick+"_sel");
+    if(s) s.addEventListener("change", ()=>{
+      $(txt).value = s.value;                 // 存的是色名（全世代通用）
+      $(pick).value = MC_HEX[s.value] || $(pick).value;
+      const sw = $(pick+"_sw");
+      if(sw){ sw.style.background = MC_HEX[s.value] || "#888"; sw.title = `固定格式化色：${s.value}`; }
+    });
   }
   document.querySelectorAll("[data-add]").forEach(btn=>{
     btn.onclick = ()=>{ const key = btn.dataset.add; gradState[key].push("#FFFFFF"); renderStops(key); };
@@ -3723,6 +4006,9 @@ function bindColors(){
   $("clr_reset").onclick = resetColors;
   const sel = $("clr_grad_fmt");
   sel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  $("clr_plain_fmt").innerHTML = Object.entries(PLAIN_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  $("clr_plain_fmt").addEventListener("change", applyPlainMode);
+  applyPlainMode();
 }
 async function loadColors(){
   const r = await callGet("colors").catch(()=>({ok:false}));
@@ -3735,6 +4021,9 @@ async function loadColors(){
   const stops = g.stops || {};
   $("clr_grad_en").checked = !!g.enabled;
   $("clr_grad_fmt").value = g.format || "json";
+  $("clr_plain_fmt").value = (r.plain||{}).format || "hex";
+  syncNameCells(r.colors);   // v0.23.7 追加：色名下拉按「后端会用的近似色名」回显
+  applyPlainMode();          //            并按单色格式决定「取色器」还是「色名选项框」
   for(const key of Object.keys(GRAD_KEYS)){
     let arr = stopsToArr(stops[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
     if(arr.length < 2) arr = stopsToArr(GRAD_DEFAULTS[key]);
@@ -3747,6 +4036,7 @@ async function saveColors(){
   for(const [pick,txt,key] of CLR_ITEMS) payload[key] = $(txt).value.trim() || $(pick).value;
   payload.gradient_enabled = $("clr_grad_en").checked;
   payload.gradient_format = $("clr_grad_fmt").value;
+  payload.plain_color_format = $("clr_plain_fmt").value;
   for(const key of Object.keys(GRAD_KEYS)) payload[GRAD_KEYS[key]] = gradState[key].join(",");
   setNotice($("clr_notice"), "保存中…");
   const r = await callPost("colors/save", payload).catch(()=>({ok:false,error:"请求失败"}));
@@ -3755,8 +4045,10 @@ async function saveColors(){
     if(!showSaveWarn(r, $("clr_notice")))
       setNotice($("clr_notice"), "✓ " + (r.notice||"设置已保存并即时生效"));
     for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(r.colors[key]); $(txt).value = r.colors[key]; }
+    syncNameCells(r.colors);
     const g = r.gradient || {};
     if(g.format) $("clr_grad_fmt").value = g.format;
+    if((r.plain||{}).format) $("clr_plain_fmt").value = r.plain.format;
     for(const key of Object.keys(GRAD_KEYS)){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);
@@ -3768,6 +4060,8 @@ async function saveColors(){
 async function resetColors(){
   for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(CLR_DEF[key]); $(txt).value = CLR_DEF[key]; }
   $("clr_grad_fmt").value = "json";
+  $("clr_plain_fmt").value = "hex";
+  syncNameCells(CLR_DEF); applyPlainMode();
   for(const key of Object.keys(GRAD_KEYS)){ gradState[key] = stopsToArr(GRAD_DEFAULTS[key]); renderStops(key); }
   setNotice($("clr_notice"), "已填回默认值，点「保存颜色」生效");
 }

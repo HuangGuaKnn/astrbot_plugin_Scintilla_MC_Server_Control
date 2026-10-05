@@ -243,6 +243,14 @@ ANCHORED_SUCCESS_PATTERNS: dict[str, tuple[str, ...]] = {
     "list": (r"^there are\b",),
     "spreadplayers": (r"^spread\b",),
     "place": (r"^placed\b",),
+    # -- v0.23.7（B3）：只读查询回执（2026-10-05 1.13.2 / 1.21.1 实测补录）--
+    # `data get`：主体名可变（玩家名 / `The block at …` / `The storage …`）→ 前缀放开
+    "data": (r"^.{0,96}?has the following (?:entity|block|storage) data",),
+    # `attribute … get`：`Value of attribute <id> for entity <name> is <值>`
+    "attribute": (
+        r"^value of attribute .+ is ",
+        r"^base value of attribute .+ is ",
+    ),
 }
 
 _ANCHORED_SUCCESS_RES: dict[str, tuple[re.Pattern, ...]] = {
