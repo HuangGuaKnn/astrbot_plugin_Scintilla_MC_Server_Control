@@ -304,7 +304,7 @@ def part_d() -> None:
         state = {"deleted": False, "content": 0}
 
         async def embed(texts):
-            # 模拟「等嵌入返回的这段时间里，主人把 topic a 删了」
+            # 模拟「等嵌入返回的这段时间里，用户把 topic a 删了」
             state["content"] += 1
             if not state["deleted"]:
                 state["deleted"] = kb.delete_entry("topic a")

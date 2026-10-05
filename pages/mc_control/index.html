@@ -414,7 +414,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
   -webkit-text-fill-color:var(--dim);background:var(--panel3)}
 /* ===== v0.21.16：异地 RCON 模式 → 不可用区块的「亚克力磨砂 + 文字告知」 =====
    开启异地模式后，所有依赖服务端本地文件的能力（事件播报 / 聊天桥接 / 物品词典 /
-   知识库 / 版本探测 / 进程指标）在后端按设计禁用。前端必须让主人一眼看出「这儿现在
+   知识库 / 版本探测 / 进程指标）在后端按设计禁用。前端必须让用户一眼看出「这儿现在
    用不了、为什么用不了」，不能让开关维持「好像还能开」的假象。
    做法：容器加 .rmt-off —— 内容整体模糊 + 停用交互，上面盖一层 backdrop-filter 磨砂，
    再放一枚居中的亚克力提示牌；牌子本身不参与模糊，字始终清晰。
@@ -453,7 +453,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
   background:var(--rmt-acr);border:1px solid var(--rmt-acr-bd);border-radius:99px;padding:3px 9px;
   backdrop-filter:blur(10px) saturate(1.4);-webkit-backdrop-filter:blur(10px) saturate(1.4)}
 /* v0.21.17：**文字型区块**（服务器目录：一个输入框 + 一段长提示）不能套硬磨砂。
-   可读性本身就是这一块的全部信息，再模糊 / 再降透明度就是「让主人看不清」。
+   可读性本身就是这一块的全部信息，再模糊 / 再降透明度就是「让用户看不清」。
    实测旧写法叠了三层淡化：.dimmed(.55) × .rmt-off(.4) = 有效不透明度仅 0.22，
    外加 blur(2.4px) 与 .52 的磨砂层 —— 字当然糊成一团。
    这里改用「软标记」：文字保持满对比度、不做模糊，靠 ① 虚线框圈出区域
@@ -469,7 +469,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
    公告容器 pointer-events:none、只有面板 pointer-events:auto —— 顶部页签照样能点，
-   主人不会被「关」在封禁页里出不来。 */
+   用户不会被「关」在封禁页里出不来。 */
 .rmt-seal>*:not(.rmt-seal-card){filter:blur(3px);opacity:.3;pointer-events:none;user-select:none}
 .rmt-seal-card{position:fixed;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;
   padding:24px;pointer-events:none}
@@ -529,7 +529,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 </style>
 <script>
 /* 主题引导（v0.21.13 / v0.23.4）：必须在首次绘制前跑，否则刷新时会闪。
-   优先级：localStorage / cookie 里主人手动选的 → 【iframe 内保持初值】 → 系统偏好。
+   优先级：localStorage / cookie 里用户手动选的 → 【iframe 内保持初值】 → 系统偏好。
 
    v0.23.4 消除闪烁：本页是深色工作台设计，<html> 的初值就是 dark。
    在 AstrBot 的 iframe 里本地存储整个不可用（SecurityError），此时**不要**急着
@@ -816,7 +816,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <div class="sw-t"><b>启用渐变色</b><span>MC 1.16+ 逐字符渐变 · 支持多锚点（可添加多个颜色）· 空格不参与渐变</span></div>
       <label class="sw"><input type="checkbox" id="clr_grad_en"><span class="sl"></span></label>
     </div>
-    <!-- v0.23.7（B2④ 追加·主人点名）：单色格式在上、渐变输出格式在下（两组下拉对调位置） -->
+    <!-- v0.23.7（B2④ 追加·用户点名）：单色格式在上、渐变输出格式在下（两组下拉对调位置） -->
     <div class="frow" id="plain_fmt_row" style="margin-bottom:10px">
       <span class="muted" style="flex:0 0 auto;font-size:12px">单色格式</span>
       <select id="clr_plain_fmt" style="flex:1"></select>
@@ -1698,7 +1698,7 @@ async function loadOverview(){
   const kMis = (k.fingerprint_mismatch !== undefined && k.fingerprint_mismatch !== null)
     ? k.fingerprint_mismatch : k.notice_show;
   // v0.21.20：插件服务端（Paper/Spigot）没有 mods/ → 词典退化为原版物品表，
-  // 不能显示成「0 mods」让主人以为认不出服务端（items 才是真数据）。
+  // 不能显示成「0 mods」让用户以为认不出服务端（items 才是真数据）。
   const dSub = d.mods!=null
     ? (d.mods===0 && d.items>0 ? `原版物品表 / ${d.items} 物品` : `${d.mods} mods / ${d.items} 物品`)
     : (rmt?"需服务端本地目录":"未初始化");
@@ -1760,7 +1760,7 @@ async function loadServer(){
   $("sv_players").innerHTML = "";
   const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
   // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
-  // 否则 RCON 一掉线，主人就看不见 Agent 到底按哪个版本构造命令了。
+  // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
   renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
   if(!r.ok){
     $("sv_status").innerHTML = `<span class="badge bad">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
@@ -1774,12 +1774,12 @@ async function loadServer(){
     <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
     <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
   // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
-  // 等于「版本未知」这条最重要的提示根本没到主人眼前。
+  // 等于「版本未知」这条最重要的提示根本没到用户眼前。
   if(r.version_hint){
     $("sv_ver_caps").insertAdjacentHTML("beforeend",
       `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
   }
-  // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是主人没配好）
+  // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
   if(RMT.on) $("sv_status").insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
     + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
@@ -1820,7 +1820,7 @@ function entryHTML(e, isPending){
 }
 // v0.21.21：知识库不可用时，把**原因**说出来。
 // 后端（v0.21.15）早就会在 error 里写清「为什么不可用」（未配置服务器目录 / 目录校验未过 / 异地模式），
-// 可前端把这句吞了、只丢一个红徽章，预设栏还永远停在「加载中…」——主人只看到「加载失败」四个字，
+// 可前端把这句吞了、只丢一个红徽章，预设栏还永远停在「加载中…」——用户只看到「加载失败」四个字，
 // 根本不知道去哪儿修。这里照工作流页的写法办：原因原样显示 + 一个直达设置页的按钮。
 function showKbUnavailable(r){
   const why = (r && r.error) || "知识库接口没有响应（插件可能刚重载，点「重试」或刷新页面即可）";
@@ -1964,7 +1964,7 @@ async function saveEntryDetail(){
 }
 // ============ 知识库预设（v0.18.0） ============
 // 一个预设 = 一个独立知识库，可绑定某个服务端整合包指纹；服务端指纹变化时**不自动切换**，
-// 只在进入 WebUI 时弹窗提示，由主人手动决定谁服务谁。
+// 只在进入 WebUI 时弹窗提示，由用户手动决定谁服务谁。
 let KBP = { presets: [], active: null, server_fp: "", server_content: "", notice: null };
 let PICK = { action: null, src: null, dst: null, renameId: null };
 // v0.21.21：知识库整体不可用（服务端目录没配 / 目录校验没过 / 异地模式）时的锚。
@@ -2188,7 +2188,7 @@ function showFpModal(n){
     }
   }
   $("fp_modal").style.display = "flex";
-  markNoticeSeen();        // 显示即记账 → 本轮不再弹（不要求主人点按钮）
+  markNoticeSeen();        // 显示即记账 → 本轮不再弹（不要求用户点按钮）
 }
 async function markNoticeSeen(){
   const r = await callPost("kb/presets/notice", { action: "seen" }).catch(() => null);
@@ -2220,7 +2220,7 @@ async function checkFingerprintNotice(){
 }
 
 // ---- 绑定指纹 · 二次确认弹窗 ----
-// 绑定只是改写「指纹声明」，不会校验条目内容是否真的适配当前整合包，所以给主人一次反悔机会
+// 绑定只是改写「指纹声明」，不会校验条目内容是否真的适配当前整合包，所以给用户一次反悔机会
 let BIND_PID = null;
 function openBindConfirm(){
   const p = (KBP.presets || []).find(x => x.active);
@@ -3213,7 +3213,7 @@ function renderWfTip(){
 // 候选来自后端 /kb/models（AstrBot **已加载**的 Provider 实例，不读配置文件）——
 // 下拉里能选的就一定可用。时序上「填充列表」与「应用配置值」谁先谁后都会发生，
 // 所以用 ensureProviderOption 兜住：配置里的值即使不在列表里也先补一个占位项，
-// 绝不因为列表没回来就把主人的选择悄悄清空。
+// 绝不因为列表没回来就把用户的选择悄悄清空。
 let KB_MODELS = null;         // 后端返回的模型信息；null = 还没取到
 let KB_MODELS_ERR = "";       // 取列表失败的原因（仅用于提示文案）
 let KB_MODELS_BUSY = false;
@@ -3231,7 +3231,7 @@ function fillProviderSelect(id, kind){
   if(!sel) return;
   const st = (KB_MODELS||{})[kind];
   if(!st) return;
-  const saved = sel.value;                       // 保住当前值（可能来自配置，也可能是主人刚选的）
+  const saved = sel.value;                       // 保住当前值（可能来自配置，也可能是用户刚选的）
   const list = st.choices || [];
   sel.innerHTML = [`<option value="">自动 · 用 AstrBot 里加载的第一个</option>`]
     .concat(list.map(p=>`<option value="${esc(p.id)}">${esc(p.model ? p.id+" · "+p.model : p.id)}</option>`))
@@ -3297,7 +3297,7 @@ async function loadKbModels(){
 // 6 个 Provider 位（主 + 分类/判断/工程/实现/纠错）与知识库同款下拉：
 // 候选来自 /wf/models（AstrBot **已加载**的对话类 Provider 实例，不读配置文件），
 // 留空 = 运行时自动回退（会话默认 / 主 Provider）。列表没回来时用
-// ensureProviderOption 保住已配置值，绝不因为列表没加载就把主人的选择悄悄清空。
+// ensureProviderOption 保住已配置值，绝不因为列表没加载就把用户的选择悄悄清空。
 let WF_MODELS = null;         // 后端返回的模型信息；null = 还没取到
 let WF_MODELS_ERR = "";       // 取列表失败的原因（仅用于提示文案）
 let WF_MODELS_BUSY = false;
@@ -3310,7 +3310,7 @@ function fillWfModelSelects(){
   for(const id of WF_MODEL_SEL_IDS){
     const sel = $(id);
     if(!sel) continue;
-    const saved = sel.value;                     // 保住当前值（配置值或主人刚选的）
+    const saved = sel.value;                     // 保住当前值（配置值或用户刚选的）
     if(WF_MODELS){
       sel.innerHTML = [`<option value="">自动 · 回退会话默认 / 主 Provider</option>`]
         .concat(list.map(p=>`<option value="${esc(p.id)}">${esc(p.model ? p.id+" · "+p.model : p.id)}</option>`))
@@ -3411,7 +3411,7 @@ async function loadSettings(){
   syncSecPickers();
   // v0.21.15：异地 RCON 模式 → 目录框置灰 + 明确告知哪些能力被禁用
   // v0.21.19：此刻开关里的值就是**后端已保存**的值 —— 把它钉成基准（RMT.saved），
-  // 之后主人随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
+  // 之后用户随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
   RMT.saved = !!$("cfg_remote_rcon_mode").checked;
   syncRemoteModeUI();
   // 多 Agent 开关的动态说明（随勾选状态实时变化，v0.17.6）
@@ -3578,7 +3578,7 @@ async function saveSettings(){
     loadWorkflow();
     loadColors();
     // v0.21.9：保存了「服务器目录 / 词典·知识库启停」就等于换了服务端 —— 立刻补检指纹不匹配。
-    // 此前只有切页签、刷新页面才会检测，主人停在设置页反复换服务端时会一直等不到弹窗。
+    // 此前只有切页签、刷新页面才会检测，用户停在设置页反复换服务端时会一直等不到弹窗。
     if(["server_dir","dictionary_enabled","knowledge_enabled"].some(k => k in settings)){
       await checkFingerprintNotice();
     }
@@ -3595,7 +3595,7 @@ async function saveSettings(){
 //   ④ 物品ID搜索 / 配方查询 / Mod 列表 —— 全都建立在词典之上，跟着一起禁用
 // v0.21.19：异地模式的**能力归属只认后端已保存的状态**（RMT.saved）。
 // 开关（checkbox）只是个草稿：勾上/取消却没点保存时，后端能力一点没变，UI 就不该改写封禁 ——
-// 旧写法正是这么骗主人的：把开关一关，知识库立刻「解封」，点进去整页却照样不可用。
+// 旧写法正是这么骗用户的：把开关一关，知识库立刻「解封」，点进去整页却照样不可用。
 const RMT = { on: false, saved: false, pending: false, painted: null };
 //   on      = 已保存状态（= saved，供服务器页、loadKnowledge 等处复用）
 //   pending = 开关草稿与已保存状态不一致（改了但还没点保存）
@@ -3717,10 +3717,10 @@ function syncRemoteModeUI(){
   const hint = $("remote_mode_hint");
   if(hint) hint.style.display = on ? "block" : "none";
   // 开关被拨到「关」却没保存时，这行说明照旧留着（它讲的是后端实况）——
-  // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得主人对着关掉的开关读「已开启」。
+  // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得用户对着关掉的开关读「已开启」。
   const hTag = $("rmt_hint_tag");
   if(hTag) hTag.textContent = (on && pending) ? "后端当前已保存为『开启』：" : "已开启：";
-  // ④ 「开关动了但没保存」必须当场说清 —— 否则主人会以为封禁坏了 / 以为已经生效了
+  // ④ 「开关动了但没保存」必须当场说清 —— 否则用户会以为封禁坏了 / 以为已经生效了
   const pendEl = $("remote_mode_pending");
   if(pendEl){
     pendEl.style.display = pending ? "block" : "none";
@@ -3737,7 +3737,7 @@ function syncRemoteModeUI(){
   const kbPage = $(RMT_SEAL.id);
   if(kbPage){
     if(on){
-      // 主人刚把开关关掉却还没保存时，公告里也要留一句 —— 他点进来的第一眼就是这里
+      // 用户刚把开关关掉却还没保存时，公告里也要留一句 —— 他点进来的第一眼就是这里
       const why = RMT_SEAL.why + ((pending && !draft)
         ? "（你已经把开关关掉了，但还没点「保存全部设置」—— 保存后这一页才会恢复。）" : "");
       rmtMark(kbPage, RMT_SEAL.title, why, "seal");
@@ -3799,12 +3799,12 @@ const PLAIN_LABELS = {
 };
 let gradState = {title:["#FFAA00","#FF00FF"],say:["#FFFFFF","#55FFFF"],fb:["#FFAA00","#55FF55"]};
 
-// ===== v0.23.7（B2④ 追加·主人点名）：单色格式=「固定格式化色」时，颜色格弹 16 色名选项框 =====
+// ===== v0.23.7（B2④ 追加·用户点名）：单色格式=「固定格式化色」时，颜色格弹 16 色名选项框 =====
 // 与后端 core/text_outbound 严格同源：
 //   · 顺序 = VANILLA_COLORS = §0-§f（下拉里把符号一并标出，一眼对得上游戏内写法）；
 //   · 近似算法 = nearest_vanilla_color（4·s·Δh² + Δs² + 2·Δl² + 0.15·邻近度，同分比邻近度）。
 // 前端显示的「最近色名」必须和日志里那条 [颜色格式] / [颜色门控] 判定一模一样，
-// 否则就是骗主人 —— 这一条有任何改动都要两边同步改。
+// 否则就是骗用户 —— 这一条有任何改动都要两边同步改。
 const MC_NAME_ORDER = ["black","dark_blue","dark_green","dark_aqua","dark_red","dark_purple",
   "gold","gray","dark_gray","blue","green","aqua","red","light_purple","yellow","white"];
 const MC_NAME_CN = {black:"黑",dark_blue:"深蓝",dark_green:"深绿",dark_aqua:"深青",dark_red:"深红",
@@ -4313,7 +4313,7 @@ else boot();
     <div class="why" id="fp_weak" style="display:none;border-left-color:var(--bad)"></div>
     <div class="modal-foot">
       <!-- v0.21.10：原来的「本轮不再提醒」勾选框与「知道了」语义打架（两条路都只是记账），
-           主人拍板撤掉勾选框 —— 提示只在「这一轮指纹」里出现一次，指纹下次变动自动恢复。 -->
+           用户拍板撤掉勾选框 —— 提示只在「这一轮指纹」里出现一次，指纹下次变动自动恢复。 -->
       <div class="fp-note">同一轮指纹只提示这一次；服务端指纹下次变动时会再提醒一次。</div>
       <div class="btnrow">
         <button class="btn primary" id="fp_go">前往知识库处理</button>

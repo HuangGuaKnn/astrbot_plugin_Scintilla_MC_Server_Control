@@ -128,7 +128,7 @@ AGENT_DEFINITIONS = {
 # ================= v0.15.0 提示词可编辑化 =================
 # 每个 Agent 的元信息：展示名、配置键、内置默认提示词、说明。
 # 运行期优先使用配置项（非空且与内置不同时），否则回退内置默认——
-# 这样主人既能在原生插件配置页 / 插件 WebUI 里查看与编辑，
+# 这样用户既能在原生插件配置页 / 插件 WebUI 里查看与编辑，
 # 也不会因为插件升级改进了内置提示词而被旧副本卡住。
 AGENT_SPECS = {
     "classifier": {
@@ -188,7 +188,7 @@ def get_agent_prompt(role: str, get_cfg=None) -> str:
 
     get_cfg: 插件配置读取函数（如 plugin._cfg）；不传则直接用内置默认。
     规则：配置值为空、或与内置默认一致（含首尾空白差异）→ 用内置默认；
-          否则用配置值（即主人自定义过的内容）。
+          否则用配置值（即用户自定义过的内容）。
     """
     default = get_default_prompt(role)
     if get_cfg is None or not default:
@@ -204,7 +204,7 @@ def get_agent_prompt(role: str, get_cfg=None) -> str:
 
 
 def is_prompt_custom(role: str, get_cfg=None) -> bool:
-    """该 Agent 的提示词是否被主人自定义过（与内置默认不同）。"""
+    """该 Agent 的提示词是否被用户自定义过（与内置默认不同）。"""
     default = get_default_prompt(role)
     if get_cfg is None or not default:
         return False

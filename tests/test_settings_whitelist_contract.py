@@ -5,7 +5,7 @@
   main.py 读取端全接上了，**唯独漏了 core/web_api.py 里 `_validate_settings` 的白名单**。
   后果很别扭：前端每次保存都会提交这两个键 → 后端认不出 → 回 `ignored` → 界面长期误报
   「⚠ 有 2 项后端未接受…请到 AstrBot「插件管理」重载本插件后重新保存」。
-  重载当然没用（代码里就缺），主人白重载了好几回才报过来。
+  重载当然没用（代码里就缺），用户白重载了好几回才报过来。
 
   既有测试为什么全绿？`ui_version_override_check.py` 用的是 **mock 后端** ——
   它只验「前端有没有把键提交上去、回来有没有渲染」，压根不跑真实 `_validate_settings`。
@@ -84,7 +84,7 @@ def backend_accepted_keys() -> set[str]:
 
 
 def front_submittable_keys() -> set[str]:
-    """静态推导「主人点保存时前端会提交的键」。"""
+    """静态推导「用户点保存时前端会提交的键」。"""
     src = HTML.read_text(encoding="utf-8")
     blk = re.search(r"const CFG_FIELDS = \[(.*?)\n\];", src, re.S)
     pairs = re.findall(r'\[\s*"([\w]+)"\s*,\s*"([\w]+)"\s*,\s*"(\w)"', blk.group(1)) if blk else []
@@ -92,7 +92,7 @@ def front_submittable_keys() -> set[str]:
     # v0.23.5：只写类型（ty == "p"，目前是 rcon_password）留空时**不会**被
     # collectSettings 提交（后端也有意跳过空值）—— 它属于「条件提交键」，
     # 静态推导必须排除，否则又是一次「请重载插件」的假警报。
-    # 真提交它的情况（主人填了新密码）由 [3] 端到端那层覆盖。
+    # 真提交它的情况（用户填了新密码）由 [3] 端到端那层覆盖。
     keys = {key for cfg_id, key, ty in pairs if cfg_id in dom_ids and ty != "p"}
     # collectSettings 里另外手工塞进去的会话键（TGT_KEYS）+ 每会话事件组
     keys |= {"notify_targets", "chat_bridge_targets", "notify_target_events"}
@@ -179,7 +179,7 @@ def main() -> int:
                     pg.wait_for_timeout(1200)
                     pg.click('button.tab[data-page="settings"]')
                     pg.wait_for_timeout(700)
-                    pg.click("#btn_save_cfg_top")        # 主人点「保存全部设置」的那个按钮
+                    pg.click("#btn_save_cfg_top")        # 用户点「保存全部设置」的那个按钮
                     pg.wait_for_timeout(900)
                     ctx.close()
                     browser.close()

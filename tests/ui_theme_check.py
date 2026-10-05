@@ -116,7 +116,7 @@ def prompts() -> dict:
              ("corrector", "纠错器", "校验 Agent")]
     return {"ok": True, "total": 5, "custom_count": 1,
             "agents": [{"role": r, "short": s, "name": n, "custom": r == "implementer",
-                        "content": f"你是{n}。请按流水线要求处理主人的任务。"} for r, s, n in roles]}
+                        "content": f"你是{n}。请按流水线要求处理用户的任务。"} for r, s, n in roles]}
 
 
 #: v0.23.3：内置话题词表（假后端给几个即可，用来验证「恢复内置词表」按钮的填充链路）
@@ -265,7 +265,7 @@ def main() -> int:
         check("深色主题下 --bg 是浅色", page.evaluate(
             "getComputedStyle(document.body).backgroundColor") == "rgb(244, 245, 247)",
             page.evaluate("getComputedStyle(document.body).backgroundColor"))
-        check("按钮文案告诉主人「点一下会变成什么」",
+        check("按钮文案告诉用户「点一下会变成什么」",
               page.inner_text("#theme_txt").strip() == "深色" and page.inner_text("#theme_ico").strip() == "☾",
               page.inner_text("#themebtn").strip())
         page.screenshot(path=str(SHOTS / "theme_light_auto.png"), full_page=False)

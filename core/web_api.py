@@ -409,7 +409,7 @@ class McControlWebApi:
     # 漏加了这里的白名单** —— 前端每次保存都会带上它们，后端 `_validate_settings`
     # 认不出 → 一律回给前端 `ignored`，界面于是长期误报「2 项后端未接受：
     # 请到 AstrBot「插件管理」重载本插件后重新保存」。重载当然没用（代码里就缺），
-    # 主人白重载了好几回。别再手工同步两份清单 —— tests/test_settings_whitelist_contract.py
+    # 用户白重载了好几回。别再手工同步两份清单 —— tests/test_settings_whitelist_contract.py
     # 会把「前端提交键 ⊆ 后端接受键」钉死。
     STR_SETTING_KEYS = (
         # v0.23.5：rcon_password 已移出本表，改由 _validate_settings 的「只写字段」
@@ -680,7 +680,7 @@ class McControlWebApi:
                         )
                     else:
                         # policy="replace"：用户明确按了开关，后一次覆盖前一次
-                        # v0.23.5 第三轮：走统一轮次入口（delay=0：主人刚按开关，不攒批）
+                        # v0.23.5 第三轮：走统一轮次入口（delay=0：用户刚按开关，不攒批）
                         self.plugin._spawn_bg(
                             self.plugin.KB_VECTORS_TASK,
                             self.plugin._kb_vector_rounds(delay=0.0),
@@ -1111,7 +1111,7 @@ class McControlWebApi:
         """服务器实时状态：在线玩家、游戏时间、版本。"""
         plugin = self.plugin
         # v0.22.7：**版本能力与 RCON 无关**（读的是配置 + 服务端本地文件），
-        # 所以先算好、连不上服务器也照样返回 —— 否则主人会在 RCON 掉线时
+        # 所以先算好、连不上服务器也照样返回 —— 否则用户会在 RCON 掉线时
         # 连「Agent 到底按哪个版本构造命令」都看不见。
         info: dict = {}
         try:
@@ -1181,7 +1181,7 @@ class McControlWebApi:
             rcon = await plugin._get_rcon()
             # v0.23.7：两种署名分家 ——
             #   · 「聊天栏」= 正常输出 → 固定 [Server]（谁都能拿它跟玩家闲聊，
-            #     顶着「皮莉卡」说话会像 Bot 本人在发言）；
+            #     顶着机器人昵称说话会像 Bot 本人在发言）；
             #   · 「模拟任务输出」= 任务反馈的复刻 → 仍用 feedback_name。
             # 「全屏标题」是标题，本来就不带前缀。署名常量见 McControlPlugin.BROADCAST_NAME。
             # getattr 兜底：WebUI 与插件可能正处在「换代码的重载窗口」，
@@ -1242,7 +1242,7 @@ class McControlWebApi:
     # AstrBot 的插件页是嵌在 iframe 里的（bridge 通信），这套环境下页面可能拿到的是
     # 不透明源（opaque origin）或每次都是全新的存储分区 —— localStorage / cookie
     # 全部抛 SecurityError，前端 catch 吞掉后只能回退「跟随系统偏好」，
-    # 于是主人每次进来都被打回浅色（2026-10-01 实测复现）。
+    # 于是用户每次进来都被打回浅色（2026-10-01 实测复现）。
     # 故把主题偏好落到插件数据目录，由后端做权威存储；前端仍会尽力用本地存储做
     # 首帧加速，本地拿不到就以本接口为准。
     UI_PREF_NAME = "mc_control_ui.json"
@@ -1570,7 +1570,7 @@ class McControlWebApi:
     def _kb_uninit(self) -> dict:
         """知识库不可用时的统一错误体（v0.21.15）。
 
-        以前一律答「知识库未初始化」，主人看到只会一脸问号；现在把**真正的原因**
+        以前一律答「知识库未初始化」，用户看到只会一脸问号；现在把**真正的原因**
         一并说清：异地 RCON 模式（按设计禁用本地文件类能力）／服务端目录校验未通过。
         """
         reason = ""
@@ -1591,7 +1591,7 @@ class McControlWebApi:
         """预设落盘失败时的界面提示（v0.23.5 第三轮）。
 
         预设动作**在内存里已经生效**（预设真的换了 / 建了 / 删了），所以业务上仍报
-        ok=True —— 报 False 是另一种谎言。但「没写进磁盘」必须说出来，否则主人看到
+        ok=True —— 报 False 是另一种谎言。但「没写进磁盘」必须说出来，否则用户看到
         「已切换」、重启后却回到原预设，只会把这件事当成玄学。
         """
         if not isinstance(r, dict) or r.get("save_ok", True):

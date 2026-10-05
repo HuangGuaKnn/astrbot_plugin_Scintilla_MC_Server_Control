@@ -107,7 +107,7 @@ _COMMAND_FEEDBACK_PATTERN = re.compile(
 #     [Steve: Killed Steve]                                 ← /kill，反馈里含死亡语义
 #     [Steve: Granted 6 advancements to Steve]              ← /advancement grant，含成就语义
 #
-# 处理策略（主人定案 v0.17.3）：这行日志**同时**算「玩家指令调用」与对应的语义事件，
+# 处理策略（用户定案 v0.17.3）：这行日志**同时**算「玩家指令调用」与对应的语义事件，
 # 即 /kill 会既播报「⌨ 玩家指令调用」又播报「💀 玩家死亡」，
 # /advancement grant 会既播报「⌨ 玩家指令调用」又播报「🏆 成就 / 进度」。
 # 这样各开关互不串台：想只看指令就关掉死亡 / 成就，想只看结果就关掉指令。

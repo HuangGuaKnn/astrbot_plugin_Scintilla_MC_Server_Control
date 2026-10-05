@@ -121,7 +121,7 @@ def main() -> int:
             {"preset_id": "p_old", "fingerprint": FP_B, "entries": {}, "deleted": []},
             ensure_ascii=False), encoding="utf-8")
         old = fresh(legacy, FP_A)
-        check("旧永久关闭 → 迁移为本轮静音（保留主人当前选择）", old.notice()["show"] is False)
+        check("旧永久关闭 → 迁移为本轮静音（保留用户当前选择）", old.notice()["show"] is False)
         check("迁移保留旧预设", old.notice()["preset_id"] == "p_old")
         old.set_server_id(FP_C)
         check("旧数据的静音同样只对本轮有效 → 指纹变动后重新提示", old.notice()["show"] is True)

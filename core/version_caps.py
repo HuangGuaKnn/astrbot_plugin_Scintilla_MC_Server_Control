@@ -123,7 +123,7 @@ class VersionInfo:
     @property
     def source_label(self) -> str:
         return {
-            "override": "主人手动声明",
+            "override": "用户手动声明",
             "detected": "服务端文件探测",
             "unknown": "未知（探测失败且未声明）",
         }.get(self.source, self.source)

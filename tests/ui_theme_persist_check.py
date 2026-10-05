@@ -1,6 +1,6 @@
 """验证 v0.23.4 主题持久化修复（真实环境复刻）。
 
-主人报的现象：AstrBot 里从 WebUI 进插件页，切成深色、出去再进来又变浅色。
+用户报的现象：AstrBot 里从 WebUI 进插件页，切成深色、出去再进来又变浅色。
 
 页面自己写明了环境特征（index.html 内注释）：
   「iframe 内（sandbox 无 allow-same-origin，直连必失败）：必须走 bridge」
@@ -44,7 +44,7 @@ _patch_pw_driver()
 from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
-# 插件根**必须从本文件反推**：写死本机路径会让这条用例只在主人的机器上跑得动
+# 插件根**必须从本文件反推**：写死本机路径会让这条用例只在用户的机器上跑得动
 # （v0.23.5 第五轮第一次在 CI 上跑就撞上：FileNotFoundError ...\_t_host.html）。
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 
@@ -166,7 +166,7 @@ with sync_playwright() as pw:
         check(hit[-1][2].get("theme") == "light", "载荷 theme 正确", f"{hit[-1][2]}")
 
     # ============ 场景 3：模拟「出去再进来」 ============
-    print("\n【场景 3】★ 重进页面（模拟主人「出去再回来」）→ 必须是上次选的浅色")
+    print("\n【场景 3】★ 重进页面（模拟用户「出去再回来」）→ 必须是上次选的浅色")
     pg.close()
     pg2, _ = open_case(ctx, "light")   # 场景 2 已把后端改成 light
     pg2.wait_for_timeout(3500)

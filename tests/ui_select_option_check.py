@@ -1,6 +1,6 @@
 """UI 回归：原生下拉列表在深浅两套主题下的配色。
 
-背景（v0.23.3 后主人实测发现）：<select> 的框体吃 CSS，但**展开的选项列表**
+背景（v0.23.3 后用户实测发现）：<select> 的框体吃 CSS，但**展开的选项列表**
 由浏览器用系统主题原生渲染，不继承 color/background —— 深色页里会出现
 「白底 + 浅色字」，选项几乎看不清。
 
@@ -40,7 +40,7 @@ PAGE = (PLUGIN / "pages" / "mc_control" / "index.html").as_uri()
 SHOTS = PLUGIN / "tests" / "_shots"
 SHOTS.mkdir(exist_ok=True)
 
-TARGET = "cfg_perm_hint_mode"  # 主人报 bug 的那个下拉
+TARGET = "cfg_perm_hint_mode"  # 用户报 bug 的那个下拉
 FAILS: list[str] = []
 
 

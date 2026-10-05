@@ -250,7 +250,7 @@ def static_checks(strict_env: bool = False) -> list[str]:
 
     py_files = [f for f in ROOT.rglob("*.py") if "__pycache__" not in f.parts]
     # 仓库根的两个脚本（发版/全量复现）与 main.py 同属「没有测试 import 它」的一类 ——
-    # 不编译就等于「语法错了要等主人亲手跑一次才知道」（第五轮复核）
+    # 不编译就等于「语法错了要等用户亲手跑一次才知道」（第五轮复核）
     r = subprocess.run([PY, "-m", "compileall", "-q", "main.py", "core", "pages", "tests",
                         "run_release_verify.py", "run_v0230_all.py"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",

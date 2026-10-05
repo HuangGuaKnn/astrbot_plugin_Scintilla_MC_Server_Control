@@ -263,7 +263,7 @@ asyncio.run(P._inject_permission_hint(h_s, ev, req2))
 check("同一事件只注入一次（多轮工具循环不重复膨胀）",
       "权限前置提醒" not in req2.hint_text and not req2.extra_user_content_parts)
 
-# ---- v0.23.3 核心：日常闲聊不再被注入（主人反馈的误伤场景）----
+# ---- v0.23.3 核心：日常闲聊不再被注入（用户反馈的误伤场景）----
 chat_s = FakeSelf()
 req_chat = FakeReq()
 asyncio.run(P._inject_permission_hint(

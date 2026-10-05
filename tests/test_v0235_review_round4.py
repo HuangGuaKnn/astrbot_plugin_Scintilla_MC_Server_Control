@@ -223,7 +223,7 @@ def part_b() -> None:
         kb.save_entry("topic b", "旧内容 b", status="verified")
 
         async def embed(texts):
-            # 模拟「等嵌入返回的这段时间里主人纠错改了 topic b 的内容」
+            # 模拟「等嵌入返回的这段时间里用户纠错改了 topic b 的内容」
             kb.correct_entry("topic b", "全新内容 b")
             return [[1.0] + [0.0] * 15 for _ in texts]
 

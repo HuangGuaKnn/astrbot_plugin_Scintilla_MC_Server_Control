@@ -41,7 +41,7 @@ class AgentLLM:
         self._logger = _DEFAULT_LOGGER if logger is None else logger
         # v0.22.6（批次 2）：服务端版本约束片段，由 workflow 在每次任务开始前注入。
         # **代码决定语法世代，LLM 只填 ID 与数值** —— 见 core/version_caps.py。
-        # 这里用「每次调用前前置」而不是拼进提示词正文，是为了让主人在
+        # 这里用「每次调用前前置」而不是拼进提示词正文，是为了让用户在
         # WebUI 里自定义的提示词照常生效（注入的是独立一层，不是正文的一部分）。
         self.version_context = ""
 

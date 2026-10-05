@@ -307,7 +307,7 @@ async def boundary_state_cases() -> None:
     #   但严格说：先发出探测命令、再一个包都不回来，这与「服务端不支持哨兵」在网络层面
     #   不可区分（两个包要一起丢）。于是同一个不可靠服务端会反复被当成「失联」，
     #   probe_misses 永不累加 → 自动降级可能迟迟不触发（只影响可用性，不影响数据正确性：
-    #   该路径永远是「结果未知」，绝不静默假成功）。此行为待主人裁决，故这里同时接受两种异常。
+    #   该路径永远是「结果未知」，绝不静默假成功）。此行为待用户裁决，故这里同时接受两种异常。
     srv, port = await serve("once_then_silent")
     c = AsyncRcon(port=port, timeout=0.5)
     await c.connect()

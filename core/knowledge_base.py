@@ -793,7 +793,7 @@ class ModKnowledgeBase:
                         len(vectors[0]) != self._sem.matrix.shape[1]:
                     self._sem = SemanticIndex()
                 # v0.23.5 第三轮：**提交前复检**。这一批是在若干次 await 之前取的
-                # 快照，等嵌入返回的这段时间里主人可能删/禁用/改名了条目。不复检就会
+                # 快照，等嵌入返回的这段时间里用户可能删/禁用/改名了条目。不复检就会
                 # 把已删除的 topic 连向量一起写回索引 → 语义通道把幽灵 topic 排进候选
                 # → search() 取 _entry_view 时 KeyError，整次检索报错（不只是少一条）。
                 # v0.23.5 第四轮：哈希**不再**在这里现算（那是本轮修掉的错配根源），
@@ -883,7 +883,7 @@ class ModKnowledgeBase:
             scored = await self.rerank_fn(query, docs)
         except Exception:
             return self.search(query, limit=limit, query_vec=query_vec)
-        # v0.23.5 第五轮：精排是一次**网络往返**（几百毫秒起），期间主人可能正好把某条
+        # v0.23.5 第五轮：精排是一次**网络往返**（几百毫秒起），期间用户可能正好把某条
         # 禁用、把待审批的回退成半成品、甚至直接删掉 —— 所以必须拿**回来之后**的条目表
         # 再判一遍，不能沿用发请求前那一份快照。
         entries = self._searchable()
@@ -1037,7 +1037,7 @@ class ModKnowledgeBase:
         """最近一次落盘结果（v0.23.5）。
 
         WebUI 与工具结果据此提示「已写进内存，但没落盘、重启会丢」——
-        而不是让主人以为保存成功了。
+        而不是让用户以为保存成功了。
         """
         return {
             "ok": bool(self.last_save_ok),
@@ -1324,13 +1324,13 @@ class ModKnowledgeBase:
 
         rename_from（v0.21.11）：把旧主题的条目整体搬成新主题（WebUI 详情页改名用）——
         沿用旧的 created_at / mod / kind，旧主题进墓碑防止被旧文件复活。
-        manual=True：主人亲手动笔（WebUI）→ 不再因 auto_apply 关闭而强制转 pending，
+        manual=True：用户亲手动笔（WebUI）→ 不再因 auto_apply 关闭而强制转 pending，
         也不会莫名其妙把「已验证」降级成「未验证」。
         """
         key = self._topic_key(topic)
         old_key = self._topic_key(rename_from) if rename_from else key
         now = self._now()
-        # 手动重新写入 = 主人想复活这条知识 → 移出墓碑
+        # 手动重新写入 = 用户想复活这条知识 → 移出墓碑
         deleted = self._data.setdefault("deleted", [])
         if key in deleted:
             deleted.remove(key)
@@ -1341,7 +1341,7 @@ class ModKnowledgeBase:
             self._tombstone(old_key)
         if status not in VALID_STATUS:
             status = "untested"
-        # 待审批状态：旧条目若已应用，降级为 pending 等待重新审批（主人手动编辑除外）
+        # 待审批状态：旧条目若已应用，降级为 pending 等待重新审批（用户手动编辑除外）
         if not manual and not self.state.auto_apply and old.get("status") not in ("pending",):
             status = "pending"
         entry = {
@@ -1513,7 +1513,7 @@ class ModKnowledgeBase:
                 if topic in self._data["entries"]:
                     continue  # 当前库已有，保留当前版本
                 if topic in self._data.setdefault("deleted", []):
-                    continue  # 墓碑：主人明确删除过，不复活
+                    continue  # 墓碑：用户明确删除过，不复活
                 entry = dict(entry)
                 entry["source"] = f"inherited:{data.get('server_id', '?')}"
                 self._data["entries"][topic] = entry
@@ -1704,7 +1704,7 @@ class KnowledgePresetManager:
             migrated = True
         if not isinstance(n.get("suppress_keys"), list):
             # 老的 suppressed=True 是「永久不再提醒」→ 迁移为「本轮不再提醒」：
-            # 保留主人这次的选择，但指纹下次变动时会重新提示。
+            # 保留用户这次的选择，但指纹下次变动时会重新提示。
             n["suppress_keys"] = (
                 [f"{data.get('active')}|{self.server_id}"] if n.get("suppressed") else []
             )
@@ -2174,7 +2174,7 @@ class KnowledgePresetManager:
     # 规则：检测到「激活预设的指纹 ≠ 当前服务端指纹」就弹一次全屏大弹窗；
     #   这个弹窗以 (预设, 服务端) 为一个「轮次」，**同一轮只弹一次** ——
     #   服务端下次再变（或换到别的预设），轮次更新，弹窗重新获得一次机会。
-    #   弹窗只要在 WebUI 里真的显示过就算数（不要求主人点按钮），
+    #   弹窗只要在 WebUI 里真的显示过就算数（不要求用户点按钮），
     #   所以刷新页面、切页签都不会反复骚扰。
     #
     #   v0.21.9：「服务端」的判据 = 指纹 + 服务器目录。只比指纹会漏掉一种情况：
@@ -2263,14 +2263,14 @@ class KnowledgePresetManager:
     def mark_notice_shown(self) -> dict:
         """WebUI 把弹窗真正显示出来时回调：记下「这一轮已经弹过了」。
 
-        只认「显示过」，不要求主人点确认按钮 —— 这就是「同一轮只弹一次」的实现。
+        只认「显示过」，不要求用户点确认按钮 —— 这就是「同一轮只弹一次」的实现。
         """
         self._remember("popup_keys", self.notice_key())
         self._persist_registry()
         return self.notice()
 
     def ack_notice(self, suppress: bool = False) -> dict:
-        """主人点了弹窗里的按钮：记本轮已弹；suppress=True 表示本轮不再提醒。"""
+        """用户点了弹窗里的按钮：记本轮已弹；suppress=True 表示本轮不再提醒。"""
         key = self.notice_key()
         self._remember("popup_keys", key)
         if suppress:

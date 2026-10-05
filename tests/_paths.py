@@ -50,7 +50,7 @@ DATA_DIR = _astrbot_data()
 LIVE_CFG = (DATA_DIR / "config" / f"{PLUGIN_NAME}_config.json") if DATA_DIR else None
 
 # UI 用例（tests/ui_*_check.py）用的浏览器通道。
-#   · 本机（Windows）：默认 "msedge" —— 用主人系统里现成的 Edge，不用下载 Chromium；
+#   · 本机（Windows）：默认 "msedge" —— 用用户系统里现成的 Edge，不用下载 Chromium；
 #   · CI（ubuntu）：没有 Edge → 设 SCINTILLA_UI_CHANNEL=chromium，用 playwright 自带的。
 # 其它通道名（chrome / chromium / msedge / msedge-beta…）都按 playwright 原样透传。
 UI_CHANNEL = os.environ.get("SCINTILLA_UI_CHANNEL", "msedge")

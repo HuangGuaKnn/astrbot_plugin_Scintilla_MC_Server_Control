@@ -5,7 +5,7 @@
   头脚本：localStorage 挂、cookie 挂 → 回退系统偏好 light → light   ← 第 1 次闪
   boot 后：bridge 拿到后端 dark                          → dark    ← 第 2 次闪
 
-本脚本在 sandbox iframe（主人真实环境）里高频采样 data-theme，
+本脚本在 sandbox iframe（用户真实环境）里高频采样 data-theme，
 记录每次变化的时刻，用于定位闪烁来源。
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ _patch_pw_driver()
 from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
-# 插件根**必须从本文件反推**：写死本机路径会让这条用例只在主人的机器上跑得动
+# 插件根**必须从本文件反推**：写死本机路径会让这条用例只在用户的机器上跑得动
 # （v0.23.5 第五轮第一次在 CI 上跑就撞上：FileNotFoundError ...\_t_host.html）。
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 
@@ -107,7 +107,7 @@ def summarize(trace):
 
 with sync_playwright() as pw:
     b = pw.chromium.launch(**UI_LAUNCH_KWARGS, headless=True)
-    ctx = b.new_context(color_scheme="light")   # 主人系统是浅色
+    ctx = b.new_context(color_scheme="light")   # 用户系统是浅色
 
     for backend in ("dark", "light"):
         print(f"===== 后端存档 = {backend}（系统偏好=浅色）=====")

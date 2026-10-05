@@ -9,16 +9,16 @@
   把用户加的会话键全当「过期条目」删掉再写回空 `{}`：
 
       [INFO] [config.astrbot_config:245] Config key removed:
-             notify.notify_target_events.Pirika:FriendMessage:1031631712
+             notify.notify_target_events.TestBot:FriendMessage:100000001
 
-  症状（主人报的那条）：给群聊静音、私聊只留「指令调用」，一重载插件全部恢复默认全开。
+  症状（用户报的那条）：给群聊静音、私聊只留「指令调用」，一重载插件全部恢复默认全开。
   更隐蔽的是它在**内存里是好用的**（保存后即时生效），只有重载/重启才现形。
 
 覆盖：
   1) 契约：schema 里任何 `type: "object"` 都必须带非空 `items`（空结构 = 会清用户数据的坑）；
      自由映射用途的 `notify_target_events` 必须是 `"dict"`；
   2) 文档对账（v0.23.5 补）：`docs/configure.md` 与 `README.md` 里写的分组数 / 项数 /
-     逐条列出的配置键，必须与 schema 完全一致 —— 数字是给主人的承诺，不能每次加配置就漂；
+     逐条列出的配置键，必须与 schema 完全一致 —— 数字是给用户的承诺，不能每次加配置就漂；
   3) 真往返：真 `AstrBotConfig` + 真 schema，逐键写入探针值 → 重新加载 → 逐键比对；
   4) 定点：群聊静音 / 私聊只留指令调用，重载后必须一模一样。
 
@@ -207,8 +207,8 @@ def main() -> int:
     check(f"★{len(expected)} 个键全部穿越重载（一个都不许被清）", not lost,
           "；".join(lost[:6]))
 
-    print("\n[4] 定点：主人那次的场景")
-    scene = {"Pirika:GroupMessage:727939729": [], "Pirika:FriendMessage:1031631712": ["command"]}
+    print("\n[4] 定点：用户那次的场景")
+    scene = {"TestBot:GroupMessage:200000002": [], "TestBot:FriendMessage:100000001": ["command"]}
     seed2 = AstrBotConfig(str(tmp / "seed2.json"), schema=schema)
     data = json.loads(json.dumps(dict(seed2), ensure_ascii=False))
     data["notify"]["notify_targets"] = list(scene.keys())

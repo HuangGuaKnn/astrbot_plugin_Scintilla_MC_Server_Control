@@ -246,7 +246,7 @@ def main() -> int:
         page.click("#kbdet_save")
         page.wait_for_timeout(600)
         check("后端拒绝 → 弹窗仍开着", det_visible(page))
-        check("错误原样显示给主人", "已存在" in page.inner_text("#kbdet_state"), page.inner_text("#kbdet_state"))
+        check("错误原样显示给用户", "已存在" in page.inner_text("#kbdet_state"), page.inner_text("#kbdet_state"))
         check("本地条目没被改动", entries[0] == before, str(entries[0])[:120])
         check("保存按钮恢复可点（没卡死）",
               page.eval_on_selector("#kbdet_save", "el => !el.disabled"))

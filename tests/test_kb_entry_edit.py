@@ -4,7 +4,7 @@
 在里面看全文并就地改 topic/content。后端要顶住三件事：
 
   1) 读取：list_entries / get_entry 给的是**完整 content**（截断是前端的事）；
-  2) 编辑（manual=True）：主人手动保存 → 保住原 status（不把「已验证」降级成「未验证」）、
+  2) 编辑（manual=True）：用户手动保存 → 保住原 status（不把「已验证」降级成「未验证」）、
      保住 created_at / enabled / mod / kind，只刷新 content 与 updated_at；
   3) 改名（rename_from）：旧主题整条搬走、不留残影，旧主题进墓碑防旧文件复活，
      沿用 created_at/mod/kind；目标主题撞已有条目 → rename_exists 报 True（前端拒绝覆盖）。

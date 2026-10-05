@@ -187,7 +187,7 @@ def part_a() -> None:
         check("结果里没有禁用 / 待审批的条目", "条目乙" not in topics and "条目丙" not in topics,
               str(topics))
 
-        # 精排是一网络往返：等待期间主人把它禁用了 / 删了
+        # 精排是一网络往返：等待期间用户把它禁用了 / 删了
         async def rerank_disable(query, docs):
             kb.set_enabled("条目甲", False)
             return [(0, 0.99)]

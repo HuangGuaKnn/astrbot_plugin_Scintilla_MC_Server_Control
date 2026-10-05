@@ -10,8 +10,8 @@
   1) 控件存在、下拉三档齐全、输入框的值**来自后端**（不是硬编码）；
   2) 只改草稿、不点保存 → 能力行**不变**（草稿不生效）；
   3) 点「保存全部设置」→ 提交载荷含 server_version_override=1.20.1 →
-     保存后自动重刷 → 能力行显示 legacy_nbt（来源：主人手动声明）；
-  4) 清空版本再保存 → 能力行回到「无法确定服务端版本」，并告诉主人去哪填。
+     保存后自动重刷 → 能力行显示 legacy_nbt（来源：用户手动声明）；
+  4) 清空版本再保存 → 能力行回到「无法确定服务端版本」，并告诉用户去哪填。
 
 关键：能力结论由**插件自己的 core/version_caps.py 现算**（不是手写假数据），
 所以这条链路测的是真逻辑：前端 → 接口载荷 → 后端能力计算 → 页面显示。
@@ -122,7 +122,7 @@ def main() -> int:
               repr(page.input_value("#cfg_server_version")))
         caps0 = page.inner_text("#ver_caps_line")
         check("★版本未知时能力行明说「无法确定」", "无法确定" in caps0, caps0[:140])
-        check("★未知时给出逃生出口（告诉主人填 1.20.1）",
+        check("★未知时给出逃生出口（告诉用户填 1.20.1）",
               "1.20.1" in caps0, caps0[:160])
         # v0.22.11：能力行**不在折叠区里** —— 「版本未知 → 带数据的请求会被拒绝」
         # 属于安全警示，收起折叠区也必须看得见（这是折叠改造的硬边界）。
@@ -166,8 +166,8 @@ def main() -> int:
         caps_after = page.inner_text("#ver_caps_line")
         check("★★填写 1.20.1 并保存 → 物品语法切到 legacy_nbt",
               "legacy_nbt" in caps_after, caps_after[:160])
-        check("★来源如实标注「主人手动声明」（不许含糊）",
-              "主人手动声明" in caps_after, caps_after[:160])
+        check("★来源如实标注「用户手动声明」（不许含糊）",
+              "用户手动声明" in caps_after, caps_after[:160])
         check("★显示版本号 1.20.1", "1.20.1" in caps_after, caps_after[:160])
         check("保存提示出现在吸顶条", "已保存" in page.inner_text("#cfg_notice_top"),
               page.inner_text("#cfg_notice_top")[:80])

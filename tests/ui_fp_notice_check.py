@@ -3,7 +3,7 @@
 用 Playwright 打开 pages/mc_control/index.html（独立窗口 → 直连模式），
 把 page/** 接口全部 mock 掉，只验证**前端契约**：
   1) 后端说 show=True → 弹窗出现；
-  2) 弹窗显示即回调 seen（前端不要求主人点按钮就记账）；
+  2) 弹窗显示即回调 seen（前端不要求用户点按钮就记账）；
   3) 刷新页面 / 切页签 → 不再弹；
   4) 服务端指纹下一次变动（后端重新 show=True）→ 又弹一次；
   5) 概览页「指纹不匹配」常驻标记不随弹窗消失；
@@ -229,7 +229,7 @@ def main() -> int:
         check("弹窗里两个指纹都对", "e38d99c65853" in page.inner_text("#fp_m_server")
               and "dead1234beef" in page.inner_text("#fp_m_preset_fp"))
 
-        print("[2] 弹窗「显示过」即记账（不需要主人点按钮）")
+        print("[2] 弹窗「显示过」即记账（不需要用户点按钮）")
         page.wait_for_timeout(600)
         check("前端已回调 seen", state["seen"] >= 1, f"seen={state['seen']}")
         check("后端记账后 show=False", notice()["show"] is False, str(notice()))
@@ -311,7 +311,7 @@ def main() -> int:
         check("说明两边都没有内容导致指纹撞车",
               "mods" in weak_txt and "plugins" in weak_txt and "f0d1c2b3a495" in weak_txt,
               weak_txt[:160])
-        check("指出模组服在 mods/、插件服在 plugins/（别让插件服主人去找 mods）",
+        check("指出模组服在 mods/、插件服在 plugins/（别让插件服用户去找 mods）",
               "Paper" in weak_txt or "插件服" in weak_txt, weak_txt[:200])
         check("弹窗里能看到「内容来源」（这枚指纹是怎么算出来的）",
               "内容来源" in page.inner_text("#fp_modal")

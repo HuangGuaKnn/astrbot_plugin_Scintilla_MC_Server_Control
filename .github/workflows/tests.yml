@@ -44,7 +44,7 @@ jobs:
         run: python run_release_verify.py --no-ui
 
   ui-contract:
-    # 外部审查（第 4 轮）后按主人拍板的方案 B 拆分：**契约类**进硬门禁。
+    # 外部审查（第 4 轮）后按用户拍板的方案 B 拆分：**契约类**进硬门禁。
     # 判据只跟「页面自己写没写对」有关（DOM 结构 / 状态 / 顺序 / 折叠边界），
     # 与字体、滚动条宽度、亚像素取整无关 —— 这类绿了就是真的没回归，红就该挡住。
     # （渲染 / 度量类在同文件的 ui-render job，观察期仍不阻断。）
@@ -90,7 +90,7 @@ jobs:
   ui-render:
     # 渲染 / 度量类：判据里含**像素阈值**（同排等高 / 顶边对齐 / 内容高度上限 / 行盒 /
     # 原生下拉配色），Linux + 自带 Chromium 与本机 Windows + Edge 的渲染细节不完全一致。
-    # 观察期先「跑起来、看得见」；主人看过几轮绿灯后删掉 continue-on-error 即升为硬门槛。
+    # 观察期先「跑起来、看得见」；用户看过几轮绿灯后删掉 continue-on-error 即升为硬门槛。
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 30
