@@ -67,7 +67,7 @@
 
 - **版本能力由代码判定**（`core/version_caps.py`），不交给 AI 猜：版本 → 语法世代 → 注入 Agent 的硬约束片段；
   运行期还会按服务端回包复核（语法错误单独成态，可安全重写；结果未知则熔断不重发）。
-- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 11 台服务端**（原版 / Forge / NeoForge 三种载体），逐台做过正反样例对照；
+- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 13 台服务端**（原版 / Forge / NeoForge / Paper / Fabric 五种载体），逐台点火，做过正反样例对照或载体核验；
   逐版本结论、语法分水岭与「未实测区」清单见 **[版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)**。
 - 1.13 以下**不受命令图改动影响的简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` /
   `tellraw` / `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；
@@ -194,7 +194,7 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 
 ## 遇到问题？请反馈
 
-> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 11 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
+> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 13 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
 > 但样本都是干净的测试服 —— **真实整合包里那些模组命令与物品 ID，仍然是最缺的第一手资料**。
 
 ### 先看这两条：它们**不是故障**
@@ -215,8 +215,8 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 5. 整合包用户请带上**整合包名 + 关键模组** —— 模组命令与物品 ID 常常才是元凶。
 
 > 特别欢迎 **`1.12.2` 及更早版本**（路线图上的「旧版能力实现」：`legacy_preflatten` 档案、
-> 数字物品 ID / data 映射、`ench` 数字附魔）与 **Paper / Fabric 载体** 的实测反馈 ——
-> 这两块正缺真实世界的样本。
+> 数字物品 ID / data 映射、`ench` 数字附魔）的实测反馈 —— 这块正缺真实世界的样本；
+> Paper / Fabric 载体已自测（见上方版本支持），但**装了 mod 的 Paper / Fabric 服**仍是空白。
 
 ---
 

@@ -11,11 +11,19 @@ v0.21.20：Paper / Spigot 系插件服务端没有 mods/，此时退化为「原
 注意服务端 jar 里只有英文语言文件：原版物品**没有中文名**，中文关键词搜不到，
 请用英文名或直接搜 ID 片段。插件本身不提供物品 / 配方数据。
 
+v0.23.8：候选 jar 的**落点**补齐。1.18+ 的原版 ``server.jar`` 是 bundler，资产在内嵌的
+``META-INF/versions/<版本>/server-<版本>.jar`` 里；Paper 把打过补丁的本体放在
+``versions/<版本>/paper-<版本>.jar``、把下载的原版核留在 ``cache/mojang_*.jar``；
+Fabric 启动器把原版核留在 ``.fabric/server/<版本>-server.jar``。此前只扫
+``libraries/net/minecraft/server/`` 与**根目录**，这三类载体的原版表全部读成 0 条
+（2026-10-06 Paper 1.21.11 / Fabric 1.21.1 真机实测）。
+
 构建结果缓存到插件数据目录 items.json，供 mc_list_mods / mc_search_item
 / mc_get_recipes 等 LLM 工具查询，解决整合包海量物品时 LLM 猜错 ID 的问题。
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 import zipfile
@@ -24,6 +32,23 @@ from pathlib import Path
 _LANG_KEY_RE = re.compile(r"^(item|block)\.")
 _RECIPE_RESULT_KEYS = ("result",)
 _RECIPE_INPUT_KEYS = ("ingredients", "key", "base", "addition", "input", "ingredient")
+
+#: 服务端 jar 的常见落点（v0.23.8）—— 除开 ``libraries/net/minecraft/server/`` 与根目录。
+#:
+#: · ``versions/*/*.jar``  ：1.18+ 原版 bundler 首次启动的解包位置；Paper 打过补丁的本体；
+#: · ``cache/*.jar``       ：paperclip 下载的**原版核**（``mojang_<版本>.jar``）；
+#: · ``.fabric/server/*.jar``：Fabric 启动器下载的原版核。
+_VANILLA_JAR_GLOBS = (
+    "versions/*/*.jar",
+    "cache/*.jar",
+    ".fabric/server/*.jar",
+)
+
+#: bundler 内嵌的版本 jar；只下钻一层、只取前几个，避免病态包体拖垮扫描。
+_NESTED_VERSION_RE = re.compile(r"^META-INF/versions/[^/]+/server-[^/]+\.jar$")
+_NESTED_MAX_JARS = 2
+_NESTED_MAX_BYTES = 128 * 1024 * 1024
+_VANILLA_JAR_CANDIDATE_CAP = 16
 
 
 class ItemDictionary:
@@ -60,39 +85,84 @@ class ItemDictionary:
             "jars": len(jar_files),
         }
 
+    def _vanilla_jar_candidates(self) -> list[Path]:
+        """按「先准后广」收集候选服务端 jar：去重、限量、坏目录不牵连。"""
+        out: list[Path] = []
+
+        def _add(paths) -> None:
+            for p in paths:
+                if len(out) >= _VANILLA_JAR_CANDIDATE_CAP:
+                    return
+                try:
+                    if p.is_file() and p not in out:
+                        out.append(p)
+                except OSError:
+                    continue
+
+        server_lib = self.server_dir / "libraries" / "net" / "minecraft" / "server"
+        try:
+            if server_lib.exists():
+                _add(sorted(server_lib.glob("*/*.jar")))
+        except OSError:
+            pass
+        for pattern in _VANILLA_JAR_GLOBS:
+            try:
+                _add(sorted(self.server_dir.glob(pattern))[:8])
+            except OSError:
+                pass
+        # 根目录的启动 jar（原版 / Forge / 老式 paper-x.jar；限 8 个，防病态目录）
+        try:
+            _add(sorted(self.server_dir.glob("*.jar"))[:8])
+        except OSError:
+            pass
+        return out
+
+    def _load_vanilla_lang_from(self, jar: Path, target: str) -> bool:
+        """从一个 jar 里读原版语言文件；外层没有就下钻一层内嵌版本 jar（bundler）。"""
+        try:
+            with zipfile.ZipFile(jar) as zf:
+                names = zf.namelist()
+                if target in names:
+                    self._parse_lang(
+                        zf.read(target).decode("utf-8", "replace"), "minecraft", "en"
+                    )
+                    return True
+                nested = [n for n in names if _NESTED_VERSION_RE.match(n)][:_NESTED_MAX_JARS]
+                for name in nested:
+                    try:
+                        if zf.getinfo(name).file_size > _NESTED_MAX_BYTES:
+                            continue
+                        with zipfile.ZipFile(io.BytesIO(zf.read(name))) as inner:
+                            if target in inner.namelist():
+                                self._parse_lang(
+                                    inner.read(target).decode("utf-8", "replace"),
+                                    "minecraft",
+                                    "en",
+                                )
+                                return True
+                    except Exception:
+                        continue
+        except Exception:
+            return False
+        return False
+
     def _parse_vanilla_lang(self) -> None:
         """从服务端 jar 补充原版物品/方块英文名（minecraft: 命名空间）。
 
         v0.21.20：原版 / Forge 的原版 jar 在 ``libraries/net/minecraft/server/`` 下；
-        Paper / Spigot 系（插件服务端）只把服务端 jar 放在根目录（``paper-x.jar`` /
+        Paper / Spigot 系（插件服务端）把服务端 jar 放在根目录（``paper-x.jar`` /
         ``server.jar``）—— 两边都试一遍，插件服务端也能查到原版物品。
+
+        v0.23.8：再补 ``versions/`` / ``cache/`` / ``.fabric/server/`` 三处落点，
+        并支持 bundler 的内嵌版本 jar（见 ``_VANILLA_JAR_GLOBS``）。
         """
         target = "assets/minecraft/lang/en_us.json"
-        candidates: list[Path] = []
-        server_lib = self.server_dir / "libraries" / "net" / "minecraft" / "server"
-        try:
-            if server_lib.exists():
-                candidates += sorted(server_lib.glob("*/*.jar"))
-        except OSError:
-            pass
-        if not any(k.startswith("minecraft:") for k in self.items):
-            # 根目录的服务端 jar（插件服务端走这条路；限 8 个，防病态目录）
-            try:
-                candidates += [p for p in sorted(self.server_dir.glob("*.jar"))[:8] if p.is_file()]
-            except OSError:
-                pass
-        for jar in candidates:
-            try:
-                with zipfile.ZipFile(jar) as zf:
-                    if target in zf.namelist():
-                        self._parse_lang(
-                            zf.read(target).decode("utf-8", "replace"),
-                            "minecraft",
-                            "en",
-                        )
-                        return
-            except Exception:
-                continue
+        if any(k.startswith("minecraft:") for k in self.items):
+            # 已经有原版物品（例如某个 mod 自带 minecraft: 语言键）→ 不必再翻服务端 jar
+            return
+        for jar in self._vanilla_jar_candidates():
+            if self._load_vanilla_lang_from(jar, target):
+                return
 
     def _parse_jar(self, jar: Path) -> None:
         try:
