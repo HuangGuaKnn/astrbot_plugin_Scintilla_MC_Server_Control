@@ -60,14 +60,14 @@
 | --- | --- | --- |
 | **1.13 ~ 1.20.4** | ✅ 支持 | NBT：`netherite_sword{Enchantments:[{id:"minecraft:sharpness",lvl:5}]}` |
 | **1.20.5 ~ 1.21+** | ✅ 支持 | 物品组件：`netherite_sword[enchantments={levels:{"minecraft:sharpness":5}}]` |
-| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。**已在 `1.8.9` / `1.12.2` 实机验证**：插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
+| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。**已在 `1.8.9` / `1.9.4` / `1.12.2` 实机验证**：插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
 | 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，必须手填） |
 
 几点说明：
 
 - **版本能力由代码判定**（`core/version_caps.py`），不交给 AI 猜：版本 → 语法世代 → 注入 Agent 的硬约束片段；
   运行期还会按服务端回包复核（语法错误单独成态，可安全重写；结果未知则熔断不重发）。
-- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 10 台服务端**（原版 / Forge / NeoForge 三种载体），逐台做过正反样例对照；
+- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 11 台服务端**（原版 / Forge / NeoForge 三种载体），逐台做过正反样例对照；
   逐版本结论、语法分水岭与「未实测区」清单见 **[版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)**。
 - 1.13 以下**不受命令图改动影响的简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` /
   `tellraw` / `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；
@@ -194,7 +194,7 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 
 ## 遇到问题？请反馈
 
-> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 10 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
+> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 11 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
 > 但样本都是干净的测试服 —— **真实整合包里那些模组命令与物品 ID，仍然是最缺的第一手资料**。
 
 ### 先看这两条：它们**不是故障**
