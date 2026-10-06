@@ -1,6 +1,6 @@
 # 常见问题
 
-[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md)
+[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [版本支持](compatibility.md) · [常见问题](faq.md)
 
 安装与使用中容易踩到的坑。
 

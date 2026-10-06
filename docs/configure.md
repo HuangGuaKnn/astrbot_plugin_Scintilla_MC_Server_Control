@@ -1,6 +1,6 @@
 # 配置详解
 
-[返回 README](../README.md) · [界面效果](gallery.md) · [使用指南](usage.md) · [常见问题](faq.md)
+[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [版本支持](compatibility.md) · [常见问题](faq.md)
 
 插件全部配置共 **10 个分组、95 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
 

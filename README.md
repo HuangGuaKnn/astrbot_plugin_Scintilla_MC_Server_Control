@@ -25,6 +25,7 @@
 | [界面效果](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/gallery.md) | 六个功能页 + 设置页各分组的实机截图（深浅两套主题） |
 | [配置详解](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/configure.md) | 全部 10 组、95 项配置逐项说明与默认值 |
 | [使用指南](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
+| [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md) | 各 Minecraft 版本的**实测支持矩阵**：逐版本结论、语法分水岭、未实测区与已知边界 |
 | [常见问题](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/faq.md) | 安装与使用中容易踩到的坑 |
 
 ## 界面预览
@@ -59,22 +60,23 @@
 | --- | --- | --- |
 | **1.13 ~ 1.20.4** | ✅ 支持 | NBT：`netherite_sword{Enchantments:[{id:"minecraft:sharpness",lvl:5}]}` |
 | **1.20.5 ~ 1.21+** | ✅ 支持 | 物品组件：`netherite_sword[enchantments={levels:{"minecraft:sharpness":5}}]` |
-| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
+| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。**已在 `1.8.9` / `1.12.2` 实机验证**：插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
 | 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，必须手填） |
 
 几点说明：
 
 - **版本能力由代码判定**（`core/version_caps.py`），不交给 AI 猜：版本 → 语法世代 → 注入 Agent 的硬约束片段；
   运行期还会按服务端回包复核（语法错误单独成态，可安全重写；结果未知则熔断不重发）。
-- **真机验证矩阵目前只覆盖 1.20.1 · Forge 47.4.23**；其余版本按命令语法分水岭推导，属**未实测**。
+- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 10 台服务端**（原版 / Forge / NeoForge 三种载体），逐台做过正反样例对照；
+  逐版本结论、语法分水岭与「未实测区」清单见 **[版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)**。
 - 1.13 以下**不受命令图改动影响的简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` /
   `tellraw` / `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；
   被拦的是物品类（`give` / `clear` / `item` / `replaceitem`，**不带数据也拦** —— 旧版物品 ID 与当前版本不同）
   与 `execute` / `effect` / `difficulty` / `data` / `summon` / `setblock` 这类。
 - 守门对**所有执行入口**生效（工具、工作流、指令入口一视同仁），不只是自动构造路径；
   想手动发旧版命令请在游戏控制台执行，插件不代为生成。
-- 1.13 以下的**完整支持**（`legacy_preflatten` 能力档案）在路线图上，需先有 1.12.2 真机实例 ——
-  未经实测就宣称支持，会把「静默生成错命令」换成「看起来支持、其实没验证」，两种都不好。
+- 1.13 以下的**完整支持**（`legacy_preflatten` 能力档案）在路线图上：`1.12.2` 实例已就位（见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
+  缺的是真实世界的旧版命令样本 —— 未经实测就宣称支持，会把「静默生成错命令」换成「看起来支持、其实没验证」，两种都不好。
 
 ## 安装
 
@@ -192,8 +194,8 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 
 ## 遇到问题？请反馈
 
-> **本插件是个人维护的开源项目。** 1.13 ~ 1.21+ 的自动命令生成**只在 `1.20.1 · Forge 47.4.23` 上做过真机验证**，
-> 其余版本按官方命令语法分水岭推导 —— 所以你遇到版本相关的异常，很可能正是当前最缺的第一手资料。
+> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 10 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
+> 但样本都是干净的测试服 —— **真实整合包里那些模组命令与物品 ID，仍然是最缺的第一手资料**。
 
 ### 先看这两条：它们**不是故障**
 
@@ -212,9 +214,9 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 4. **报错原文或截图** —— 服务端控制台、AstrBot 日志都可以；
 5. 整合包用户请带上**整合包名 + 关键模组** —— 模组命令与物品 ID 常常才是元凶。
 
-> 特别欢迎 **`1.12.2` / `1.13.2` / `1.20.4` / `1.20.5+`** 的用户反馈：
-> 路线图上的「旧版能力实现」（`legacy_preflatten` 档案、数字物品 ID / data 映射、`ench` 数字附魔）
-> 正是卡在缺少这些真机样本。
+> 特别欢迎 **`1.12.2` 及更早版本**（路线图上的「旧版能力实现」：`legacy_preflatten` 档案、
+> 数字物品 ID / data 映射、`ench` 数字附魔）与 **Paper / Fabric 载体** 的实测反馈 ——
+> 这两块正缺真实世界的样本。
 
 ---
 

@@ -1,6 +1,6 @@
 # 界面效果
 
-[返回 README](../README.md) · [配置详解](configure.md) · [使用指南](usage.md) · [常见问题](faq.md)
+[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [版本支持](compatibility.md) · [常见问题](faq.md)
 
 插件自带一套完整的 WebUI：**六个功能页签、十个配置分组、深浅两套主题**（顶栏右上角一键切换）。
 下面全部是实际运行的截图。
