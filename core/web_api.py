@@ -37,7 +37,36 @@ def _metadata_version(fallback: str = "0.21.40") -> str:
             return m.group(1).strip().lstrip("v")
     except Exception:
         pass
-    return fallback
+# ================= `version` 命令回包的可用性判定（v0.23.8） =================
+
+#: `version` 命令回包里**属于占位符 / 报错、不是版本原文**的形态（v0.23.8）。
+#:
+#:   · ``Unknown command. Type "/help" for help.`` —— 命令本身不存在
+#:     （原版 / Fabric 一律如此，Forge 视构建而定）；
+#:   · ``Unknown or incomplete command`` —— 服务端尚未就绪时的半截回包；
+#:   · ``Checking version, please wait...`` —— **Paper 系列是异步回包**：命令当场只回
+#:     这一句占位符，真版本号由服务端稍后异步补写进控制台，RCON 这条通道**拿不到**。
+#:     少排这一个，设置页「版本原文」就会把整句英文当成版本号展示出去。
+_VERSION_REPLY_PLACEHOLDERS = (
+    "unknown",
+    "incomplete",
+    "checking version",
+    "please wait",
+)
+
+
+def is_version_reply_text(raw: str) -> bool:
+    """`version` 命令回包能否当「版本原文」用（v0.23.8）。
+
+    判据是**保守白名单**：回包里只要出现占位符 / 报错特征词，就当这一趟没拿到。
+    宁可显示「未检测到（请检查 server_dir 配置）」，也不把一个英文句子当版本号贴出去 ——
+    后者会让用户以为自己填错了配置，实际是自己填对了、只是服务端换了种回法。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return False
+    low = text.lower()
+    return not any(m in low for m in _VERSION_REPLY_PLACEHOLDERS)
 
 
 # ================= 严格布尔解析（v0.23.5） =================
@@ -1149,10 +1178,12 @@ class McControlWebApi:
                 try:
                     ver = plugin.detect_server_version()
                     if not ver:
-                        # 兜底：Paper/Spigot 等才支持 version 命令；过滤掉原版报错文本
+                        # 兜底：Paper/Spigot 等才支持 version 命令；报错文本与占位符一并过滤
+                        # （v0.23.8：旧写法只排 `Unknown` / `incomplete`，Paper 的异步占位符
+                        #  `Checking version, please wait...` 会被当成版本原文贴到设置页）
                         try:
                             raw = (await rcon.command("version")).strip()
-                            if raw and "Unknown" not in raw and "incomplete" not in raw:
+                            if is_version_reply_text(raw):
                                 ver = raw
                         except Exception:
                             pass
