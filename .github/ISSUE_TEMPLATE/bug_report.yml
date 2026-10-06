@@ -14,7 +14,7 @@ body:
     attributes:
       label: 插件版本
       description: 插件 WebUI「插件信息」卡片，或 metadata.yaml 里的 version
-      placeholder: v0.23.7
+      placeholder: v0.23.8
     validations:
       required: true
   - type: input
