@@ -23,6 +23,14 @@ body:
     validations:
       required: false
   - type: input
+    id: server_version
+    attributes:
+      label: 相关服务端版本（可选）
+      description: 想适配或已在用的 Minecraft 版本；模组端 / 插件端请连加载器版本一起写
+      placeholder: 1.20.1-forge-47.4.23
+    validations:
+      required: false
+  - type: input
     id: modpack
     attributes:
       label: 相关整合包或 Mod（可选）

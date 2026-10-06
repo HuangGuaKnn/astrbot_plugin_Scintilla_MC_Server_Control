@@ -6,13 +6,15 @@ body:
     attributes:
       value: |
         感谢反馈！麻烦尽量填全下面几项，排查会快很多。
+        本插件的行为随 **Minecraft 版本分水岭**（1.13 / 1.14 / 1.20.5 …）改变，
+        所以「服务端版本」务必写准 —— 差一个版本，结论可能正好相反。
         （如果只是「怎么用」的问题，先看 README 的常见问题，可能已经有答案。）
   - type: input
     id: plugin_version
     attributes:
       label: 插件版本
       description: 插件 WebUI「插件信息」卡片，或 metadata.yaml 里的 version
-      placeholder: v0.21.39
+      placeholder: v0.23.7
     validations:
       required: true
   - type: input
@@ -31,8 +33,19 @@ body:
         - Paper / Spigot / Bukkit（插件端）
         - Forge（模组端）
         - Fabric（模组端）
+        - NeoForge（模组端）
         - 整合包（在下文写整合包名）
         - 其他
+    validations:
+      required: true
+  - type: input
+    id: server_version
+    attributes:
+      label: 服务端版本
+      description: |
+        请写具体版本号（不要只写「最新版」）；模组端 / 插件端把加载器版本一起写上。
+        你的版本在不在实测范围内、已知边界是什么，见 README 的「版本支持」页（docs/compatibility.md）。
+      placeholder: 1.20.1 ／ 1.20.1-forge-47.4.23 ／ 1.21.1-neoforge-21.1.72 ／ Paper 1.21.1-133
     validations:
       required: true
   - type: dropdown
@@ -49,16 +62,16 @@ body:
     attributes:
       label: 现象与复现步骤
       placeholder: |
-        1. 在什么页面 / 发了什么指令
+        1. 在什么页面 / 发了什么指令（原话照抄）
         2. 期望的结果
-        3. 实际的结果
+        3. 实际的结果（插件实际执行或拒绝的命令原文，有就贴上）
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: 相关日志
-      description: AstrBot 控制台或日志里的报错片段
+      description: AstrBot 控制台或日志里的报错片段；服务端控制台的相关回执也欢迎
       render: text
     validations:
       required: false
