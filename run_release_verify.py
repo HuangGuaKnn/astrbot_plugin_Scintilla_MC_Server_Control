@@ -74,7 +74,9 @@ TIMEOUT_UI = float(os.environ.get("SCINTILLA_UI_TIMEOUT", "900"))
 # 不在 site-packages 里，裸 import 必然 ModuleNotFoundError。改用目录特征判定。
 ASTRBOT_PY_CANDIDATES = [
     os.environ.get("ASTRBOT_PYTHON", ""),
-    r"%USERPROFILE%\AppData\Local\AstrBot\backend\python\python.exe",
+    # 本机 AstrBot 自带解释器：按当前账户目录推导，仓库里不留本机账户名
+    str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        / "AstrBot" / "backend" / "python" / "python.exe"),
     sys.executable,
 ]
 
