@@ -1,5 +1,5 @@
-import subprocess, pathlib, json
-py = r'%USERPROFILE%\AppData\Local\AstrBot\backend\python\python.exe'
+import subprocess, pathlib, json, os
+py = str(pathlib.Path(os.environ.get("LOCALAPPDATA", pathlib.Path.home()/"AppData"/"Local"))/"AstrBot"/"backend"/"python"/"python.exe")
 
 
 def run(pat, out_name):

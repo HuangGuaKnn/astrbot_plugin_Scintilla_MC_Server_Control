@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parent
 # 不在 site-packages 里，裸 import 必然 ModuleNotFoundError。改用目录特征判定。
 ASTRBOT_PY_CANDIDATES = [
     os.environ.get("ASTRBOT_PYTHON", ""),
-    r"%USERPROFILE%\AppData\Local\AstrBot\backend\python\python.exe",
+    str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        / "AstrBot" / "backend" / "python" / "python.exe"),
     sys.executable,
 ]
 
@@ -40,7 +41,7 @@ def pick_python() -> str:
             return str(p)
     print("⚠ 未找到 AstrBot 自带解释器，回退到当前解释器；部分用例可能因缺依赖失败。")
     print("  可用 ASTRBOT_PYTHON 环境变量指定，例如：")
-    print(r"  $env:ASTRBOT_PYTHON='%USERPROFILE%\AppData\Local\AstrBot\backend\python\python.exe'")
+    print(r"  $env:ASTRBOT_PYTHON='%LOCALAPPDATA%\AstrBot\backend\python\python.exe'")
     return sys.executable
 
 

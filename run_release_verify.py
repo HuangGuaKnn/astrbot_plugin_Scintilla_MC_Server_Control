@@ -102,7 +102,7 @@ def pick_python(quiet: bool = False) -> str:
         print("⚠ 未找到 AstrBot 自带解释器，回退到当前解释器；部分用例可能因缺依赖失败。",
               file=sys.stderr)
         print("  可用 ASTRBOT_PYTHON 环境变量指定，例如：", file=sys.stderr)
-        print(r"  $env:ASTRBOT_PYTHON='%USERPROFILE%\AppData\Local\AstrBot\backend\python\python.exe'",
+        print(r"  $env:ASTRBOT_PYTHON='%LOCALAPPDATA%\AstrBot\backend\python\python.exe'",
               file=sys.stderr)
     return sys.executable
 

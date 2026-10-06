@@ -36,7 +36,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.knowledge_base import (  # 
 
 FP = "bench0000fp"
 PROXY = os.environ.get("SCINTILLA_PROXY", "http://127.0.0.1:7897")
-CFG = Path(os.environ.get("ASTRBOT_CFG", r"%USERPROFILE%\.astrbot\data\cmd_config.json"))
+CFG = Path(os.environ.get("ASTRBOT_CFG", str(Path.home() / ".astrbot" / "data" / "cmd_config.json")))
 K = 6          # 与 workflow.KB_RESULT_LIMIT 对齐
 RRF_K = 60     # RRF 平滑常数（业界默认）
 RERANK_POOL = 20

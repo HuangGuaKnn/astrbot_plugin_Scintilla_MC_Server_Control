@@ -25,7 +25,7 @@
     · ui_fp_notice_check      —— 等弹窗 8s 超时（本机 Edge 上正常）
     · ui_kb_detail_check      —— 等知识库卡片 8s 超时
     · ui_remote_blur_check    —— 点「去设置」30s 超时
-    · ui_theme_persist_check  —— 文件里**硬编码了本机路径** `%USERPROFILE%/…`（真 bug，已修）
+    · ui_theme_persist_check  —— 文件里**硬编码了本机路径** `C:/Users/<账户>/…`（真 bug，已修）
     · ui_version_override_check —— 18 项断言全读到「版本能力：暂时读不到」
 
 结论不是「这些用例错了」，而是**它们的判据里含本机环境**（本机宿主页 / Edge 通道 /
