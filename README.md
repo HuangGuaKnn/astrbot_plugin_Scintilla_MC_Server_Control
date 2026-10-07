@@ -61,7 +61,7 @@
 | **1.13 ~ 1.20.4** | ✅ 支持 | NBT：`netherite_sword{Enchantments:[{id:"minecraft:sharpness",lvl:5}]}` |
 | **1.20.5 ~ 1.21+** | ✅ 支持 | 物品组件：`netherite_sword[enchantments={levels:{"minecraft:sharpness":5}}]` |
 | **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。**已在 `1.8.9` / `1.9.4` / `1.12.2` 实机验证**：插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
-| 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，必须手填） |
+| 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，只能手填；留空也能保存，但这类请求会被拒） |
 
 几点说明：
 
@@ -201,8 +201,8 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 
 | 现象 | 说明 |
 | --- | --- |
-| **1.8 ~ 1.12.2** 服务端上，`give` / `clear` / `item` / `replaceitem` / `execute` / `effect` / `summon` / `setblock` 被**明确拒绝并说明原因** | ✅ **预期行为**。1.13 以下的物品 ID 与命令图不同（扁平化前是「数字 ID + data 值」），插件尚未完成旧版映射，**宁可不发，也不发一条必然失败的**。详见 [支持的 Minecraft 版本](#支持的-minecraft-版本) |
-| **版本未知**时，附魔 / NBT / 物品组件请求被拒绝 | ✅ **预期行为**。到 WebUI「设置」页手填 `server_version_override` —— 异地 RCON 模式探测必然失败，必须手填 |
+| **1.7.10 ~ 1.12.2** 服务端上，`give` 按「家族名 + 数据值」**自动生成**（域外数据值拒绝）；`clear` / `item` / `replaceitem` / `execute` / `effect` / `summon` / `setblock` 仍被**明确拒绝并说明原因** | ✅ **预期行为**。1.13 以下的物品 ID 与命令图不同（扁平化前是「数字 ID + data 值」），插件尚未完成旧版映射，**宁可不发，也不发一条必然失败的**。详见 [支持的 Minecraft 版本](#支持的-minecraft-版本) |
+| **版本未知**时，附魔 / NBT / 物品组件请求被拒绝 | ✅ **预期行为**。到 WebUI「设置」页手填 `server_version_override` —— 异地 RCON 模式探测必然失败，只能手填（留空也能保存，只是这类请求会被拒） |
 
 ### 真要反馈，请带上这几样
 
