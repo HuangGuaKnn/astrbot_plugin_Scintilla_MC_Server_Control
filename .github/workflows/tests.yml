@@ -48,9 +48,11 @@ jobs:
         if: failure()
         run: |
           test -f /tmp/verify.log || exit 0
-          grep -E '^\[FAIL\]|Traceback|ModuleNotFoundError|AssertionError|Error:' /tmp/verify.log \
-            | head -25 | while IFS= read -r line; do echo "::error title=CI 红点::$line"; done
-          grep -E '失败项' /tmp/verify.log | head -3 | while IFS= read -r line; do echo "::warning title=失败清单::$line"; done
+          # 每个 [FAIL] 连同随后 6 行一起报（异常类型不固定，别只 grep 几个关键词）
+          grep -A 6 -E '^\[FAIL\]' /tmp/verify.log | head -60 \
+            | while IFS= read -r line; do echo "::error title=CI 红点::$line"; done
+          echo "::warning title=失败清单::$(grep -E '失败项' /tmp/verify.log | head -1)"
+          echo "::warning title=日志末尾::$(tail -6 /tmp/verify.log | tr '\n' '|')" 
 
   ui-contract:
     # 外部审查（第 4 轮）后按用户拍板的方案 B 拆分：**契约类**进硬门禁。

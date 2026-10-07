@@ -59,8 +59,8 @@ jobs:
         if: failure()
         run: |
           test -f /tmp/verify.log || exit 0
-          grep -E '^\[FAIL\]|Traceback|ModuleNotFoundError|AssertionError|Error:' /tmp/verify.log \
-            | head -25 | while IFS= read -r line; do echo "::error title=发版前置红点::$line"; done
+          grep -A 6 -E '^\[FAIL\]' /tmp/verify.log | head -60 \
+            | while IFS= read -r line; do echo "::error title=发版前置红点::$line"; done
       - name: 校验标签与 metadata.yaml 版本是否一致
         # 放在 verify 而不是 publish：能便宜地失败的事就早失败，别等打完包再发现版本号写错。
         run: |
