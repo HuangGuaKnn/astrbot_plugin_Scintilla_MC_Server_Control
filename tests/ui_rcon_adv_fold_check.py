@@ -20,6 +20,9 @@
   3) 动态：点 summary → 展开，折叠内控件可见，卡片高度显著增加；
   4) 动态：收起态摘要徽标随值走（异地模式漏填版本 → 警示色 + 明确文案）；
   5) 动态：异地模式提示里的展开入口（openAdvRcon）真能展开并聚焦版本输入框；
+  5b) 动态：保存成功后的软提醒（异地 RCON + 手填信息为空）—— 吸顶条渲染
+      「✓ 已保存 · ⚠ …」+「去填写」按钮，点按钮真能展开折叠区并聚焦版本输入框；
+      空提醒不占位（不误报）；clearSaveWarn() 能撤干净；
   6) 动态：页面无 JS 异常（pageerror）。
 """
 from __future__ import annotations
@@ -142,7 +145,8 @@ def main() -> int:
         check("★异地模式漏填版本 → 摘要变警示色",
               pg.evaluate("() => document.getElementById('adv_rcon_sum').classList.contains('warn')") is True,
               warn_sum)
-        check("★警示文案点名要补什么", "需手填服务端版本" in warn_sum, warn_sum)
+        check("★警示文案点名要补什么 + 后果",
+      ("服务端版本未填" in warn_sum) and ("会被拒" in warn_sum), warn_sum)
 
         # 补上版本 → 警示解除
         pg.fill("#cfg_server_version", "1.20.1")
@@ -166,6 +170,43 @@ def main() -> int:
               pg.evaluate("() => document.getElementById('adv_rcon').open") is True)
         check("openAdvRcon() 把焦点送到版本输入框",
               pg.evaluate("() => document.activeElement && document.activeElement.id") == "cfg_server_version")
+
+        print("\n[5b] 动态：保存成功后的软提醒（v0.23.9 · A 方案）")
+        src = HTML.read_text(encoding="utf-8")
+        check("静态：保存条里有软提醒常驻格", 'id="cfg_save_warn"' in src)
+        check("静态：文案以「✓ 已保存」开头（别把成功渲染成失败）",
+              "✓ 已保存 · ⚠ " in src)
+        check("静态：提供「去填写」入口", "去填写" in src and "fill_server_version" in src)
+        # 假后端夹具不会真造一条 warnings，直接调渲染函数（页面导出的全局入口）
+        pg.evaluate("""() => window.renderSaveWarn([{
+            code: "remote_version_missing",
+            text: "异地 RCON 模式下手填信息为空：附魔 / NBT / 物品组件类命令会被拒绝。",
+            action: "fill_server_version"}])""")
+        pg.wait_for_timeout(200)
+        check("动态：软提醒出现（不靠 3.5 秒自隐的 notice）",
+              pg.evaluate("() => getComputedStyle(document.getElementById('cfg_save_warn')).display") == "flex")
+        txt = pg.evaluate("() => document.getElementById('cfg_save_warn').textContent")
+        check("动态：文案含「已保存」与后果", ("✓ 已保存" in txt) and ("会被拒绝" in txt), txt[:90])
+        check("动态：正文是 textContent 渲染（不拼 HTML）",
+              pg.evaluate("() => document.querySelectorAll('#cfg_save_warn .tx').length") == 1)
+        # 真点一次「去填写」：应当展开折叠区并把焦点送到版本输入框
+        pg.evaluate("() => document.getElementById('adv_rcon').open = false")
+        pg.click("#cfg_save_warn button")
+        pg.wait_for_timeout(400)
+        check("动态：点「去填写」→ 折叠区展开",
+              pg.evaluate("() => document.getElementById('adv_rcon').open") is True)
+        check("动态：点「去填写」→ 焦点落在版本输入框",
+              pg.evaluate("() => document.activeElement && document.activeElement.id") == "cfg_server_version")
+        # 反向：空提醒不占位（避免「狼来了」）
+        pg.evaluate("() => window.renderSaveWarn([])")
+        pg.wait_for_timeout(120)
+        check("动态：空提醒不占位（不误报）",
+              pg.evaluate("() => getComputedStyle(document.getElementById('cfg_save_warn')).display") == "none")
+        pg.evaluate("() => window.renderSaveWarn([{code:'remote_version_missing',text:'x',action:'fill_server_version'}])")
+        pg.evaluate("() => window.clearSaveWarn()")
+        pg.wait_for_timeout(120)
+        check("动态：clearSaveWarn() 撤得干净",
+              pg.evaluate("() => document.getElementById('cfg_save_warn').innerHTML") == "")
 
         print("\n[6] 动态：无 JS 异常")
         check("页面无 pageerror", not errs, "; ".join(errs[:3]))

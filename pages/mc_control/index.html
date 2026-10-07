@@ -212,6 +212,11 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 .fcell>input{flex:1;min-width:0}
 .fcell>select{flex:0 0 auto;width:auto;max-width:190px}
 .hint{font-size:10.5px;color:var(--faint);margin-top:4px}
+/* v0.23.8 · 工作流提速建议：是「建议」不是「规矩」，但得让人看得见 ——
+   显眼暖色 + 略大字号；浅色主题单独压深（同 .badge.amb 套路），避免浅底发飘。 */
+.hint.adv{font-size:12px;line-height:1.65;color:var(--amber);font-weight:500;margin-top:8px}
+.hint.adv b{color:inherit;font-weight:700}
+:root[data-theme="light"] .hint.adv{color:#8a5d06}
 
 /* ===== 命令工具 白名单 / 黑名单（v0.20.0） ===== */
 .pmode{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:2px}
@@ -341,6 +346,8 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 .savebar{position:sticky;top:96px;z-index:40;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--bar-bg2);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:14px}
 .notice{display:none;background:rgba(76,195,138,.08);border:1px solid rgba(76,195,138,.35);color:var(--ok);border-radius:8px;padding:9px 12px;font-size:12px;margin-top:12px;white-space:pre-line}
 .notice.err{background:rgba(232,98,58,.08);border-color:rgba(232,98,58,.4);color:var(--bad)}
+.savewarn{display:none;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(230,170,40,.10);border:1px solid rgba(230,170,40,.42);color:var(--warn,#b8860b);border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.5;margin-left:auto;max-width:min(760px,62vw)}
+.savewarn .mk{font-weight:600;white-space:nowrap}
 .notice.show{display:block}
 /* 持续性状态横幅（不自动消失）：用于工作流被停用等需要长期可见的提示 */
 .banner{display:none;gap:9px;align-items:flex-start;border-radius:8px;padding:9px 12px;font-size:12px;line-height:1.55;margin-top:12px}
@@ -1016,6 +1023,9 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <button class="btn primary" id="btn_save_cfg_top">保存全部设置</button>
     <span class="muted">校验通过后写盘并热应用：大部分设置即时生效，服务器事件转发自动重启，改 server_dir 会就地重算指纹与词典</span>
     <div class="notice" id="cfg_notice_top" style="margin:0;margin-left:auto"></div>
+    <!-- v0.23.9（A 方案）：保存成功后的软提醒位（异地 RCON + 手填信息为空）。
+         常驻到下一次保存；出现与否、文案都由后端算（后端只对真会产生后果的组合给提醒）。 -->
+    <div class="savewarn" id="cfg_save_warn"></div>
   </div>
 
   <div class="hint" style="margin:2px 0 16px">
@@ -1037,7 +1047,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <b>物品词典 / 知识库 / 聊天桥接 / 服务器事件播报 / 版本探测 / 进程指标</b>
         这些依赖服务端本地文件的能力会按设计禁用 —— 下方对应区块会被<b>标记为不可用并写明原因</b>，
         终端、mcs 状态与决策 AI 也会明确告知，不会假装可用。
-        <br><b>服务端版本必须手填</b>（读不到服务端文件，插件不会猜一个版本硬编）：
+        <br>服务端版本<b>留空也能保存</b>，但会按<b>「版本未知」</b>处理（读不到服务端文件，探测必然失败，
+        插件不会猜一个版本硬编）：附魔 / NBT / 物品组件类请求会被拒绝。要用这类功能，请在此手填：
         <span class="jump" onclick="openAdvRcon('cfg_server_version')">展开「进阶设置」填写 →</span>
       </div>
       <div class="hint" id="remote_mode_pending" style="display:none;margin-top:2px;color:var(--warn)"></div>
@@ -1087,8 +1098,9 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
           </div>
         </div>
         <div class="hint">优先级：<b>手动声明 &gt; 文件探测 &gt; 未知</b>。异地 RCON 模式读不到服务端文件，
-          <b>必须手填</b>，否则附魔 / NBT / 物品组件类请求会被明确拒绝 ——
-          插件不会猜一个版本硬编（猜错只会生成解析失败的命令）。</div>
+          探测必然失败：此时<b>留空也能保存</b>，但会按「版本未知」处理 ——
+          附魔 / NBT / 物品组件类请求会被明确拒绝（插件不会猜一个版本硬编，猜错只会生成解析失败的命令）。
+          要用这类功能，请在此手填。</div>
       </details>
 
       <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
@@ -1472,6 +1484,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <div><label class="f">实现器 Provider</label><select id="cfg_wf_p_implementer"></select></div>
       <div><label class="f">纠错器 Provider</label><select id="cfg_wf_p_corrector"></select></div>
     </div>
+    <div class="hint adv" id="wf_model_advice">提速建议：优先选择<b>响应和速度快</b>的模型（如 <b>DeepSeek V4.1 Flash</b>）。模型的思考强度由 AstrBot 模型服务商管理设置，推荐把推理强度设为 <b>low</b> 或 <b>high</b>，过高的思考强度会导致工作流处理速度过慢。</div>
     <div class="frow" style="margin-top:6px;max-width:460px">
       <div style="flex:1"><label class="f">实现器最大尝试轮数</label><input type="number" id="cfg_wf_rounds_impl" min="1" max="10" placeholder="3"></div>
       <div style="flex:1"><label class="f">纠错循环最大轮数</label><input type="number" id="cfg_wf_rounds_correct" min="0" max="10" placeholder="2"></div>
@@ -2582,9 +2595,10 @@ function renderAdvSummary(){
   const to = ($("cfg_rcon_timeout") || {}).value || "";
   const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
   if(rmt && rmt.checked && !String(ver).trim()){
-    // 异地模式读不到服务端文件 → 版本只能手填，漏填的后果是「请求被拒绝」
+    // 异地模式读不到服务端文件 → 版本只能手填；漏填的后果要点名（「会被拒」），
+    // 但别写成保存的前置条件：留空照样能保存（v0.23.9 统一口径）。
     el.className = "adv-sum warn";
-    el.textContent = "⚠ 异地模式需手填服务端版本";
+    el.textContent = "⚠ 异地模式：服务端版本未填（附魔 / NBT 会被拒）";
     return;
   }
   el.className = "adv-sum";
@@ -2611,7 +2625,9 @@ window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .
 const SYNTAX_LABEL = {
   "legacy_nbt": "legacy_nbt（NBT {…}）",
   "components": "components（物品组件 […]）",
-  "unsupported_preflatten": "unsupported_preflatten（1.13 以下，暂不支持自动生成）",
+  // B5：1.13 以下按「名优先 + 家族名 + 数据值」生成（give 的 data 仍是位置参数）
+  "legacy_preflatten": "legacy_preflatten（1.13 以下：家族名 + 数据值）",
+  "unsupported_preflatten": "unsupported_preflatten（世代未确认：物品命令不自动生成）",
 };
 function renderVersionCaps(caps, targetId){
   const el = $(targetId || "ver_caps_line"); if(!el) return;
@@ -2628,10 +2644,13 @@ function renderVersionCaps(caps, targetId){
     return;
   }
   if(caps.item_syntax === "unsupported_preflatten"){
-    // v0.23.2（GPT 续单裁决 Q1/Q4）：**已知**版本但低于 1.13 —— 本插件不自动生成命令。
-    // 与「版本未知」区分：那是「不知道」，这是「知道、且明确不支持」。
+    // v0.23.2（GPT 续单裁决 Q1/Q4）建此分支时的口径是「已知 <1.13 ⇒ 一律不生成」；
+    // B5 起该世代**已可生成**（走 legacy_preflatten），本分支只剩**降级兜底**：
+    // 预扁平化表缺失 / 生成器未就绪时才会落到这里，所以行文必须说「通道当前不可用」，
+    // 而不是「本插件不支持这个版本」——后者会让用户以为没救。
     el.innerHTML = `<span style="color:var(--warn)">⚠ 服务端 <b>${esc(caps.raw || caps.version || "-")}</b>`
-      + ` 低于 ${esc(caps.preflatten_cutover || "1.13")}，本插件<b>暂不支持该版本的自动命令生成</b>。</span>`
+      + ` 低于 ${esc(caps.preflatten_cutover || "1.13")}：<b>该世代的预扁平化生成通道当前不可用</b>`
+      + `（物品表缺失或生成器未就绪）。</span>`
       + `1.13 重写了 give / execute / effect 等命令语法并做资源 ID 扁平化，`
       + `带数据命令会被<b>直接拒绝</b>（而不是生成一条必然失败的命令）。`
       + `请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上。`
@@ -2641,6 +2660,15 @@ function renderVersionCaps(caps, targetId){
   const syn = SYNTAX_LABEL[caps.item_syntax] || caps.item_syntax || "-";
   const src = (caps.item_syntax_source === "override")
     ? "手动指定" : (caps.source_label || caps.item_syntax_source || "-");
+  if(caps.item_syntax === "legacy_preflatten"){
+    // B5（2026-10-07 两代真机实证）：1.13 以下改为**可生成** —— 变体走「家族名 + 数据值」，
+    // 域外数据值服务端不报错却会崩客户端，所以这条硬约束必须在能力行里看得见。
+    el.innerHTML = `Minecraft <b>${esc(caps.raw || caps.version || "-")}</b>`
+      + `（来源：${esc(caps.source_label || caps.source || "-")}）`
+      + ` · 物品语法：<b>${esc(syn)}</b>（来源：${esc(src)}）`
+      + ` · 变体按「家族名 + 数据值」生成（如 <code>minecraft:wool</code> + 14），域外数据值一律拒绝`;
+    return;
+  }
   el.innerHTML = `Minecraft <b>${esc(caps.raw || caps.version || "-")}</b>`
     + `（来源：${esc(caps.source_label || caps.source || "-")}）`
     + ` · 物品语法：<b>${esc(syn)}</b>（来源：${esc(src)}）`
@@ -3555,6 +3583,7 @@ function collectSettings(){
 async function saveSettings(){
   const settings = collectSettings();
   setSaveNotice("保存中…");
+  clearSaveWarn();                    // v0.23.9：新一轮保存开始，旧的软提醒先撤
   const r = await callPost("settings/save", { settings }).catch(()=>({ok:false,error:"请求失败"}));
   if(r.ok){
     // v0.23.5：保存成功后清空密码框 —— 提交过新值就切成「已配置」提示，
@@ -3565,9 +3594,17 @@ async function saveSettings(){
     const ignored = Array.isArray(r.ignored) ? r.ignored : [];
     const lost = ignored.length ? ignored
               : (("notify_target_events" in applied) ? [] : ["notify_target_events"]);
+    // v0.23.9（A 方案）：异地 RCON + 手填信息为空 → 保存成功后的**软提醒**。
+    // 只在「用户刚做完保存这个动作」的一刻出现（不常驻、不弹窗、不阻断保存），
+    // 并给一个能直接去填的入口。
+    const warns = Array.isArray(r.warnings) ? r.warnings : [];
+    renderSaveWarn(warns);
     if(lost.length){
       setSaveNotice("⚠ 有 " + lost.length + " 项后端未接受（" + lost.slice(0,3).join("、")
         + "）：插件可能未重载，请到 AstrBot「插件管理」重载本插件后重新保存", true);
+    }else if(warns.length){
+      // 软提醒自带「✓ 已保存 ·」，且要留得住：3.5 秒就自隐的 notice 抢不住「去填写」的入口。
+      setSaveNotice("");
     }else{
       // v0.23.5：落盘失败时后端把 ⚠ 塞进了 notice 并回 config_saved=false ——
       // 那种情况不能再在前面加个"✓"，直接按错误态显示。
@@ -3763,9 +3800,33 @@ function syncRemoteModeUI(){
   }
 }
 // v0.21.3：保存状态统一提示到顶部吸顶条（底部卡片已撤）；setNotice 自带 null 守卫
+// v0.23.9（A 方案）：保存成功后的软提醒落点。
+// 为什么不用 notice：它是 textContent + 3.5 秒自隐 —— 按钮塞不进去，用户也来不及点。
+// 所以另给一格常驻位（#cfg_save_warn）：文案由后端算好，前端只管摆，并给一个能直接去填的入口。
+function clearSaveWarn(){
+  const w = $("cfg_save_warn");
+  if(w){ w.style.display = "none"; w.innerHTML = ""; }
+}
+function renderSaveWarn(warns){
+  const box = $("cfg_save_warn");
+  if(!box) return;
+  const list = Array.isArray(warns) ? warns : [];
+  if(!list.length){ clearSaveWarn(); return; }
+  const first = list[0] || {};
+  const btn = (first.action === "fill_server_version")
+    ? ' <button class="btn sm" type="button" onclick="openAdvRcon(\'cfg_server_version\')">去填写</button>'
+    : "";
+  // 固定前缀（必须以「✓ 已保存」开头 —— 别把成功渲染成失败，v0.23.5 立的规矩）
+  // 与按钮 markup 都是常量；提醒正文一律 textContent，当外部输入看待，不拼 HTML。
+  box.innerHTML = '<span class="mk">✓ 已保存 · ⚠ </span><span class="tx"></span>' + btn;
+  box.querySelector(".tx").textContent = String(first.text || "");
+  box.style.display = "flex";
+}
 function setSaveNotice(msg, isErr){
   setNotice($("cfg_notice_top"), msg, isErr);
 }
+window.renderSaveWarn = renderSaveWarn;   // 内联 onclick / 端到端检查的入口（与 openAdvRcon 同款）
+window.clearSaveWarn = clearSaveWarn;
 async function saveWfSwitch(key, el, noticeEl){
   setNotice(noticeEl, "保存中…");
   const r = await callPost("settings/save", { settings: { [key]: el.checked } }).catch(()=>({ok:false,error:"请求失败"}));

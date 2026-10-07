@@ -575,6 +575,41 @@ class McControlWebApi:
                 parsed[k] = ",".join(clean)
         return parsed, None
 
+    def _settings_save_warnings(self) -> list:
+        """保存成功后的**软提醒**（结构化；A 方案）。
+
+        只提醒「真会产生后果」的组合 —— 避免误报是第一原则，否则就成了狼来了：
+
+        1. 异地 RCON 模式（本地模式留空是正常用法，不提醒）；
+        2. ``server_version_override`` 去空格后为空；
+        3. ``item_syntax_override == "auto"`` —— 用户手填了语法世代时，附魔 / NBT
+           其实**能放行**（补丁 3 的合法逃生出口），此时不按「会被拒绝」说，
+           只降级成一句「建议补上版本」；
+        4. 只在**保存动作**的回包里带一次（不常驻、不弹窗、不阻断保存）。
+
+        任何异常一律吞掉返回空列表：提醒绝不能反过来把保存搞砸。
+        """
+        try:
+            if not bool(self.plugin._cfg("remote_rcon_mode", False)):
+                return []
+            if str(self.plugin._cfg("server_version_override", "") or "").strip():
+                return []
+            syntax = str(self.plugin._cfg("item_syntax_override", "auto") or "auto").strip().lower()
+            if syntax and syntax != "auto":
+                return [{
+                    "code": "remote_version_missing_with_syntax",
+                    "text": ("异地 RCON 模式下未填服务端版本：当前按你手填的语法世代放行，"
+                             "建议补上版本，以免带数据命令被误放行。"),
+                    "action": "fill_server_version",
+                }]
+            return [{
+                "code": "remote_version_missing",
+                "text": "异地 RCON 模式下手填信息为空：附魔 / NBT / 物品组件类命令会被拒绝。",
+                "action": "fill_server_version",
+            }]
+        except Exception:                                   # noqa: BLE001
+            return []
+
     async def save_settings(self):
         """保存全部设置：校验 → 写盘 → 热应用到运行中的插件。"""
         data = await request.json() or {}
@@ -810,6 +845,7 @@ class McControlWebApi:
         return json_response({
             "ok": True, "notice": notice, "applied": applied, "ignored": ignored,
             "config_saved": cfg_save_ok,
+            "warnings": self._settings_save_warnings(),
             "save_warning": ("" if cfg_save_ok else cfg_save_error),
         })
 
@@ -1152,7 +1188,8 @@ class McControlWebApi:
             elif not caps.get("known"):
                 info["version_hint"] = (
                     "版本未知：附魔 / NBT / 物品组件类请求会被拒绝。"
-                    "异地 RCON 模式下探测必然失败，请在「连接 → 手动声明服务端版本」里填写。"
+                    "异地 RCON 模式下探测必然失败：请在「设置 → RCON 连接 → 进阶设置 → "
+                    "手动声明服务端版本」里填写 —— 留空也能保存，但要用这类功能就得先填上。"
                 )
         except Exception as e:  # noqa: BLE001
             info["version_caps_error"] = str(e)
