@@ -95,6 +95,9 @@ class MCWorkflow:
         self, event: AstrMessageEvent, request: str, player: str = ""
     ) -> str:
         """mc_workflow 工具入口。返回给主 LLM 的简短文本。"""
+        # v0.23.9：世代标记必须**每次入口重算** —— 热切服务端（设置页保存）不走重载，
+        # 缓存在 __init__ 的 _preflatten 会残留旧世代的判断。
+        self._refresh_version_context()
         if not self.enabled:
             return "[MC工作流] 多Agent工作流未启用。"
         if not request or not request.strip():
@@ -189,6 +192,44 @@ class MCWorkflow:
         except Exception as e:  # noqa: BLE001
             self.logger.warning("预扁平化标记解析失败（按放行处理）: %s", e)
 
+    #: B5：预扁平化世代的 give —— 只接受「玩家 + 物品名 + 数量? + 数据值? + NBT?」
+    _B5_GIVE_RE = re.compile(
+        r"^give\s+(\S+)\s+(\S+)(?:\s+(\d+))?(?:\s+(\d+))?(?:\s+(\{.*\}))?\s*$",
+        re.IGNORECASE,
+    )
+
+    def _b5_reroute_give(self, cmd: str) -> tuple:
+        """B5（< 1.13）：把 ``give`` 交生成器重构；返回 ``(命令, 拒绝原因, 是否已验证)``。
+
+        - 非预扁平化世代 / 非 ``give`` → 原样返回（后续照旧走既有版本拦，语义不变）；
+        - 生成器放行 → 返回**重构后的家族名命令**并标记「已验证」（域内数据值由域表校验）；
+        - 生成器拒绝（扁平名 / 域外数据值 / 越界数量 / 非法 NBT / 玩家名不合语法）
+          → 返回 ``None`` + 原因（fail-closed：绝不把 LLM 手写的命令直接下发）。
+        """
+        if not getattr(self, "_preflatten", False):
+            return cmd, "", False
+        m = self._B5_GIVE_RE.match(cmd)
+        if not m:
+            return cmd, "", False
+        player, item = m.group(1), m.group(2)
+        count = int(m.group(3)) if m.group(3) else 1
+        damage = int(m.group(4)) if m.group(4) else None
+        nbt = m.group(5) or ""
+        plan_fn = getattr(self.plugin, "_legacy_give_plan", None)
+        if plan_fn is None:
+            # 环境里没有 B5 生成器（替身 / 降级装配）：交回既有版本拦，绝不给未验证命令开口子
+            return cmd, "", False
+        plan = plan_fn(player, item, count, damage=damage, nbt=nbt)
+        # 替身 / 降级装配里可能没有 logger：缺了就不记，绝不因为写日志把转交器炸掉
+        _lg = getattr(self, "logger", None)
+        if _lg is not None:
+            _lg.info(
+                "[B5] give 转交生成器: %r → ok=%s %r", cmd, plan.ok, plan.command or plan.reason
+            )
+        if not plan.ok:
+            return None, f"{plan.reason}（预扁平化世代：物品「{item}」未能安全构造）", False
+        return plan.command, "", True
+
     def _preflatten_block(self, cmd: str) -> str:
         """已知服务端 < 1.13 时该命令是否被拦（v0.23.2）；返回原因或空串。
 
@@ -243,7 +284,15 @@ class MCWorkflow:
                 ))
                 continue
             # v0.23.2（裁决 Q4）：已知服务端 < 1.13 → 该命令族不自动构造（代码侧硬拦）
-            _pf = self._preflatten_block(cmd)
+            # v0.23.9（B5 接线）：唯一例外 —— give 先交生成器重构，域表校验通过才算「已验证」
+            _orig = cmd
+            cmd, _b5_reason, _b5_ok = self._b5_reroute_give(cmd)
+            if cmd is None:
+                reports.append(CommandResult(
+                    command=_orig, status="skipped", reason=_b5_reason,
+                ))
+                continue
+            _pf = "" if _b5_ok else self._preflatten_block(cmd)
             if _pf:
                 reports.append(CommandResult(
                     command=cmd, status="skipped", reason=_pf,
@@ -722,7 +771,16 @@ class MCWorkflow:
                     })
                     continue
             # v0.23.2（裁决 Q4）：已知服务端 < 1.13 → 该命令族不自动构造
-            _pf = self._preflatten_block(cmd)
+            # v0.23.9（B5 接线）：give 先交生成器重构；重构成功即视为已验证
+            _orig = cmd
+            cmd, _b5_reason, _b5_ok = self._b5_reroute_give(cmd)
+            if cmd is None:
+                reports.append({
+                    "command": _orig, "ok": False, "status": "skipped",
+                    "output": f"{_b5_reason}。可先用 mc_search_item 确认展示名与数据值。",
+                })
+                continue
+            _pf = "" if _b5_ok else self._preflatten_block(cmd)
             if _pf:
                 reports.append({
                     "command": cmd, "ok": False, "status": "skipped",

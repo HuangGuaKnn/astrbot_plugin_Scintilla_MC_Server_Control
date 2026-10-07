@@ -30,6 +30,19 @@ import zipfile
 from pathlib import Path
 
 _LANG_KEY_RE = re.compile(r"^(item|block)\.")
+
+#: B5（2026-10-07 真机实证）：1.13 以下的语言文件是**文本 kv**、键名是 legacy camelCase，
+#: 形如 ``item.shovelIron.name`` / ``tile.wood.oak.name``（变体在中间段）。
+_LEGACY_LANG_KEY_RE = re.compile(r"^(?:item|tile)\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?\.name$")
+
+#: 预扁平化服务端 jar 里的语言文件落点（1.7.10 是大写 ``en_US.lang``，1.12.2 是小写）。
+_LEGACY_LANG_TARGETS = ("assets/minecraft/lang/en_us.lang", "assets/minecraft/lang/en_US.lang")
+
+#: 逐世代预扁平化数据表目录（随插件发布；也可放在缓存目录旁）。
+_LEGACY_DATA_DIR = "legacy_items"
+
+#: 从 ``minecraft_server.1.12.2.jar`` 这类文件名里抠版本。
+_JAR_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _RECIPE_RESULT_KEYS = ("result",)
 _RECIPE_INPUT_KEYS = ("ingredients", "key", "base", "addition", "input", "ingredient")
 
@@ -60,6 +73,19 @@ class ItemDictionary:
         self.mods: list[dict] = []          # [{"id": ..., "name": ...}]
         self.items: dict[str, dict] = {}    # {"modid:name": {"en","zh","type"}}
         self.recipes: dict[str, list] = {}  # {"output_id": [recipe...]}
+        # ---- B5：预扁平化（1.13 以下）通道的状态 ----
+        #: 生效的世代键（如 "1.12.2"）；空串表示走的是现代（1.13+）通道。
+        self.legacy_generation: str = ""
+        #: {族: {"domain_upper": n, "variants": {data值: 展示名}}} —— 生成层的**域判据**。
+        self.legacy_variants: dict[str, dict] = {}
+        #: {legacy 键: {"registry": 注册名, "display": 展示名}} —— 桥接表。
+        self.legacy_bridge: dict[str, dict] = {}
+        #: 可选版本提示（jar 文件名抠不出版本时用，由上层喂入；None = 不知道）。
+        self.mc_hint: "tuple | None" = None
+        #: **B5 诊断账本**：预扁平化通道为什么成 / 为什么不成（人类可读，随 build() 返回）。
+        #: 静默失败是事故之母 —— 这条必须能一眼看出是「没有 .lang」「版本不在世代 range 内」
+        #: 还是「缺 data/legacy_items 目录」。
+        self.legacy_diag: str = ""
 
     # ================= 构建 =================
 
@@ -83,6 +109,8 @@ class ItemDictionary:
             "items": len(self.items),
             "recipes": len(self.recipes),
             "jars": len(jar_files),
+            "legacy": self.legacy_generation or "-",
+            "legacy_diag": self.legacy_diag or "-",
         }
 
     def _vanilla_jar_candidates(self) -> list[Path]:
@@ -146,7 +174,7 @@ class ItemDictionary:
             return False
         return False
 
-    def _parse_vanilla_lang(self) -> None:
+    def _parse_vanilla_lang(self) -> bool:
         """从服务端 jar 补充原版物品/方块英文名（minecraft: 命名空间）。
 
         v0.21.20：原版 / Forge 的原版 jar 在 ``libraries/net/minecraft/server/`` 下；
@@ -159,10 +187,194 @@ class ItemDictionary:
         target = "assets/minecraft/lang/en_us.json"
         if any(k.startswith("minecraft:") for k in self.items):
             # 已经有原版物品（例如某个 mod 自带 minecraft: 语言键）→ 不必再翻服务端 jar
-            return
-        for jar in self._vanilla_jar_candidates():
+            self.legacy_diag = "已从 Mod 语言键拿到 minecraft: 条目，跳过原版核"
+            return True
+        cands = self._vanilla_jar_candidates()
+        for jar in cands:
             if self._load_vanilla_lang_from(jar, target):
-                return
+                self.legacy_diag = f"现代 JSON 语言表命中：{jar.name}"
+                return True
+        # B5：现代 JSON 语言文件不存在（= 1.13 以下服务端）→ 走预扁平化通道。
+        # 现代路径完全不受影响：能读到 JSON 就一定在上面 return。
+        return self._parse_legacy_vanilla(cands)
+
+    # ================= 预扁平化通道（1.13 以下）· B5 =================
+
+    def _legacy_data_dir(self) -> "Path | None":
+        """逐世代数据表目录：优先插件自带 ``data/legacy_items/``，其次缓存目录旁。"""
+        cands = [Path(__file__).resolve().parent.parent / "data" / _LEGACY_DATA_DIR]
+        if self.cache_path:
+            cands.append(self.cache_path.parent / _LEGACY_DATA_DIR)
+        for c in cands:
+            try:
+                if c.is_dir() and any(c.glob("*.json")):
+                    return c
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
+    def _ver_of(text: str) -> "tuple | None":
+        m = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(text).strip())
+        return tuple(int(x) for x in m.groups(default="0")) if m else None
+
+    def _pick_legacy_table(self, mc, files: list, require_match: bool = False) -> "Path | None":
+        """挑最贴近的世代表。
+
+        ``require_match=True``（默认调用路径）：**必须**被表的 ``range`` 覆盖才返回，
+        否则返回 ``None`` —— 版本不在任何 pre-1.13 世代里时宁可落空（fail-closed），
+        绝不拿 1.12.2 的表去服务 1.21（域表不同，域外值会崩客户端）。
+        """
+        parsed = []
+        for p in files:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            parsed.append((p, data, self._ver_of(data.get("mc", p.stem))))
+        if not parsed:
+            return None
+        if mc:
+            for p, data, v in parsed:
+                rng = data.get("range") or []
+                if len(rng) == 2:
+                    lo, hi = self._ver_of(rng[0]), self._ver_of(rng[1])
+                    if lo and hi and lo <= tuple(mc) < hi:
+                        return p
+            if require_match:
+                return None
+            le = [(v, p) for p, _, v in parsed if v and v <= tuple(mc)]
+            if le:
+                return max(le)[1]
+            return min([(v, p) for _, _, v in parsed if v] or [(None, parsed[0][0])])[1]
+        return max([(v, p) for _, _, v in parsed if v] or [(None, parsed[0][0])])[1]
+
+    def _read_legacy_lang(self, jar: Path) -> "str | None":
+        """读 1.13 以下服务端 jar 里的 ``.lang`` 文本（含 bundler 内嵌一层）。"""
+        try:
+            with zipfile.ZipFile(jar) as zf:
+                names = zf.namelist()
+                for target in _LEGACY_LANG_TARGETS:
+                    if target in names:
+                        return zf.read(target).decode("utf-8", "replace")
+                for name in [n for n in names if _NESTED_VERSION_RE.match(n)][:_NESTED_MAX_JARS]:
+                    try:
+                        if zf.getinfo(name).file_size > _NESTED_MAX_BYTES:
+                            continue
+                        with zipfile.ZipFile(io.BytesIO(zf.read(name))) as inner:
+                            for target in _LEGACY_LANG_TARGETS:
+                                if target in inner.namelist():
+                                    return inner.read(target).decode("utf-8", "replace")
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return None
+
+    def _parse_preflatten_lang(self, text: str, bridge: dict) -> int:
+        """解析 ``.lang`` 文本表，返回注册条数。
+
+        - 单键（``item.shovelIron.name``）→ 用桥接表换成注册名；
+        - 变体键（``tile.wood.oak.name``）→ 用**内置域表的展示名**反查 (族, 数据值)，
+          把该服务端自己的展示名刷进族表（比内置表更贴合这台服务器）。
+        """
+        vindex: dict[str, tuple] = {}
+        for fam, fv in (self.legacy_variants or {}).items():
+            for dmg, disp in (fv.get("variants") or {}).items():
+                if disp:
+                    vindex[str(disp).strip().lower()] = (fam, dmg)
+        n = 0
+        for raw in text.split("\n"):
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, disp = line.partition("=")
+            m = _LEGACY_LANG_KEY_RE.match(key.strip())
+            if not m:
+                continue
+            base, var = m.group(1), m.group(2)
+            disp = disp.strip()
+            if var:
+                hit = vindex.get(disp.lower())
+                if hit:
+                    fam, dmg = hit
+                    cur = self.items.setdefault(
+                        "minecraft:" + fam, {"en": fam, "zh": "", "type": "block"})
+                    cur.setdefault("variants", {})[str(dmg)] = disp
+                    n += 1
+                continue
+            ent = bridge.get(base)
+            if not ent:
+                continue
+            rid = "minecraft:" + ent["registry"]
+            cur = self.items.get(rid)
+            if cur:
+                cur["en"] = disp or cur.get("en") or rid
+            else:
+                self.items[rid] = {"en": disp or ent["registry"], "zh": "",
+                                   "type": "item", "legacy_key": base}
+            n += 1
+        return n
+
+    def _parse_legacy_vanilla(self, cands=None) -> bool:
+        """1.13 以下：``.lang`` 文本表 + 内置逐世代域表（B5）。
+
+        成功返回 True。失败（没有表 / 没有可用 jar）返回 False —— 词典条数保持 0，
+        与旧行为一致（fail-closed 由生成层负责，不在这里猜）。
+        """
+        d = self._legacy_data_dir()
+        if not d:
+            self.legacy_diag = f"缺逐世代数据表目录（{_LEGACY_DATA_DIR}/）"
+            return False
+        cands = list(cands or self._vanilla_jar_candidates())
+        if not cands:
+            self.legacy_diag = f"服务端目录下找不到任何候选 jar（server_dir={self.server_dir}）"
+            return False
+        seen_lang = 0
+        for jar in self._vanilla_jar_candidates():
+            # ★ 硬判据（2026-10-07 回归修正）：**必须**在这台机器的 jar 里读到 legacy
+            #   ``.lang`` 文本表，才认定它是「1.13 以下的预扁平化服务端」。
+            #   否则（例如 1.13+ 但没找到原版核、或纯引导 jar）一律落空 ——
+            #   绝不拿内置旧表去套现代服务端（域表不同，域外数据值会让客户端崩）。
+            text = self._read_legacy_lang(jar)
+            if not text:
+                continue
+            seen_lang += 1
+            m = _JAR_VERSION_RE.search(jar.name)
+            mc = self._ver_of(m.group(1)) if m else getattr(self, "mc_hint", None)
+            path = self._pick_legacy_table(mc, sorted(d.glob("*.json")), require_match=True)
+            if not path:
+                self.legacy_diag = (f"{jar.name} 里有 legacy .lang，但版本 {mc or '未知'}"
+                                    f"不在任何世代表的 range 内 → 落空")
+                continue
+            try:
+                table = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            self.legacy_generation = str(table.get("mc") or path.stem)
+            self.legacy_variants = dict(table.get("variants") or {})
+            self.legacy_bridge = dict(table.get("bridge") or {})
+            self._parse_preflatten_lang(text, self.legacy_bridge)
+            # 表兜底：jar 里没有 lang（或键不全）时，用内置表把条目补齐
+            for key, ent in self.legacy_bridge.items():
+                rid = "minecraft:" + ent["registry"]
+                self.items.setdefault(rid, {"en": ent.get("display") or ent["registry"],
+                                            "zh": "", "type": "item", "legacy_key": key})
+            for fam, fv in self.legacy_variants.items():
+                rid = "minecraft:" + fam
+                cur = self.items.setdefault(rid, {"en": fam, "zh": "", "type": "block"})
+                # 合并而非覆盖：**服务端自己的展示名优先**（比内置表更贴合这台机器）
+                merged = dict(fv.get("variants") or {})
+                merged.update(cur.get("variants") or {})
+                cur["variants"] = merged
+                cur["domain_upper"] = int(fv.get("domain_upper", -1))
+                cur["legacy_key"] = fam
+            self.legacy_diag = (f"预扁平化通道命中：{jar.name} → 世代 {self.legacy_generation}"
+                                f"（桥接 {len(self.legacy_bridge)} / 变体族 {len(self.legacy_variants)}）")
+            return True
+        self.legacy_diag = (f"候选 jar {len(cands)} 个，其中带 legacy .lang 的 {seen_lang} 个"
+                            f"（server_dir={self.server_dir}）→ 未装载")
+        return False
 
     def _parse_jar(self, jar: Path) -> None:
         try:
@@ -339,28 +551,37 @@ class ItemDictionary:
             return []
         # 支持空格变体：iron ingot → iron_ingot / ironingot
         variants = {kw, kw.replace(" ", "_"), kw.replace(" ", "")}
-        exact: list[str] = []
-        prefix: list[str] = []
-        contains: list[str] = []
+        exact: list[tuple] = []
+        prefix: list[tuple] = []
+        contains: list[tuple] = []
         for item_id, entry in self.items.items():
             en = (entry.get("en") or "").lower()
             zh = entry.get("zh") or ""
             id_l = item_id.lower()
-            if id_l in variants or en in variants or zh in variants:
-                exact.append(item_id)
-            elif any(
-                id_l.startswith(v) or en.startswith(v) or zh.startswith(v)
-                for v in variants
-            ):
-                prefix.append(item_id)
-            elif any(
-                v in id_l or v in en or v in zh for v in variants
-            ):
-                contains.append(item_id)
+            # B5：预扁平化变体族 —— 展示名（如 Red Wool）也要能命中，并带回**数据值**
+            vmap = {str(k): (v or "") for k, v in (entry.get("variants") or {}).items()}
+            vlow = {k: v.lower() for k, v in vmap.items()}
+            hit_exact = next((int(k) for k, v in vlow.items() if v in variants), None)
+            hit_pre = next((int(k) for k, v in vlow.items()
+                            if any(v.startswith(x) for x in variants)), None)
+            hit_sub = next((int(k) for k, v in vlow.items()
+                            if any(x in v for x in variants)), None)
+            if id_l in variants or en in variants or zh in variants or hit_exact is not None:
+                exact.append((item_id, hit_exact))
+            elif any(id_l.startswith(v) or en.startswith(v) or zh.startswith(v)
+                     for v in variants) or hit_pre is not None:
+                prefix.append((item_id, hit_pre))
+            elif any(v in id_l or v in en or v in zh for v in variants) or hit_sub is not None:
+                contains.append((item_id, hit_sub))
         ranked = exact + prefix + contains
-        return [
-            {"id": i, **self.items[i]} for i in ranked[:limit]
-        ]
+        out: list[dict] = []
+        for i, dmg in ranked[:limit]:
+            row = {"id": i, **self.items[i]}
+            if dmg is not None:
+                row["variant_damage"] = dmg
+                row["variant_display"] = (self.items[i].get("variants") or {}).get(str(dmg))
+            out.append(row)
+        return out
 
     def get_recipes(self, item: str, direction: str = "forward") -> list[dict]:
         """配方查询。forward=该物品怎么造；reverse=该物品能用来造什么。"""

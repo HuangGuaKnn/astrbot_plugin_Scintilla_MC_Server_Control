@@ -47,6 +47,11 @@ from .core.command_result import (
     classify_command_output,
 )
 from .core.item_dictionary import ItemDictionary
+from .core.legacy_items import (
+    LegacyGivePlan,
+    is_preflatten as legacy_is_preflatten,
+    plan_give as legacy_plan_give,
+)
 from .core.rate_limit import Cooldown
 from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase
 from .core.mod_fingerprint import compute_server_identity
@@ -489,6 +494,11 @@ class McControlPlugin(Star):
         if self._cfg("dictionary_enabled", True) and not remote_mode and valid_dir:
             cache = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control") / "items.json"
             self._dictionary = ItemDictionary(server_dir, str(cache))
+            try:      # B5：把版本喂给词典 —— jar 文件名抠不出版本时靠它选旧世代表
+                _vi = self._resolve_version_info()
+                self._dictionary.mc_hint = tuple(_vi.mc) if _vi.mc else None
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 stats = await asyncio.to_thread(self._dictionary.build)
                 self.logger.info("物品词典构建完成: %s", stats)
@@ -1456,6 +1466,11 @@ class McControlPlugin(Star):
         elif rebuild_dictionary or self._dictionary is None:
             try:
                 self._dictionary = ItemDictionary(server_dir, str(kdir / "items.json"))
+                try:  # B5：同上 —— 版本提示供预扁平化世代表选择
+                    _vi = self._resolve_version_info()
+                    self._dictionary.mc_hint = tuple(_vi.mc) if _vi.mc else None
+                except Exception:  # noqa: BLE001
+                    pass
                 stats = await asyncio.to_thread(self._dictionary.build)
                 parts.append(
                     f"物品词典已重建（{stats['mods']} 个 Mod / "
@@ -2451,15 +2466,25 @@ class McControlPlugin(Star):
             return "该功能已在插件配置中停用。"
         if not item or not str(item).strip():
             return "请指定要发放的物品ID。"
-        # v0.23.2（GPT 续单裁决 Q4）：已知服务端 < 1.13 时，带数据的物品命令不自动构造。
-        # 放在最前面 —— 与 v0.21.0「拦截即终局」同一口径，免得 AI 先折腾绑定再撞墙。
-        _pf = self._guard_command_for_version(f"give {item}", source="mc_give_item")
-        if _pf:
-            return _pf
         try:
             count = max(1, int(count))
         except (TypeError, ValueError):
             count = 1
+        # v0.23.2（GPT 续单裁决 Q4）：已知服务端 < 1.13 时，带数据的物品命令不自动构造。
+        # 「拦截即终局」口径不变（先判定、再折腾绑定）。
+        # B5（2026-10-07 真机实证）：<1.13 不再一律拒绝 —— 改走**预扁平化生成器**
+        # （名优先 + 家族名 + 数据值 + 域内值硬校验），产出后按「已验证通道」放行。
+        _legacy = False
+        _pf = self._guard_command_for_version(f"give {item}", source="mc_give_item")
+        # B5：判据以**证据**为准 —— 词典装载了预扁平化世代（= 这台机器的 jar 里确有
+        # legacy .lang）就该走生成器，哪怕版本探测失败（_pf 为空）。
+        if not _pf and legacy_is_preflatten(getattr(self, "_dictionary", None)):   # 缺词典 = 走不到生成器（失败关闭）
+            _pf = "legacy_dictionary"
+        if _pf:
+            _plan = self._legacy_give_plan(player or "player", item, count)
+            if not _plan.ok:
+                return f"未发放：{_plan.reason}"
+            _legacy = True
         # 命令工具（发物品）：先过闸门，再做玩家解析 —— v0.21.0「拦截即终局」，
         # 免得 AI 先折腾绑定/换参数、绕一圈才撞墙。
         denied = await self._safe_command(
@@ -2475,7 +2500,22 @@ class McControlPlugin(Star):
                 f"请先在聊天平台中使用 {self._wake_prefix()}mcs 绑定 <你的MC游戏名> 绑定后再发，"
                 "或在请求中直接指名目标玩家。"
             )
-        cmd = f"give {player} {item} {count}"
+        if _legacy:
+            # B5：用解析后的真实玩家名重算一次（玩家名也过生成器的注入防线）
+            _plan = self._legacy_give_plan(player, item, count)
+            if not _plan.ok:
+                return f"未发放：{_plan.reason}"
+            _assert = self._guard_command_for_version(
+                _plan.command, source="mc_give_item", validated_item=True
+            )
+            if _assert:      # 生成器产出理应放行；到此说明口径不一致 → 宁拦不发
+                return _assert
+            item = _plan.item_id
+            cmd = _plan.command
+            if _plan.notes:
+                self.logger.info("[B5] %s", "；".join(_plan.notes))
+        else:
+            cmd = f"give {player} {item} {count}"
         try:
             rcon = await self._get_rcon()
             r = await self._exec_checked(rcon, cmd)
@@ -2959,6 +2999,11 @@ class McControlPlugin(Star):
         """取运行中的 PluginManager 实例（AstrBot 在 Context 上挂了引用）。"""
         return getattr(self.context, "_star_manager", None)
 
+    def _bg_registry_closed(self) -> bool:
+        """后台登记册是否已收口（收口 = 本实例走过 terminate，此后排不出任何新任务）。"""
+        bg = getattr(self, "_bg", None)
+        return bool(getattr(bg, "_closing", False))
+
     def _schedule_hot_reload(self, target: str | None, delay: float = 0.6) -> str:
         """安排一次热重载：延迟一点点，先让本条回复发出去，再动刀。"""
         pm = self._plugin_manager()
@@ -3006,7 +3051,22 @@ class McControlPlugin(Star):
         task = self._spawn_bg("hot_reload", _runner(), policy="skip",
                               cancel_on_shutdown=False)
         if task is None:
-            # skip 丢弃了本次请求 —— 这时绝不能说「已安排」，那是谎报
+            # skip 丢弃了本次请求 —— 这时绝不能说「已安排」，那是谎报。
+            # v0.23.8：还要分清两种原因 —— 「已有同名任务在跑」是可以等一等；
+            # 「登记册已收口」则是本实例已被终止过，永远排不出任务，必须给出可执行出路。
+            # 替身 / 降级装配里可能没有本方法：拿不到就按「未收口」走正常口径，
+            # 绝不因为一次探测把重载入口炸掉（与 v0.23.2 起沿用的失败关闭口径一致）
+            _closed_fn = getattr(self, "_bg_registry_closed", None)
+            if _closed_fn is not None and _closed_fn():
+                self.logger.warning(
+                    "[热重载] 后台登记册已收口：本实例已被终止过（通常来自重载竞态），"
+                    "插件自身已无法再排重载任务。"
+                )
+                return (
+                    "本插件实例的后台登记册已收口（通常是刚被重载过、或在重载竞态里已被终止），"
+                    "插件自身已无法再排重载 —— 这条不是「等一会儿就好」。"
+                    "请到 AstrBot 插件管理页对本插件点一次「重载」，或重启 AstrBot 以恢复。"
+                )
             return (
                 "已经有一次重载在排队了，这次没重复排～ 等它跑完再试哦。"
                 "（热重载大约 1 秒完成，之后新代码立即生效）"
@@ -3543,8 +3603,29 @@ class McControlPlugin(Star):
         info = self._resolve_version_info()
         return describe_capabilities(info, self._cfg("item_syntax_override", "auto"))
 
-    def _preflatten_block_reason(self, command: str) -> str:
+    def _legacy_give_plan(
+        self, player: str, item: str, count: int,
+        damage: "int | None" = None, nbt: str = "",
+    ) -> LegacyGivePlan:
+        """B5：在 1.13 以下的**预扁平化**服务端上规划一条 ``give``。
+
+        证据来源是词典本身（``ItemDictionary.legacy_generation``）——它只在
+        「这台机器的服务端 jar 里确实有 legacy ``.lang`` 语言表」时才被填上。
+        没有这个证据就返回 ``ok=False``（fail-closed），**绝不凭版本号猜写法**。
+        """
+        d = self._dictionary
+        if d is None or not legacy_is_preflatten(d):
+            return LegacyGivePlan(
+                ok=False,
+                reason="该服务端不是预扁平化世代（或物品词典未装载），"
+                       "请用 mc_search_item 确认物品 ID 后再发。",
+            )
+        return legacy_plan_give(d, player, item, count=count, damage=damage, nbt=nbt)
+
+    def _preflatten_block_reason(self, command: str, validated_item: bool = False) -> str:
         """已知服务端 < 1.13 时，该命令能否**执行**？返回拒绝原因或空串（v0.23.2）。
+
+        ``validated_item=True``：命令由 B5 生成器产出（域内数据值已校验）→ 放行物品类。
 
         为什么要在代码侧拦、而不是只靠提示词：GPT 续单裁决 Q4 明确要求
         「1.12.2 + 附魔请求 → 不调用 rcon.command()」—— 提示词是软约束，
@@ -3559,10 +3640,11 @@ class McControlPlugin(Star):
             return ""      # 版本解析异常不得阻断主流程
         if info.mc is None or tuple(info.mc) >= ITEM_PREFLATTEN_CUTOVER:
             return ""
-        return preflatten_block_reason(command)
+        return preflatten_block_reason(command, validated_item=validated_item)
 
     def _guard_command_for_version(
-        self, command: str, *, source: str = "llm_tool", manual: bool = False
+        self, command: str, *, source: str = "llm_tool", manual: bool = False,
+        validated_item: bool = False,
     ) -> str:
         """**统一**版本能力守门：已知服务端 < 1.13 时，该命令能否执行？放行返回空串。
 
@@ -3581,11 +3663,14 @@ class McControlPlugin(Star):
             source: 调用来源，仅用于日志追溯（哪个入口拦下的）。
             manual: 是否「人工原始命令」通道（P1 预留）。当前无调用方传 True；
                 将来若开放，应仅限管理员 + WebUI 明确警告 + 回执写明「不保证跨版本兼容」。
+            validated_item: B5 —— 命令由 ``core/legacy_items.plan_give()`` 产出
+                （家族名 + 域内数据值 + NBT 结构校验）。**只对生成器开放**，
+                LLM 裸写的物品命令照旧一律拒绝。
         """
         if manual:
             return ""
         try:
-            reason = self._preflatten_block_reason(command)
+            reason = self._preflatten_block_reason(command, validated_item=validated_item)
         except Exception as e:  # noqa: BLE001
             self.logger.warning("版本能力守门异常（按放行处理）: %s", e)
             return ""
@@ -3595,10 +3680,12 @@ class McControlPlugin(Star):
             )
             return (
                 f"{reason}。\n"
-                "本插件暂不支持该服务端版本的自动命令生成："
-                "请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上。\n"
-                "如认为此判断有误（例如你确认该命令在旧版同样有效），"
-                "请带上服务端版本与这条命令原文到项目 Issues 反馈。"
+                "本插件在这类服务端上自动生成的只有两类："
+                "①不受 1.13 命令图改动影响的简单命令（say / time / weather / gamemode 等）；"
+                "②**由预扁平化生成器产出**的物品命令（先 mc_search_item 查物品，再走 give："
+                "家族名 + 域内数据值）。\n"
+                "其余命令请手动执行适配该版本的写法；如实需自动生成，"
+                "可把服务端升级到 1.13 及以上，或带上服务端版本与这条命令原文到项目 Issues 反馈。"
             )
         return ""
 
@@ -3952,6 +4039,7 @@ class McControlPlugin(Star):
         if not self._dictionary:
             return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
         stats = await asyncio.to_thread(self._dictionary.build)
+        self.logger.info("[词典重建] %s", stats)
         return (
             f"词典重建完成：{stats['mods']} 个 Mod，{stats['items']} 个物品，"
             f"{stats['recipes']} 条配方。"

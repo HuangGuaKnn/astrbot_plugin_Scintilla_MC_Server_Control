@@ -139,7 +139,7 @@ class FakeSelf:
     def _is_whitelist_policy(self):
         return str(self._cfg("danger_command_policy", "whitelist")) != "blacklist"
 
-    def _preflatten_block_reason(self, command):
+    def _preflatten_block_reason(self, command, *, validated_item: bool = False):
         """v0.23.2：版本能力守门不在本测试范围 —— 恒放行。
 
         本文件只验权限闸门；「1.12.2 下带数据命令不发送」由

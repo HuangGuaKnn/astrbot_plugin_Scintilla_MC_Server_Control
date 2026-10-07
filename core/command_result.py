@@ -233,7 +233,12 @@ _SELECTOR_WILDCARD_RE = re.compile(r"^@[apre](?:\[|\b)", re.IGNORECASE)
 #: 命中锚定模式 = 拿到**正面证据** → 跳过失败词扫描，
 #: 于是 ``Gave 1 [Diamond] to Error`` 不会被人名里的 ``Error`` 翻盘。
 ANCHORED_SUCCESS_PATTERNS: dict[str, tuple[str, ...]] = {
-    "give": (r"^gave\b",),
+    # give 的回执措辞**跨世代不同**（均在真机实测，不是猜的）：
+    #   · 1.16+            ：``Gave [X] * N to Player``   ← 原表只有这条
+    #   · 1.7.10 / 1.12.2  ：``Given [X] * N to Player``  ← 2026-10-07 1.12.2 工地实测
+    #     （pre-1.13 缺这条时，所有 give 都会落 ``unknown``：不重复发放、但回执永远「结果未知」）
+    #   · 1.13~1.15        ：``Added [X] * N to Player``   ← 待 1.13.2 工地实测后再补
+    "give": (r"^gave\b", r"^given\b"),
     "summon": (r"^summoned\b",),
     "time": (r"^set the time\b", r"^the time is\b", r"^time is\b"),
     "weather": (r"^changed the weather\b", r"^set the weather\b"),

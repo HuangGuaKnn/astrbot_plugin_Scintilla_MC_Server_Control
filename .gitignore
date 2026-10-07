@@ -21,7 +21,10 @@ _backup/
 plugin_config*.json
 
 # ---- AstrBot 运行产物 / 本地一次性跑测脚本 ----
-/data/
+/data/*
+!/data/legacy_items/
+!/data/legacy_items/1.7.10.json
+!/data/legacy_items/1.12.2.json
 run_full.py
 run_ui.py
 

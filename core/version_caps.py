@@ -159,15 +159,15 @@ def resolve_version_info(override: str = "", detected: str = "") -> VersionInfo:
 def item_syntax_for(mc: tuple[int, ...] | None) -> str:
     """版本 → 物品语法世代。
 
-    三态之外多一态（v0.23.2）：**已知版本 < 1.13** 返回
-    ``unsupported_preflatten`` —— 不再让它落进 ``legacy_nbt``。
-    因为 ``legacy_nbt`` 实际表示的是 **1.13~1.20.4** 的写法，
-    拿它去覆盖 1.12 只会生成语法上不成立的命令（静默错命令）。
+    v0.23.2 曾把「已知版本 < 1.13」判成 ``unsupported_preflatten``（一律 fail-closed）。
+    **B5 修订（2026-10-07 真机实证后）**：<1.13 返回 ``legacy_preflatten`` ——
+    预扁平化世代已实现「名优先 + 家族名 + 数据值」生成（域表见 ``data/legacy_items/``）。
+    逐物品的严格校验（域内数据值、无映射即拒）下沉到生成层，版本层不再一刀切拒绝。
     """
     if not mc:
         return ITEM_SYNTAX_UNKNOWN
     if tuple(mc) < ITEM_PREFLATTEN_CUTOVER:
-        return ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN
+        return ITEM_SYNTAX_PREFLATTEN
     return (
         ITEM_SYNTAX_COMPONENTS
         if tuple(mc) >= ITEM_COMPONENTS_CUTOVER
@@ -181,12 +181,13 @@ def resolve_item_syntax(info: VersionInfo, override: str = "auto") -> tuple[str,
     来源 ``override`` 时，即使版本未知也**允许**继续 —— 这是补丁 3 的逃生出口：
     异地模式用户手填语法世代后，复杂 NBT 请求不再被一律拒绝。
     """
-    # v0.23.2（裁决 Q1）：**已知**版本 < 1.13 时，手动指定世代也不放行 ——
-    # ``legacy_nbt`` 是 1.13~1.20.4 的写法，用它去「放行」1.12 只会生成错命令。
-    # 注意与「版本未知」的区别：未知时手填世代是合法逃生出口（异地模式），
-    # 而「知道是 1.12」的情况下，用户真正该做的是手动执行适配该版本的命令。
+    # v0.23.2（裁决 Q1）+ B5 修订（2026-10-07）：**已知**版本 < 1.13 时，
+    # 世代由版本判定（``legacy_preflatten``），手动指定 ``legacy_nbt`` /
+    # ``components`` 仍**不放行** —— 那两种写法在 1.12 上语法不成立，
+    # 用它们「放行」只会生成错命令。与「版本未知」的区别不变：
+    # 未知时手填世代是合法逃生出口（异地模式）。
     if info.mc is not None and tuple(info.mc) < ITEM_PREFLATTEN_CUTOVER:
-        return ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN, "unsupported"
+        return ITEM_SYNTAX_PREFLATTEN, "preflatten"
     ov = str(override or "auto").strip().lower()
     if ov in (ITEM_SYNTAX_LEGACY, ITEM_SYNTAX_COMPONENTS):
         return ov, "override"
@@ -225,7 +226,7 @@ CUTOVERS: tuple[dict, ...] = (
             "旧 `execute @p ~ ~ ~ <命令>` 废弃，改为 `execute as/at/positioned/... run`；"
             "`effect` / `difficulty` 语法变化，`entitydata` → `data`；"
             "同时做资源 ID 扁平化（数字 ID 移除、大量方块/物品/实体 ID 改名）。"
-            "**本插件对 <1.13 不自动生成命令**（见 ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN）。"
+            "**本插件对 1.13 以下的物品命令按预扁平化语法生成**：变体写「家族名 + 数据值」，域内值才放行；世代未确认时不生成（见 ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN）。"
         ),
     },
     {
@@ -362,7 +363,13 @@ PREFLATTEN_SAFE_COMMANDS: frozenset[str] = frozenset({
 PREFLATTEN_ITEM_COMMANDS: frozenset[str] = frozenset({"give", "clear", "item", "replaceitem"})
 
 
-def preflatten_block_reason(command: str) -> str:
+#: B5（2026-10-07 真机实证）：本世代**唯一**可放行的物品类命令 —— 由
+#: ``core/legacy_items.plan_give()`` 产出（家族名 + 域内数据值 + NBT 结构校验）。
+#: 注意：这只是「这条命令的语法/域合法」，**权限与副作用仍由 _safe_command 独立把关**。
+PREFLATTEN_VALIDATED_COMMANDS: frozenset[str] = frozenset({"give"})
+
+
+def preflatten_block_reason(command: str, validated_item: bool = False) -> str:
     """预扁平化服务端上，这条命令能否**自动生成 / 执行**？可放行返回空串，否则返回拒绝原因。
 
     判据（保守白名单）：
@@ -386,15 +393,21 @@ def preflatten_block_reason(command: str) -> str:
         return "命令为空"
     if name in PREFLATTEN_SAFE_COMMANDS:
         return ""
+    # B5：生成器产出（家族名 + 域内数据值）的物品命令走**已验证通道**放行。
+    # LLM 裸写的物品命令**依然一律拒绝** —— 这条通道只对生成器开放。
+    if validated_item and name in PREFLATTEN_VALIDATED_COMMANDS:
+        return ""
     if name in PREFLATTEN_ITEM_COMMANDS:
         return (
-            f"`{name}` 属于物品类命令，而 1.13 以下的物品 ID 与当前版本不同"
-            "（扁平化前是「数字 ID + data 值」），本插件尚未完成旧版物品 ID/data 映射；"
-            "请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上"
+            f"`{name}` 属于物品类命令：1.13 以下没有 1.13+ 的扁平名（如 `red_wool`），"
+            "变体物品必须写成「家族名 + 数据值」（如 `minecraft:wool` + `14`），"
+            "且数据值必须落在该族合法域内（域外值服务端不报错却会崩客户端）。"
+            "请先用 mc_search_item 查物品，再由插件的预扁平化生成器产出命令。"
         )
     return (
-        f"命令 `{name}` 属于 1.13 重写 / 扁平化影响的命令族，"
-        "本插件对 1.13 以下版本不自动生成命令"
+        f"命令 `{name}` 属于 1.13 重写 / 扁平化影响的命令族。"
+        "本插件对 1.13 以下版本**只对物品类命令走预扁平化生成通道**（`give` 为已验证通道），"
+        "本命令不在通道内，请手动执行适配该版本的写法。"
     )
 
 # ===================== 附魔 ID 版本化别名 =====================
@@ -458,6 +471,11 @@ _LEGACY_TEMPLATE = (
 _COMPONENTS_TEMPLATE = (
     "give <玩家> <物品ID>[enchantments={levels:{\"minecraft:<附魔ID>\":<等级>, ...}}] <数量>"
 )
+#: B5（2026-10-07 两代真机 `help give` 一字不差）：
+#: 1.8~1.12.2 的官方写法 —— 数据值仍在**位置参数**上，NBT 在物品 ID 之后。
+_PREFLATTEN_TEMPLATE = (
+    "give <玩家> <物品ID> <数量> [数据值] [{NBT}]"
+)
 
 
 def build_version_context(
@@ -490,28 +508,45 @@ def build_version_context(
         lines.append("  不要猜版本、不要凭记忆挑语法 —— 猜错会生成解析失败的命令。")
         return "\n".join(lines)
 
-    # ---- 已知版本 < 1.13：本插件不自动生成命令（v0.23.2 · GPT 续单裁决 Q1/Q4）----
+    # ---- 已知版本 < 1.13：预扁平化世代（B5 · 2026-10-07 真机实证）----
     if syntax == ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN:
+        # 保留态：B5 后不再由版本判定产生；若外部注入该值，仍按保守口径处理。
         lines.append(
-            f"- ⚠️ **该版本低于 1.13，本插件暂不支持自动生成命令。**"
+            f"- ⚠️ **该服务端的物品语法世代未确认，本次任务不要构造物品类命令。**"
             f"（分水岭：{version_text(ITEM_PREFLATTEN_CUTOVER)}）"
         )
+        safe = "、".join(f"`{c}`" for c in sorted(PREFLATTEN_SAFE_COMMANDS))
+        lines.append(f"  以下简单命令**可以**照常生成 —— {safe}。")
+        return "\n".join(lines)
+
+    if syntax == ITEM_SYNTAX_PREFLATTEN:
         lines.append(
-            "  原因：1.13 重写了命令图（`give` 取消数据值参数并把 NBT 移到物品 ID 之后、"
-            "旧 `execute` 废弃、`effect` / `difficulty` 变化、`entitydata`→`data`），"
-            "并做了资源 ID 扁平化。1.8~1.12.2 需要另一套预扁平化写法"
-            "（数字物品 ID + data 值、`ench` 数字附魔 ID、旧 `execute`），"
-            "本插件尚未实现，**也没有真机验证条件**。"
+            f"- 物品语法世代：**legacy_preflatten**（1.13 以下 · 预扁平化；来源：{syntax_source}）"
         )
         lines.append(
-            "  因此：**本次任务不要构造任何命令**，直接输出 `success=false`，"
-            "reasoning 写明：「服务端版本 "
-            f"{version_text(info.mc)} 低于 1.13，本插件暂不支持该版本的自动命令生成；"
-            "请手动执行适配该版本的命令，或把服务端升级到 1.13 及以上」。"
+            "- 本版本正确的物品写法（照抄结构，只换 ID / 数量 / 数据值）：\n  " + _PREFLATTEN_TEMPLATE
+        )
+        lines.append(
+            "- **变体物品必须写「家族名 + 数据值」**：例 红色羊毛 = `minecraft:wool` 数据值 `14`、"
+            "深色橡木木板 = `minecraft:planks` 数据值 `5`。"
+            "**禁止**写 1.13+ 的扁平名（`red_wool` / `oak_planks` / `grass_block`）——"
+            "本版本会回 `There is no such item with name …`。"
+        )
+        lines.append(
+            "- ⚠️ **数据值必须落在该族合法区间内**（羊毛 0~15、木板 0~5、原木 0~5 …）。"
+            "越界值服务端**不报错却会静默回落**，且可能让**客户端渲染崩溃**；"
+            "拿不准就按 `mc_search_item` 给出的可行值来，不要自行外推。"
+        )
+        lines.append(
+            "- 附魔写在物品 ID 之后的 `{}` 里、用**数字附魔 ID**（例 锋利 5 = "
+            "`give <玩家> minecraft:diamond_sword 1 0 {ench:[{id:16,lvl:5}]}`）。"
+        )
+        lines.append(
+            "- 数字物品 ID 已废弃（1.12.2 起服务端把它当名字解析并直接报错）：**一律用注册名**。"
         )
         safe = "、".join(f"`{c}`" for c in sorted(PREFLATTEN_SAFE_COMMANDS))
         lines.append(
-            f"  例外：以下不受 1.13 命令图改动影响的简单命令**可以**照常生成 —— {safe}。"
+            f"- 其它不受影响、可照常生成的简单命令 —— {safe}。"
         )
         return "\n".join(lines)
 
@@ -560,11 +595,13 @@ def describe_capabilities(
     supported = syntax not in (ITEM_SYNTAX_UNKNOWN, ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN)
     if syntax == ITEM_SYNTAX_UNKNOWN:
         support_note = "版本未知：带 NBT / 附魔 / 物品组件的请求不会被自动生成"
-    elif syntax == ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN:
+    elif syntax == ITEM_SYNTAX_PREFLATTEN:
         support_note = (
-            f"服务端低于 {version_text(ITEM_PREFLATTEN_CUTOVER)}："
-            "本插件暂不支持该版本的自动命令生成"
+            f"预扁平化世代（低于 {version_text(ITEM_PREFLATTEN_CUTOVER)}）："
+            "按「家族名 + 数据值」生成，域外数据值一律拒绝"
         )
+    elif syntax == ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN:
+        support_note = "物品语法世代未确认：物品类命令不会自动生成"
     else:
         support_note = "支持自动命令生成"
     return {

@@ -164,6 +164,24 @@ def main() -> None:
         check(f'{i} 已是 <select>', f'<select id="{i}"' in html)
         check(f'{i} 旧 text input 已清除', f'<input type="text" id="{i}"' not in html)
     check("提示元素 wf_model_tip 存在", 'id="wf_model_tip"' in html)
+    _adv = re.search(r'<div class="hint adv" id="wf_model_advice">.*?</div>', html, re.S)
+    adv = _adv.group(0) if _adv else ""
+    check("★提速建议元素 wf_model_advice 存在（6 个 Provider 位下方）", bool(adv))
+    # 文案与定稿逐字一致（去内联标签、空白归一后比对）—— 防日后被改写 / 漂移
+    ADV_TEXT = ("提速建议：优先选择响应和速度快的模型（如 DeepSeek V4.1 Flash）。"
+                "模型的思考强度由 AstrBot 模型服务商管理设置，"
+                "推荐把推理强度设为 low 或 high，过高的思考强度会导致工作流处理速度过慢。")
+    got = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", adv)).strip()
+    check("★提速建议文案与定稿逐字一致", got == ADV_TEXT, repr(got[:60]))
+    check("语气是「建议」而非「教做事」（无 请自行 / 必须 / 不要 / 禁止 / 不准）",
+          not any(w in adv for w in ("请自行", "必须", "不要", "禁止", "不准")))
+    check("显眼样式：class 带 adv + CSS 给色值字号 + 浅色主题单独取值",
+          'class="hint adv"' in adv and ".hint.adv{" in html and "font-size:12px" in html
+          and "color:var(--amber)" in html
+          and ':root[data-theme="light"] .hint.adv{color:#8a5d06}' in html)
+    check("位置：紧跟 5 个分工位之后、说明行之前",
+          html.find('id="wf_model_advice"') > html.find('id="cfg_wf_p_corrector"')
+          and html.find('id="wf_model_advice"') < html.find('id="wf_model_tip"'))
 
     print("---- 六、前端 JS：拉取 / 兜底 / 绑定 ----")
     m = re.search(r"const WF_MODEL_SEL_IDS = \[(.*?)\];", html, re.S)

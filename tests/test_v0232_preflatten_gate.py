@@ -16,10 +16,12 @@ data 参数、NBT 移到物品 ID 之后、数量后置，旧 ``execute`` 也被
 
 本测试必须钉死五件事
 ====================
-1. ``<1.13`` 不再落进 ``legacy_nbt``，而是 ``unsupported_preflatten``；
-2. 已知 ``<1.13`` 时**手填语法世代也不放行**（那是 1.13~1.20.4 的写法）；
+1. ``<1.13`` 不再落进 ``legacy_nbt``，而是独立的 ``legacy_preflatten`` 世代
+   （**B5 起可生成**：家族名 + 家族域校验，见 ``tests/test_b5_legacy_mapping.py``）；
+2. 已知 ``<1.13`` 时**手填别的语法世代也不放行**（``legacy_nbt`` 是 1.13~1.20.4" 的写法）；
 3. **版本未知的逃生出口不许被误伤**（异地模式仍能靠手填世代放行）；
-4. 注入片段必须**明确拒绝自动生成**，且**不给**任何 NBT / 组件模板；
+4. 注入片段必须给出**本世代正确写法**（数据值为位置参数、数字附魔 ID），
+   且**不得**把 1.13+ 的 NBT / 组件写法当成本世代模板；
 5. **代码侧硬拦**：1.12.2 下带数据的命令**根本不调用 rcon.command()**
    —— 只靠提示词不算数（裁决 Q4 原话）。
 
@@ -31,6 +33,15 @@ v0.23.2 第二版（GPT 核验 P0-1 / P0-2 / P0-3 + Q6）
    命令由 LLM 生成、不等于「用户手写」，不能绕过版本层；
 8. **全仓执行入口统一**：用 AST 扫描证明 10 个入口都调用 ``_guard_command_for_version()``；
 9. ``function_system`` 分水岭已登记（Q6：现在加入能力清单、暂不实现生成）。
+
+B5 修订（2026-10-07 · 两代真机实证）
+====================================================
+10. ``<1.13`` 从「一律拒绝」升级为 ``legacy_preflatten`` **可生成**世代：
+    ``give <玩家> <物品ID> <数量> [数据值] [{NBT}]``（1.7.10 与 1.12.2 的官方 usage 一字不差）；
+11. 变体物品一律「家族名 + 数据值」（``minecraft:wool`` + 14），域外数据值**一律拒绝**
+    （域外值服务端静默回落、客户端渲染崩溃 —— B13 血账）；
+12. **LLM 裸写的物品命令仍然一律拒绝**；只有 ``core/legacy_items.plan_give()``
+    的产出（``validated_item=True``）才走已验证通道放行，且仅限 ``give``。
 """
 from __future__ import annotations
 
@@ -81,10 +92,16 @@ PREFLATTEN_OK_CMD = "time set day"
 
 def syntax_cases() -> None:
     print("---- 一、语法世代：<1.13 单独成态 ----")
-    check("★1.12.2 → unsupported_preflatten（**不再**落进 legacy_nbt）",
-          vc.item_syntax_for((1, 12, 2)) == vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN,
+    # B5（2026-10-07 两代真机实证后）：<1.13 从「一律 fail-closed」升级为
+    # legacy_preflatten **可生成**世代；逐物品的严格校验（域内数据值 / 无映射即拒）
+    # 下沉到生成层（core/legacy_items.plan_give）。
+    check("★1.12.2 → legacy_preflatten（B5：可生成，域校验在生成层）",
+          vc.item_syntax_for((1, 12, 2)) == vc.ITEM_SYNTAX_PREFLATTEN,
           str(vc.item_syntax_for((1, 12, 2))))
-    check("1.8 → unsupported_preflatten", vc.item_syntax_for((1, 8)) == vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN)
+    check("1.8 → legacy_preflatten", vc.item_syntax_for((1, 8)) == vc.ITEM_SYNTAX_PREFLATTEN)
+    check("1.7.10 → legacy_preflatten", vc.item_syntax_for((1, 7, 10)) == vc.ITEM_SYNTAX_PREFLATTEN)
+    check("★unsupported_preflatten 常量保留（世代未确认时的兜底态）",
+          vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN == "unsupported_preflatten")
     check("★1.13 本身 → legacy_nbt（分水岭本身算新语法）",
           vc.item_syntax_for((1, 13)) == vc.ITEM_SYNTAX_LEGACY,
           str(vc.item_syntax_for((1, 13))))
@@ -99,15 +116,15 @@ def syntax_cases() -> None:
 
 
 def override_cases() -> None:
-    print("---- 二、手填语法世代：已知 <1.13 不放行，未知仍放行 ----")
+    print("---- 二、手填语法世代：已知 <1.13 由版本定，未知仍放行 ----")
     known = vc.resolve_version_info("1.12.2", "")
-    check("★已知 1.12.2 + 手填 legacy_nbt → **仍然拒绝**（legacy_nbt 是 1.13~1.20.4 的写法）",
-          vc.resolve_item_syntax(known, "legacy_nbt")[0] == vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN,
+    check("★已知 1.12.2 + 手填 legacy_nbt → **不放行错写法**（世代由版本定 = legacy_preflatten）",
+          vc.resolve_item_syntax(known, "legacy_nbt")[0] == vc.ITEM_SYNTAX_PREFLATTEN,
           str(vc.resolve_item_syntax(known, "legacy_nbt")))
-    check("★已知 1.12.2 + 手填 components → 同样拒绝",
-          vc.resolve_item_syntax(known, "components")[0] == vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN)
-    check("已知 1.12.2 + auto → 拒绝，来源标 unsupported",
-          vc.resolve_item_syntax(known, "auto") == (vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN, "unsupported"),
+    check("★已知 1.12.2 + 手填 components → 同样不放行",
+          vc.resolve_item_syntax(known, "components")[0] == vc.ITEM_SYNTAX_PREFLATTEN)
+    check("已知 1.12.2 + auto → legacy_preflatten，来源标 preflatten",
+          vc.resolve_item_syntax(known, "auto") == (vc.ITEM_SYNTAX_PREFLATTEN, "preflatten"),
           str(vc.resolve_item_syntax(known, "auto")))
 
     # ---- 回归：补丁 3 的逃生出口（异地模式）不许被误伤 ----
@@ -122,14 +139,17 @@ def override_cases() -> None:
 # ===================== 三、注入片段 =====================
 
 def context_cases() -> None:
-    print("---- 三、注入片段：明确拒绝，且不给模板 ----")
+    print("---- 三、注入片段：给出本世代正确写法 + 域硬约束 ----")
     ctx = vc.build_version_context(vc.resolve_version_info("1.12.2", ""))
-    check("★含「暂不支持自动生成命令」", "暂不支持自动生成命令" in ctx, ctx[:220])
-    check("★点名 1.13 的原因（give 参数顺序 + execute + 扁平化）",
-          "give" in ctx and "execute" in ctx and "扁平化" in ctx, ctx[:400])
-    check("★要求 LLM 输出 success=false 并给用户明确说法",
-          "success=false" in ctx and "1.13" in ctx, "")
-    check("★**不得**给出 NBT 模板（给了就等于诱导生成错命令）",
+    check("★标注世代 legacy_preflatten", "legacy_preflatten" in ctx, ctx[:220])
+    check("★给出本世代模板（数据值是位置参数）",
+          "give <玩家> <物品ID> <数量> [数据值] [{NBT}]" in ctx, ctx[:400])
+    check("★点明「家族名 + 数据值」并禁止 1.13+ 扁平名",
+          "家族名 + 数据值" in ctx and "red_wool" in ctx and "禁止" in ctx, "")
+    check("★给出数字附魔 ID 写法（锋利 = id16）", "ench" in ctx and "id:16" in ctx, "")
+    check("★点明域内值硬约束（域外会崩客户端）", "合法区间" in ctx and "崩溃" in ctx, "")
+    check("★不再宣称「暂不支持自动生成命令」", "暂不支持自动生成命令" not in ctx, "")
+    check("★**不得**把 1.13+ 的 NBT 模板当本世代写法（诱导生成错命令）",
           "Enchantments:[{id:" not in ctx, ctx[:400])
     check("★**不得**给出物品组件模板", "enchantments={levels:" not in ctx, "")
     check("给出白名单例外（time / say 等仍可生成）",
@@ -147,10 +167,12 @@ def context_cases() -> None:
 def capability_snapshot_cases() -> None:
     print("---- 四、能力快照（WebUI 用）----")
     caps = vc.describe_capabilities(vc.resolve_version_info("1.12.2", ""))
-    check("★supported = False", caps["supported"] is False, str(caps.get("supported")))
-    check("★support_note 说明低于 1.13 不支持", "不支持" in caps["support_note"], caps["support_note"])
-    check("item_syntax = unsupported_preflatten",
-          caps["item_syntax"] == vc.ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN)
+    check("★supported = True（B5：预扁平化世代已可生成）",
+          caps["supported"] is True, str(caps.get("supported")))
+    check("★support_note 说明按「家族名 + 数据值」生成且拒绝域外值",
+          "预扁平化" in caps["support_note"] and "数据值" in caps["support_note"], caps["support_note"])
+    check("item_syntax = legacy_preflatten",
+          caps["item_syntax"] == vc.ITEM_SYNTAX_PREFLATTEN)
     check("带 preflatten_cutover = 1.13", caps["preflatten_cutover"] == "1.13")
     check("带 verified_on（诚实标注真机矩阵）", "1.20.1" in caps["verified_on"], caps.get("verified_on"))
     caps20 = vc.describe_capabilities(vc.resolve_version_info("1.20.1", ""))
@@ -201,9 +223,19 @@ def gate_judgement_cases() -> None:
     check("★★不带数据的 give 也拦（P0-2：物品 ID 扁平化风险）",
           bool(vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD)),
           vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD))
-    check("★物品类拒绝文案点名「旧版物品 ID/data 映射」",
-          "旧版物品 ID/data 映射" in vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD),
+    check("★物品类拒绝文案给出正确路子（家族名 + 数据值 + mc_search_item）",
+          "家族名 + 数据值" in vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD)
+          and "mc_search_item" in vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD),
           vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD))
+    # ---- B5：生成器产出走「已验证通道」放行；LLM 裸写仍然一律拒绝 ----
+    check("★★B5 已验证通道：放行 give（生成器产出，域内值已校验）",
+          vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD, validated_item=True) == "")
+    check("★★B5 已验证通道**不放行**非 give 命令（clear / replaceitem 仍拦）",
+          bool(vc.preflatten_block_reason("clear Steve", validated_item=True))
+          and bool(vc.preflatten_block_reason(
+              "replaceitem entity Steve slot.weapon.mainhand diamond", validated_item=True)))
+    check("★B5：不传 validated_item 时 give 照旧一律拒绝（LLM 裸写）",
+          bool(vc.preflatten_block_reason(PREFLATTEN_ITEM_CMD)))
     for cmd in ("execute as @a run say hi", "effect give Steve minecraft:speed 10 1",
                 "difficulty hard", "summon minecraft:zombie", "setblock 1 2 3 stone",
                 "clear Steve minecraft:diamond_sword{Enchantments:[]}",
@@ -404,10 +436,10 @@ def guard_cases() -> None:
 
     # ③ 拒绝文案统一
     msg = _guard("1.12.2", "give Steve wool 1")
-    check("★拒绝文案含「暂不支持该服务端版本的自动命令生成」",
-          "暂不支持该服务端版本的自动命令生成" in msg, msg)
+    check("★拒绝文案说明本插件在旧版只自动生成哪两类（含预扁平化生成器）",
+          "预扁平化生成器" in msg, msg)
     check("★拒绝文案给出两条出路（手动执行 / 升级 1.13+）",
-          "手动执行适配该版本的命令" in msg and "1.13 及以上" in msg, msg)
+          "手动执行适配该版本的写法" in msg and "1.13 及以上" in msg, msg)
 
     # ④ 不外溢：1.13+ / 未知 / 解析不出 一律放行
     for ver in ("1.13", "1.20.1", "1.21", ""):
@@ -460,9 +492,10 @@ def main() -> int:
         for f in _fail:
             print(f"  - {f}")
         return 1
-    print(f"全部通过（{_pass} 项）：<1.13 从「看似支持」变成「明确不支持」，"
-          f"物品类命令（含裸 give）与所有执行入口都被统一守门拦下"
-          f"（不会调用 rcon.command）")
+    print(f"全部通过（{_pass} 项）：<1.13 属 legacy_preflatten **可生成**世代 —— "
+          "版本由代码判定、写法由代码注入（家族名 + 数据值），"
+          "域外数据值与 LLM 裸写的物品命令仍被统一守门拦下（不调用 rcon.command）；"
+          "生成器产出走已验证通道放行。")
     return 0
 
 
