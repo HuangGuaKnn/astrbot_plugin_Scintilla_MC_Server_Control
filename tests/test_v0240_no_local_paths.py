@@ -21,12 +21,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 #: 本机痕迹判据（与 CHANGELOG 卫生那条同源，但**扫描范围覆盖源码与 tests/**）。
+#: 只认**真路径形状**：占位写法（`C:/Users/<账户>/…`）与用法说明（`file:///...`）
+#: 属于叙述，不算本机痕迹 —— 判据收得太宽会把讲这条规矩的文档本身也判红。
 PATTERNS = (
-    r"[A-Za-z]:\\+Users\\+",     # C:\Users\…
-    r"[A-Za-z]:/Users/",             # C:/Users/…
-    r"[A-Za-z]:\\+AstrBotOps",     # 运维台账目录
-    r"file:///",                     # 本机文件 URL
-    r"Users\\+10316",              # 本机账户名
+    r"[A-Za-z]:\\+Users\\+[A-Za-z0-9_.-]+",   # C:\Users\<真账户>\…
+    r"[A-Za-z]:/Users/[A-Za-z0-9_.-]+",           # C:/Users/<真账户>/…
+    r"[A-Za-z]:\\+AstrBotOps\\+[A-Za-z0-9_.-]+",  # 运维台账目录
+    r"file:///[A-Za-z]:/",                        # 本机文件 URL（带盘符）
+    r"Users\\+10316\\+",                      # 本机账户名
 )
 
 #: 自己与「判据声明处」必然含这些串，跳过。
