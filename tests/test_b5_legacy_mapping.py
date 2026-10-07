@@ -27,7 +27,13 @@ from core import legacy_items as li          # noqa: E402
 from core import version_caps as vc          # noqa: E402
 from core.item_dictionary import ItemDictionary  # noqa: E402
 
-MATRIX = r"C:\Users\10316\Desktop\mcs-matrix"
+#: 真机靶场目录（**不写死本机路径**：可用环境变量覆盖，缺省找 <家>/Desktop/mcs-matrix）。
+#: 找不到就让下面「一、词典通道」整段**跳过**，换台机器（如 CI）也能跑通其余部分。
+MATRIX = os.environ.get("SCINTILLA_MATRIX_DIR") or os.path.join(
+    os.path.expanduser("~"), "Desktop", "mcs-matrix")
+#: 靶场两台服务端目录都在，才算「本机能做真机链条」；否则下面相关段落整体跳过。
+HAS_MATRIX = (os.path.isdir(os.path.join(MATRIX, "1.7.10-forge"))
+              and os.path.isdir(os.path.join(MATRIX, "1.12.2-forge")))
 PASS, FAIL = [], []
 
 
@@ -56,49 +62,54 @@ print("=" * 78)
 
 # ---------------------------------------------------------------- 一、词典通道
 print("\n---- 一、词典预扁平化通道（真机目录）----")
-d710 = ItemDictionary(os.path.join(MATRIX, "1.7.10-forge"))
-s710 = d710.build()
-check("★1.7.10 目录 → 识别为预扁平化世代", d710.legacy_generation == "1.7.10", d710.legacy_generation)
-check("★1.7.10 → 变体族 ≥ 40", len(d710.legacy_variants) >= 40, len(d710.legacy_variants))
-check("1.7.10 → 桥接条数 ≥ 250", len(d710.legacy_bridge) >= 250, len(d710.legacy_bridge))
-r = d710.search_items("diamond sword", 1)
-check("★1.7.10 搜 diamond sword → minecraft:diamond_sword",
-      bool(r) and r[0]["id"] == "minecraft:diamond_sword", r[:1])
-r = d710.search_items("red wool", 1)
-check("★1.7.10 搜 red wool → wool + 数据值 14",
-      bool(r) and r[0]["id"] == "minecraft:wool" and r[0].get("variant_damage") == 14, r[:1])
-r = d710.search_items("podzol", 1)
-check("1.7.10 搜 podzol → dirt + 数据值 2",
-      bool(r) and r[0]["id"] == "minecraft:dirt" and r[0].get("variant_damage") == 2, r[:1])
-check("1.7.10 → 域表带 domain_upper（dirt = 2）",
-      isinstance(d710.legacy_variants.get("dirt", {}).get("domain_upper"), int)
-      and d710.legacy_variants["dirt"]["domain_upper"] == 2,
-      d710.legacy_variants.get("dirt", {}).get("domain_upper"))
-check("★1.7.10 域表内容与实测一致（wool 0 = Wool —— 1.7.10 就叫 Wool）",
-      d710.legacy_variants.get("wool", {}).get("variants", {}).get("0") == "Wool",
-      d710.legacy_variants.get("wool", {}).get("variants", {}).get("0"))
+if not HAS_MATRIX:
+    print("（跳过本段：本机没有靶场目录 %s）" % MATRIX)
+    print("  提示：把靶场放好，或设 SCINTILLA_MATRIX_DIR 指向它，即可跑这一段。")
+else:
+    d710 = ItemDictionary(os.path.join(MATRIX, "1.7.10-forge"))
+    s710 = d710.build()
+    check("★1.7.10 目录 → 识别为预扁平化世代", d710.legacy_generation == "1.7.10", d710.legacy_generation)
+    check("★1.7.10 → 变体族 ≥ 40", len(d710.legacy_variants) >= 40, len(d710.legacy_variants))
+    check("1.7.10 → 桥接条数 ≥ 250", len(d710.legacy_bridge) >= 250, len(d710.legacy_bridge))
+    r = d710.search_items("diamond sword", 1)
+    check("★1.7.10 搜 diamond sword → minecraft:diamond_sword",
+          bool(r) and r[0]["id"] == "minecraft:diamond_sword", r[:1])
+    r = d710.search_items("red wool", 1)
+    check("★1.7.10 搜 red wool → wool + 数据值 14",
+          bool(r) and r[0]["id"] == "minecraft:wool" and r[0].get("variant_damage") == 14, r[:1])
+    r = d710.search_items("podzol", 1)
+    check("1.7.10 搜 podzol → dirt + 数据值 2",
+          bool(r) and r[0]["id"] == "minecraft:dirt" and r[0].get("variant_damage") == 2, r[:1])
+    check("1.7.10 → 域表带 domain_upper（dirt = 2）",
+          isinstance(d710.legacy_variants.get("dirt", {}).get("domain_upper"), int)
+          and d710.legacy_variants["dirt"]["domain_upper"] == 2,
+          d710.legacy_variants.get("dirt", {}).get("domain_upper"))
+    check("★1.7.10 域表内容与实测一致（wool 0 = Wool —— 1.7.10 就叫 Wool）",
+          d710.legacy_variants.get("wool", {}).get("variants", {}).get("0") == "Wool",
+          d710.legacy_variants.get("wool", {}).get("variants", {}).get("0"))
 
-d122 = ItemDictionary(os.path.join(MATRIX, "1.12.2-forge"))
-s122 = d122.build()
-check("★1.12.2 目录 → 识别为预扁平化世代", d122.legacy_generation == "1.12.2", d122.legacy_generation)
-check("★1.12.2 → 变体族 ≥ 40", len(d122.legacy_variants) >= 40, len(d122.legacy_variants))
-check("1.12.2 → 桥接条数 ≥ 350", len(d122.legacy_bridge) >= 350, len(d122.legacy_bridge))
-r = d122.search_items("chiseled red sandstone", 1)
-check("★1.12.2 搜 chiseled red sandstone → red_sandstone + 数据值 1",
-      bool(r) and r[0]["id"] == "minecraft:red_sandstone" and r[0].get("variant_damage") == 1, r[:1])
-check("★1.12.2 域表含 banner（16 色）",
-      d122.legacy_variants.get("banner", {}).get("domain_upper") == 15,
-      d122.legacy_variants.get("banner", {}).get("domain_upper"))
-check("★代际展示名差异：1.7.10 Wool ≠ 1.12.2 White Wool",
-      d710.legacy_variants.get("wool", {}).get("variants", {}).get("0") !=
-      d122.legacy_variants.get("wool", {}).get("variants", {}).get("0"))
-check("★代际差异：1.12.2 展示名 Terracotta ≠ 1.7.10 Stained Clay",
-      d122.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0") == "White Terracotta"
-      and d710.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0") == "White Stained Clay",
-      (d122.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0"),
-       d710.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0")))
+    d122 = ItemDictionary(os.path.join(MATRIX, "1.12.2-forge"))
+    s122 = d122.build()
+    check("★1.12.2 目录 → 识别为预扁平化世代", d122.legacy_generation == "1.12.2", d122.legacy_generation)
+    check("★1.12.2 → 变体族 ≥ 40", len(d122.legacy_variants) >= 40, len(d122.legacy_variants))
+    check("1.12.2 → 桥接条数 ≥ 350", len(d122.legacy_bridge) >= 350, len(d122.legacy_bridge))
+    r = d122.search_items("chiseled red sandstone", 1)
+    check("★1.12.2 搜 chiseled red sandstone → red_sandstone + 数据值 1",
+          bool(r) and r[0]["id"] == "minecraft:red_sandstone" and r[0].get("variant_damage") == 1, r[:1])
+    check("★1.12.2 域表含 banner（16 色）",
+          d122.legacy_variants.get("banner", {}).get("domain_upper") == 15,
+          d122.legacy_variants.get("banner", {}).get("domain_upper"))
+    check("★代际展示名差异：1.7.10 Wool ≠ 1.12.2 White Wool",
+          d710.legacy_variants.get("wool", {}).get("variants", {}).get("0") !=
+          d122.legacy_variants.get("wool", {}).get("variants", {}).get("0"))
+    check("★代际差异：1.12.2 展示名 Terracotta ≠ 1.7.10 Stained Clay",
+          d122.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0") == "White Terracotta"
+          and d710.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0") == "White Stained Clay",
+          (d122.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0"),
+           d710.legacy_variants.get("stained_hardened_clay", {}).get("variants", {}).get("0")))
 
-# ------------------------------------------------- 二、fail-closed 边界
+    # ------------------------------------------------- 二、fail-closed 边界
+
 print("\n---- 二、fail-closed 边界 ----")
 with tempfile.TemporaryDirectory() as td:
     de = ItemDictionary(td)
@@ -168,61 +179,63 @@ check("现代路径 supported 仍为 True", cap_m.get("supported") is True, cap_
 
 # ---------------------------------------------------------------- 四、生成器
 print("\n---- 四、生成器判据链（1.12.2 / 1.7.10）----")
-p = li.plan_give(d122, "Knn", "diamond sword", 1)
-check("★普通物品 → give Knn minecraft:diamond_sword 1",
-      p.ok and p.command == "give Knn minecraft:diamond_sword 1", p.command or p.reason)
-p = li.plan_give(d122, "Knn", "red wool", 1)
-check("★变体（按展示名）→ give Knn minecraft:wool 1 14",
-      p.ok and p.command == "give Knn minecraft:wool 1 14", p.command or p.reason)
-p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=0)
-check("显式数据值 0 也写进命令（位置参数语义）",
-      p.ok and p.command == "give Knn minecraft:wool 1 0", p.command or p.reason)
-p = li.plan_give(d122, "Knn", "minecraft:planks", 1, damage=9)
-check("★域外数据值 9（木板域 0~5）→ 一律拒绝", (not p.ok) and "域" in p.reason, p.reason or p.command)
-p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=99)
-check("★域外数据值 99 → 一律拒绝", (not p.ok) and "域" in p.reason, p.reason or p.command)
-p = li.plan_give(d122, "Knn", "minecraft:diamond_sword", 1, damage=3)
-check("★非变体物品不接受数据值", (not p.ok) and "变体" in p.reason, p.reason or p.command)
-p = li.plan_give(d122, "Knn", "netherite_sword", 1)
-check("★本世代没有的物品 → 拒绝（不猜）", not p.ok, p.reason or p.command)
-p = li.plan_give(d122, "Knn", "minecraft:double_stone_slab", 1)
-check("★1.12.2 不存在的族（double_stone_slab）→ 拒绝", not p.ok, p.reason or p.command)
-nbt = li.build_enchant_nbt([(16, 5)])
-p = li.plan_give(d122, "Knn", "diamond sword", 1, nbt=nbt)
-check("★附魔 NBT → give Knn minecraft:diamond_sword 1 0 {ench:[{id:16,lvl:5}]}",
-      p.ok and p.command == "give Knn minecraft:diamond_sword 1 0 {ench:[{id:16,lvl:5}]}",
-      p.command or p.reason)
-p = li.plan_give(d122, "Knn", "minecraft:wool", 2, damage=14, nbt='{display:{Name:"x"}}')
-check("★变体 + NBT → 数据值与 NBT 同时到位",
-      p.ok and p.command == 'give Knn minecraft:wool 2 14 {display:{Name:"x"}}', p.command or p.reason)
-p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=14, nbt="{ench:[{id:16,lvl:5}]")
-check("★NBT 花括号不配对 → 拒绝", not p.ok, p.reason or p.command)
-try:
-    li.build_enchant_nbt([(999, 5)])
-    check("★附魔 ID 越界 → ValueError", False, "未抛异常")
-except ValueError:
-    check("★附魔 ID 越界 → ValueError", True)
-for bad in ["Knn; stop", "Knn op @a", "a b", "K" * 17, ""]:
-    p = li.plan_give(d122, bad, "diamond sword", 1)
-    check("★注入防线：玩家名 %r → 拒绝" % bad, not p.ok, p.reason or p.command)
-for bad_n, want in [(0, False), (6401, False), (6400, True), ("x", False)]:
-    p = li.plan_give(d122, "Knn", "diamond sword", bad_n)
-    check("数量 %r → %s" % (bad_n, "接受" if want else "拒绝"), p.ok is want, p.command or p.reason)
-p = li.plan_give(d710, "Knn", "red wool", 1)
-check("★1.7.10 词典同样工作（red wool → wool + 14）",
-      p.ok and p.command == "give Knn minecraft:wool 1 14", p.command or p.reason)
-p = li.plan_give(d710, "Knn", "minecraft:red_sandstone", 1)
-check("★代际差：1.7.10 没有 red_sandstone → 拒绝", not p.ok, p.reason or p.command)
-check("★is_preflatten 判据（预扁平化词典 True / 空词典 False）",
-      li.is_preflatten(d122) and not li.is_preflatten(ItemDictionary(".")))
-check("预览可用（失败给可读原因）", li.render_preview(d122, "Knn", "minecraft:planks", 1, 9).startswith("[拒绝]"))
+if HAS_MATRIX:
+    p = li.plan_give(d122, "Knn", "diamond sword", 1)
+    check("★普通物品 → give Knn minecraft:diamond_sword 1",
+          p.ok and p.command == "give Knn minecraft:diamond_sword 1", p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "red wool", 1)
+    check("★变体（按展示名）→ give Knn minecraft:wool 1 14",
+          p.ok and p.command == "give Knn minecraft:wool 1 14", p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=0)
+    check("显式数据值 0 也写进命令（位置参数语义）",
+          p.ok and p.command == "give Knn minecraft:wool 1 0", p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "minecraft:planks", 1, damage=9)
+    check("★域外数据值 9（木板域 0~5）→ 一律拒绝", (not p.ok) and "域" in p.reason, p.reason or p.command)
+    p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=99)
+    check("★域外数据值 99 → 一律拒绝", (not p.ok) and "域" in p.reason, p.reason or p.command)
+    p = li.plan_give(d122, "Knn", "minecraft:diamond_sword", 1, damage=3)
+    check("★非变体物品不接受数据值", (not p.ok) and "变体" in p.reason, p.reason or p.command)
+    p = li.plan_give(d122, "Knn", "netherite_sword", 1)
+    check("★本世代没有的物品 → 拒绝（不猜）", not p.ok, p.reason or p.command)
+    p = li.plan_give(d122, "Knn", "minecraft:double_stone_slab", 1)
+    check("★1.12.2 不存在的族（double_stone_slab）→ 拒绝", not p.ok, p.reason or p.command)
+    nbt = li.build_enchant_nbt([(16, 5)])
+    p = li.plan_give(d122, "Knn", "diamond sword", 1, nbt=nbt)
+    check("★附魔 NBT → give Knn minecraft:diamond_sword 1 0 {ench:[{id:16,lvl:5}]}",
+          p.ok and p.command == "give Knn minecraft:diamond_sword 1 0 {ench:[{id:16,lvl:5}]}",
+          p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "minecraft:wool", 2, damage=14, nbt='{display:{Name:"x"}}')
+    check("★变体 + NBT → 数据值与 NBT 同时到位",
+          p.ok and p.command == 'give Knn minecraft:wool 2 14 {display:{Name:"x"}}', p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "minecraft:wool", 1, damage=14, nbt="{ench:[{id:16,lvl:5}]")
+    check("★NBT 花括号不配对 → 拒绝", not p.ok, p.reason or p.command)
+    try:
+        li.build_enchant_nbt([(999, 5)])
+        check("★附魔 ID 越界 → ValueError", False, "未抛异常")
+    except ValueError:
+        check("★附魔 ID 越界 → ValueError", True)
+    for bad in ["Knn; stop", "Knn op @a", "a b", "K" * 17, ""]:
+        p = li.plan_give(d122, bad, "diamond sword", 1)
+        check("★注入防线：玩家名 %r → 拒绝" % bad, not p.ok, p.reason or p.command)
+    for bad_n, want in [(0, False), (6401, False), (6400, True), ("x", False)]:
+        p = li.plan_give(d122, "Knn", "diamond sword", bad_n)
+        check("数量 %r → %s" % (bad_n, "接受" if want else "拒绝"), p.ok is want, p.command or p.reason)
+    p = li.plan_give(d710, "Knn", "red wool", 1)
+    check("★1.7.10 词典同样工作（red wool → wool + 14）",
+          p.ok and p.command == "give Knn minecraft:wool 1 14", p.command or p.reason)
+    p = li.plan_give(d710, "Knn", "minecraft:red_sandstone", 1)
+    check("★代际差：1.7.10 没有 red_sandstone → 拒绝", not p.ok, p.reason or p.command)
+    check("★is_preflatten 判据（预扁平化词典 True / 空词典 False）",
+          li.is_preflatten(d122) and not li.is_preflatten(ItemDictionary(".")))
+    check("预览可用（失败给可读原因）", li.render_preview(d122, "Knn", "minecraft:planks", 1, 9).startswith("[拒绝]"))
 
-print("\n" + "=" * 78)
-if FAIL:
-    print("FAILED %d 项（共 %d）：" % (len(FAIL), len(PASS) + len(FAIL)))
-    for f in FAIL:
-        print("  - " + f)
-    sys.exit(1)
+    print("\n" + "=" * 78)
+    if FAIL:
+        print("FAILED %d 项（共 %d）：" % (len(FAIL), len(PASS) + len(FAIL)))
+        for f in FAIL:
+            print("  - " + f)
+        sys.exit(1)
+
 print("全部通过（%d 项）：预扁平化世代「名优先 + 家族名 + 数据值」生成链，"
       "域外值一律拒绝，版本门按世代分派，现代路径不受影响。" % len(PASS))
 
