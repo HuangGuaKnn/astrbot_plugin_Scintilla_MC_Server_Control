@@ -41,7 +41,16 @@ jobs:
       - name: 语法检查 + 回归测试（与发版前置同一套）
         # run_release_verify.py = 静态（编译 / schema / 元数据 / UI 归类守卫 / 发布包卫生）
         # + 全部 tests/test_*.py，逐文件超时；--no-ui 交给 ui-contract job 去跑
-        run: python run_release_verify.py --no-ui
+        run: |
+          set -o pipefail
+          python run_release_verify.py --no-ui 2>&1 | tee /tmp/verify.log
+      - name: 失败时把红点写成注解（日志需登录才能看，注解不需要）
+        if: failure()
+        run: |
+          test -f /tmp/verify.log || exit 0
+          grep -E '^\[FAIL\]|Traceback|ModuleNotFoundError|AssertionError|Error:' /tmp/verify.log \
+            | head -25 | while IFS= read -r line; do echo "::error title=CI 红点::$line"; done
+          grep -E '失败项' /tmp/verify.log | head -3 | while IFS= read -r line; do echo "::warning title=失败清单::$line"; done
 
   ui-contract:
     # 外部审查（第 4 轮）后按用户拍板的方案 B 拆分：**契约类**进硬门禁。
