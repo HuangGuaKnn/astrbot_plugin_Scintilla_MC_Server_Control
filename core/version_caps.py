@@ -359,7 +359,8 @@ PREFLATTEN_SAFE_COMMANDS: frozenset[str] = frozenset({
 #: 参数位置与 1.13+ 一致）。GPT 核验指出该推理**不足以证明语义正确** ——
 #: 因为 ``item`` 本身可能就是扁平化之后的现代 ID（1.12 里没有 ``red_wool``，
 #: 只有 ``wool`` + data 14），而本函数无从校验「这个 ID 在旧版是否存在 / 要不要 data 值」。
-#: 故在实现旧版物品映射（数字 ID + data，见 P1 路线图）之前，物品类命令一并拦掉。
+#: 故物品类命令对**用户手写**一律拦掉（该语义至今未放宽）；例外只有下面
+#: `PREFLATTEN_VALIDATED_COMMANDS` 里那条由生成器产出、带域校验的 `give`（B5）。
 PREFLATTEN_ITEM_COMMANDS: frozenset[str] = frozenset({"give", "clear", "item", "replaceitem"})
 
 

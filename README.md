@@ -43,7 +43,7 @@
 | 能力 | 说明 |
 |---|---|
 | 自然语言指令 | 「给 Steve 发一把钻石剑」→ LLM 调 `mc_give_item`；「把天气设成雷雨」→ `mc_execute_command` |
-| 物品 ID 词典 | 扫服务端 `mods/`（Forge / NeoForge / Fabric）各 mod 的 jar，生成精确 ID 词典，支持中英文模糊搜索。**Paper / Spigot 系没有 `mods/`**，此时退化为从服务端原生 jar 里读**原版**英文物品表 —— 原版物品只有英文名（中文搜不到），模组物品与配方仍需 `mods/` |
+| 物品 ID 词典 | 扫服务端 `mods/`（Forge / NeoForge / Fabric）各 mod 的 jar，生成精确 ID 词典，支持中英文模糊搜索。**Paper / Spigot 系没有 `mods/`**，此时退化为从服务端原生 jar 里读**原版**英文物品表 —— 原版物品只有英文名（中文搜不到），模组物品与配方仍需 `mods/`；**1.13 以下**改读 jar 里的 legacy `.lang` 加内置逐世代表（可搜英文名与家族名） |
 | 服务器事件播报 | 玩家 进入/离开/聊天/死亡/成就/指令 六类事件推送到指定会话，可逐类开关 |
 | 聊天桥接 | 游戏内聊天 ↔ 群聊双向转发（可加符号、区分大小写、留空则转发全部） |
 | 多 Agent 工作流 | 复杂整合包任务走 `分类 → 模板判断 → 前瞻建库 → 实现 → 纠错` 流水线，工具 `mc_workflow` 一键路由 |
@@ -58,25 +58,27 @@
 
 | 服务端版本 | 自动命令生成 | 物品数据写法 |
 | --- | --- | --- |
+| **1.7.10 ~ 1.12.2** | ✅ 支持（物品类 `give`） | 预扁平化：**家族名 + 数据值**，如 `give <你> wool 3 14`（3 个红色羊毛）。域内值硬校验、**域外值一律拒绝** —— 那种数据值服务端不报错、却会静默回落甚至崩客户端。已实测签收 `1.7.10` / `1.12.2`（41 族域内值总账 + 正反样例）；`1.8.9` / `1.9.4` 按同世代推断。仍被拒的是 `clear` / `item` / `replaceitem` 等**非 `give`** 物品命令（理由见下） |
 | **1.13 ~ 1.20.4** | ✅ 支持 | NBT：`netherite_sword{Enchantments:[{id:"minecraft:sharpness",lvl:5}]}` |
 | **1.20.5 ~ 1.21+** | ✅ 支持 | 物品组件：`netherite_sword[enchantments={levels:{"minecraft:sharpness":5}}]` |
-| **1.8 ~ 1.12.2** | ⛔ 暂不支持自动生成 | 预扁平化语法（数字物品 ID + data 值、`ench` 数字附魔、旧 `execute`）。**已在 `1.8.9` / `1.9.4` / `1.12.2` 实机验证**：插件会**明确拒绝**物品类命令（`give` / `clear` / `item` / `replaceitem`，**含不带数据的写法**）与其它受影响命令族，并说明原因，而不是生成一条必然失败的命令 |
 | 版本未知 / 读不到 | ⛔ 拒绝带数据命令 | 请在插件设置页手填服务端版本（异地 RCON 模式探测必然失败，只能手填；留空也能保存，但这类请求会被拒） |
 
 几点说明：
 
 - **版本能力由代码判定**（`core/version_caps.py`），不交给 AI 猜：版本 → 语法世代 → 注入 Agent 的硬约束片段；
   运行期还会按服务端回包复核（语法错误单独成态，可安全重写；结果未知则熔断不重发）。
-- **真机实测已覆盖 `1.8.9` ~ `1.21.11` 共 13 台服务端**（原版 / Forge / NeoForge / Paper / Fabric 五种载体），逐台点火，做过正反样例对照或载体核验；
+- **真机实测已覆盖 `1.7.10` ~ `1.21.11` 共 14 台服务端、12 个版本号**（原版 / Forge / NeoForge / Paper / Fabric 五种载体），逐台点火，做过正反样例对照或载体核验；
   逐版本结论、语法分水岭与「未实测区」清单见 **[版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)**。
-- 1.13 以下**不受命令图改动影响的简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` /
-  `tellraw` / `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；
-  被拦的是物品类（`give` / `clear` / `item` / `replaceitem`，**不带数据也拦** —— 旧版物品 ID 与当前版本不同）
-  与 `execute` / `effect` / `difficulty` / `data` / `summon` / `setblock` 这类。
-- 守门对**所有执行入口**生效（工具、工作流、指令入口一视同仁），不只是自动构造路径；
-  想手动发旧版命令请在游戏控制台执行，插件不代为生成。
-- 1.13 以下的**完整支持**（`legacy_preflatten` 能力档案）在路线图上：`1.12.2` 实例已就位（见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
-  缺的是真实世界的旧版命令样本 —— 未经实测就宣称支持，会把「静默生成错命令」换成「看起来支持、其实没验证」，两种都不好。
+- 1.13 以下的**简单命令**（`time` / `weather` / `say` / `list` / `gamemode` / `kill` / `tellraw` /
+  `title` / `kick` / `ban` / `pardon` 等）仍可正常生成；**物品类 `give` 自 v0.24.0 起也可生成**
+  （家族名 + 数据值，逐世代数据表随插件发布）。
+- 仍被拦的是 `clear` / `item` / `replaceitem` 与 `execute` / `effect` / `difficulty` / `data` /
+  `summon` / `setblock` 这类 —— 它们在旧世代的写法与现版不同，插件宁可不发，也不发一条必然失败的。
+- 守门对**所有执行入口**生效（工具、工作流、指令入口一视同仁）；1.13 以下放行的是**生成器产出**的 `give`
+  （「已验证通道」），手填的旧版 NBT / 数字物品 ID 写法仍不放行 —— 想手动发旧版命令请在游戏控制台执行，插件不代为生成。
+- 1.13 以下的预扁平化能力档案（`legacy_preflatten`）**已落地**：`1.7.10` / `1.12.2` 两代真机签收，
+  中间版本（1.8 ~ 1.12）按同世代推断、出现问题时点杀；**数字物品 ID 路线明确不做**
+  （1.12.2 起服务端已不再把纯数字当物品解析）。逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)。
 
 ## 安装
 
@@ -194,14 +196,14 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 
 ## 遇到问题？请反馈
 
-> **本插件是个人维护的开源项目。** `1.8.9` ~ `1.21.11` 已在 13 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
+> **本插件是个人维护的开源项目。** `1.7.10` ~ `1.21.11` 已在 14 台服务端上做过实测（逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)），
 > 但样本都是干净的测试服 —— **真实整合包里那些模组命令与物品 ID，仍然是最缺的第一手资料**。
 
 ### 先看这两条：它们**不是故障**
 
 | 现象 | 说明 |
 | --- | --- |
-| **1.7.10 ~ 1.12.2** 服务端上，`give` 按「家族名 + 数据值」**自动生成**（域外数据值拒绝）；`clear` / `item` / `replaceitem` / `execute` / `effect` / `summon` / `setblock` 仍被**明确拒绝并说明原因** | ✅ **预期行为**。1.13 以下的物品 ID 与命令图不同（扁平化前是「数字 ID + data 值」），插件尚未完成旧版映射，**宁可不发，也不发一条必然失败的**。详见 [支持的 Minecraft 版本](#支持的-minecraft-版本) |
+| **1.7.10 ~ 1.12.2** 服务端上，`give` 按「家族名 + 数据值」**自动生成**（域外数据值拒绝）；`clear` / `item` / `replaceitem` / `execute` / `effect` / `summon` / `setblock` 仍被**明确拒绝并说明原因** | ✅ **预期行为**。1.13 以下没有「扁平名」，物品一律「家族名 + 数据值」（`wool 3 14` = 红色羊毛）；数据值超出台表合法域时**必须拒绝** —— 那个值服务端不报错、却会静默回落甚至崩客户端。详见 [支持的 Minecraft 版本](#支持的-minecraft-版本) |
 | **版本未知**时，附魔 / NBT / 物品组件请求被拒绝 | ✅ **预期行为**。到 WebUI「设置」页手填 `server_version_override` —— 异地 RCON 模式探测必然失败，只能手填（留空也能保存，只是这类请求会被拒） |
 
 ### 真要反馈，请带上这几样
@@ -214,9 +216,9 @@ UI 用例需要 `playwright`（`pip install playwright`），并会用到系统 
 4. **报错原文或截图** —— 服务端控制台、AstrBot 日志都可以；
 5. 整合包用户请带上**整合包名 + 关键模组** —— 模组命令与物品 ID 常常才是元凶。
 
-> 特别欢迎 **`1.12.2` 及更早版本**（路线图上的「旧版能力实现」：`legacy_preflatten` 档案、
-> 数字物品 ID / data 映射、`ench` 数字附魔）的实测反馈 —— 这块正缺真实世界的样本；
-> Paper / Fabric 载体已自测（见上方版本支持），但**装了 mod 的 Paper / Fabric 服**仍是空白。
+> 特别欢迎 **`1.8 ~ 1.12` 中间版本**（目前按同世代推断、未逐台实测）与 **`1.7.10` 模组物品**
+> 的实测反馈 —— 模组物品在 1.7.10 走 `modid:name` + 动态分配的数字 ID，插件目前按
+> 「无证据 → 拒绝」处理；Paper / Fabric 载体已自测（见上方版本支持），但**装了 mod 的 Paper / Fabric 服**仍是空白。
 
 ---
 
