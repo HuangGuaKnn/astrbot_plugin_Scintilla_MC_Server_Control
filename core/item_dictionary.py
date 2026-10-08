@@ -222,47 +222,111 @@ class ItemDictionary:
             cands.append(self.cache_path.parent / _LEGACY_DATA_DIR)
         for c in cands:
             try:
-                if c.is_dir() and any(c.glob("*.json")):
+                if c.is_dir() and self._dir_has_generation_table(c):
                     return c
             except OSError:
                 continue
         return None
+
 
     @staticmethod
     def _ver_of(text: str) -> "tuple | None":
         m = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(text).strip())
         return tuple(int(x) for x in m.groups(default="0")) if m else None
 
+    @staticmethod
+    def _is_generation_table(data) -> bool:
+        """这份 JSON 是不是**逐世代运行表**（v0.24.3 · GPT v0.24.2 复核 N07）。
+
+        发布目录 ``data/legacy_items/`` 只放**运行资产**；可旧实现对里面的 JSON
+        一律照单全收，于是一旦混进别的东西（离线审计夹具、临时导出、改名备份），
+        未知版本时会把它当成表用 —— 产出「0 桥接 + 0 变体」却照样写世代号、
+        日志还报「通道命中」的**假成功**（实测：两代完整 jar 改名后都选中夹具）。
+
+        判据取运行表**才有**的正面特征：``mc`` 存在，且 ``variants`` 或 ``bridge``
+        至少有一个是非空字典。夹具（``registers`` 结构）与垃圾 JSON 一律落选。
+        """
+        if not isinstance(data, dict) or not data.get("mc"):
+            return False
+        for key in ("variants", "bridge"):
+            val = data.get(key)
+            if isinstance(val, dict) and val:
+                return True
+        return False
+
+    @classmethod
+    def _dir_has_generation_table(cls, d) -> bool:
+        """目录里**至少有一张合格的世代运行表**才算「表在库」（v0.24.3 · N07）。
+
+        只看 ``*.json`` 是否存在是不够的：一个只堆着夹具 / 临时导出的目录会让上层
+        以为表齐了，然后落进「空桥接假成功」。这里直接按内容判。
+        """
+        try:
+            for p in d.glob("*.json"):
+                try:
+                    if cls._is_generation_table(json.loads(p.read_text(encoding="utf-8"))):
+                        return True
+                except Exception:                                     # noqa: BLE001
+                    continue
+        except OSError:
+            return False
+        return False
+
+    @classmethod
+    def _as_mc(cls, value) -> "tuple | None":
+        """版本提示 → ``(a, b, c)`` 或 ``None``（字符串与已解析元组都认，v0.24.3 · N07）。"""
+        if isinstance(value, (tuple, list)) and len(value) >= 2:
+            seq = [int(x) for x in list(value)[:3]]
+            while len(seq) < 3:
+                seq.append(0)
+            return tuple(seq)
+        return cls._ver_of(str(value or ""))
+
     def _pick_legacy_table(self, mc, files: list, require_match: bool = False) -> "Path | None":
         """挑最贴近的世代表。
 
-        ``require_match=True``（默认调用路径）：**必须**被表的 ``range`` 覆盖才返回，
+        ``require_match=True``（唯一调用路径）：**必须**被表的 ``range`` 覆盖才返回，
         否则返回 ``None`` —— 版本不在任何 pre-1.13 世代里时宁可落空（fail-closed），
         绝不拿 1.12.2 的表去服务 1.21（域表不同，域外值会崩客户端）。
+
+        v0.24.3（GPT v0.24.2 复核 N07）三处收口：
+
+        * 候选先过 :meth:`_is_generation_table` —— 夹具 / 垃圾 JSON **不再进候选集**；
+        * 修掉「推导式里引用上一轮循环残留的 ``p``」：未知版本时会因此把路径指到
+          **上一个文件**（实测选中 ``registry_1.7.10.json``，items/bridge/variants 全 0）；
+        * **版本未知时不再猜**：没有 ``mc`` / ``mc_hint`` 就诚实落空，
+          由上层按「世代无法确定」拒绝生成，而不是随便挑一张表蒙过去。
         """
+        mc = self._as_mc(mc)
         parsed = []
         for p in files:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:                                         # noqa: BLE001
                 continue
-            parsed.append((p, data, self._ver_of(data.get("mc", p.stem))))
+            if not self._is_generation_table(data):
+                continue
+            path = Path(p)
+            parsed.append((path, data, self._ver_of(data.get("mc", path.stem))))
         if not parsed:
             return None
-        if mc:
-            for p, data, v in parsed:
-                rng = data.get("range") or []
-                if len(rng) == 2:
-                    lo, hi = self._ver_of(rng[0]), self._ver_of(rng[1])
-                    if lo and hi and lo <= tuple(mc) < hi:
-                        return p
-            if require_match:
-                return None
-            le = [(v, p) for p, _, v in parsed if v and v <= tuple(mc)]
-            if le:
-                return max(le)[1]
-            return min([(v, p) for _, _, v in parsed if v] or [(None, parsed[0][0])])[1]
-        return max([(v, p) for _, _, v in parsed if v] or [(None, parsed[0][0])])[1]
+        if not mc:
+            # 版本未知 → 不猜（N07）。挑错世代的域表会直接崩客户端，比「词典 0 条」贵得多。
+            return None
+        for p, data, _v in parsed:
+            rng = data.get("range") or []
+            if len(rng) == 2:
+                lo, hi = self._ver_of(rng[0]), self._ver_of(rng[1])
+                if lo and hi and lo <= tuple(mc) < hi:
+                    return p
+        if require_match:
+            return None
+        le = [(v, p) for p, _d, v in parsed if v and v <= tuple(mc)]
+        if le:
+            return max(le, key=lambda t: t[0])[1]
+        vv = [(v, p) for p, _d, v in parsed if v]
+        return max(vv, key=lambda t: t[0])[1] if vv else parsed[0][0]
+
 
     def _read_legacy_lang(self, jar: Path) -> "str | None":
         """读 1.13 以下服务端 jar 里的 ``.lang`` 文本（含 bundler 内嵌一层）。"""
@@ -356,12 +420,24 @@ class ItemDictionary:
                 continue
             seen_lang += 1
             m = _JAR_VERSION_RE.search(jar.name)
-            mc = self._ver_of(m.group(1)) if m else getattr(self, "mc_hint", None)
+            mc = self._as_mc(m.group(1)) if m else self._as_mc(getattr(self, "mc_hint", ""))
+            if mc is None:
+                # v0.24.3（N07）：**版本不知道就不猜**。挑错世代的域表会直接崩客户端，
+                # 比「词典 0 条」贵得多；宁可诚实拒绝，也不给「假成功」。
+                self.legacy_diag = (
+                    f"{jar.name} 里有 legacy .lang（确实是 1.13 以下的预扁平化服务端），"
+                    "但版本无法确定（文件名没有版本号，配置里的服务端版本也是空的）"
+                    "→ 为避免用错世代的域表，拒绝猜表、不建词典"
+                )
+                continue
             path = self._pick_legacy_table(mc, sorted(d.glob("*.json")), require_match=True)
             if not path:
-                self.legacy_diag = (f"{jar.name} 里有 legacy .lang，但版本 {mc or '未知'}"
-                                    f"不在任何世代表的 range 内 → 落空")
+                self.legacy_diag = (
+                    f"{jar.name} 里有 legacy .lang，但版本 {mc} 不在任何**世代运行表**的 "
+                    "range 内（或目录里一张合格的运行表都没有）→ 落空"
+                )
                 continue
+
             try:
                 table = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
@@ -369,7 +445,14 @@ class ItemDictionary:
             self.legacy_generation = str(table.get("mc") or path.stem)
             self.legacy_variants = dict(table.get("variants") or {})
             self.legacy_bridge = dict(table.get("bridge") or {})
+            # v0.24.3（N07）：空表**不许**当成功 —— 旧实现在未知版本下挑中夹具/垃圾文件，
+            # 产出「0 桥接 + 0 变体」却照样写 legacy_generation，日志还报「通道命中」。
+            if not self.legacy_bridge and not self.legacy_variants:
+                self.legacy_diag = (f"{path.name} 解析后既无桥接也无变体族（空表 / 结构不符）"
+                                    "→ 拒绝按成功处理")
+                continue
             self._parse_preflatten_lang(text, self.legacy_bridge)
+
             # 表兜底：jar 里没有 lang（或键不全）时，用内置表把条目补齐
             for key, ent in self.legacy_bridge.items():
                 rid = "minecraft:" + ent["registry"]

@@ -279,6 +279,16 @@ def check_export_ignore(strict: bool = False) -> list:
         if not isinstance(obj, dict) or not obj:
             data_bad.append(f"{name} 顶层不是非空对象")
             continue
+        # v0.24.3（N05 / N07）：这个目录**只放世代运行表**。判据取运行表才有的正面特征
+        # （``variants`` / ``bridge`` 至少一个是非空字典）—— 离线审计夹具、临时导出、
+        # 结构不符的 JSON 混进来必须红：它们既污染生产选表（未知版本时会被当成表用、
+        # 产出 0 桥接的假成功），也让下面「≥10 族」这条体检失去意义。
+        # 夹具请放 tests/fixtures/（``tests/`` 整目录 export-ignore，不进发布包）。
+        if not any(isinstance(obj.get(k), dict) and obj.get(k) for k in ("variants", "bridge")):
+            data_bad.append(f"{name} 不像世代运行表（缺非空 variants/bridge）——"
+                            "该目录只放运行表，离线夹具请放 tests/fixtures/")
+            continue
+
         fam = 0
         stack = [obj]
         while stack:
@@ -317,7 +327,8 @@ def check_export_ignore(strict: bool = False) -> list:
     if missing:
         print(f"[FAIL] 发布包里少了用户要的东西：{missing}")
         out.append("发布包卫生：误挡用户可见文件")
-    if not leaked and not missing:
+    if not leaked and not missing and not data_bad:
+
         print(f"[PASS] 发布包卫生：实测 git archive 共 {len(files)} 个文件 —— "
               f"测试 / 开发脚本 / 内部核验文档 0 个，用户可见文件齐全")
     return out

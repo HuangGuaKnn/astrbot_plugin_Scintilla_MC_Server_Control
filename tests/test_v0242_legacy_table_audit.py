@@ -33,6 +33,10 @@ add_sys_paths()
 
 ROOT = Path(__file__).resolve().parents[1]
 TDIR = ROOT / "data" / "legacy_items"
+#: 离线审计夹具（v0.24.3 · N05）：从 ``data/legacy_items/`` 迁到 ``tests/fixtures/`` ——
+#: ``tests/`` 整目录 export-ignore，夹具不再跟发布包走，也不会被生产选表当成世代表。
+FIXDIR = ROOT / "tests" / "fixtures" / "legacy_registry"
+
 
 #: 允许两代不一致的例外（键 = 展示名）—— 加一条必须写清证据，不许拿来消音。
 #: Charcoal：1.7.10 里焦炭是 **coal 的数据值 1**（同一注册名 + 数据值），
@@ -126,7 +130,8 @@ def part_a():
             check(f"★{gen}：表里不再出现被证伪的 {bad!r}", f'"{bad}"' not in txt)
 
     for gen in ("1.12.2", "1.7.10"):
-        fp = TDIR / f"registry_{gen}.json"
+        fp = FIXDIR / f"registry_{gen}.json"
+
         cnt = 0
         if fp.exists():
             cnt = len(json.loads(fp.read_text(encoding="utf-8")).get("registers") or {})
@@ -154,10 +159,24 @@ def part_b():
         root = Path(td)
         (root / "eula.txt").write_text("eula=true", encoding="utf-8")
         (root / "server.properties").write_text("x", encoding="utf-8")
-        shutil.copy2(jar, root / "server.jar")
+        shutil.copy2(jar, root / "server.jar")      # 抹掉版本号 —— 这正是 N07 的触发条件
+
+        # ---- N07 靶心：版本提示缺席时**不许猜表** ----
+        # 旧实现在这里会挑中 data/legacy_items/ 里的 registry 夹具（0 桥接 + 0 变体），
+        # 却照样写 legacy_generation、诊断还报「通道命中」—— 这就是「0 条假成功」。
+        bare = ID_.ItemDictionary(str(root), str(root / "items.json"))
+        bare.build()
+        check("★N07：改名 jar + 无版本提示 → 诚实拒绝（不猜表、不写世代号）",
+              not bare.legacy_generation, f"generation={bare.legacy_generation!r}")
+        check("★N07：拒绝时给可读诊断，而不是一句「0 条」",
+              bool(bare.legacy_diag), repr(bare.legacy_diag))
+
+        # ---- 版本提示在场（产品主路径：main.py 把版本探测结果写进 mc_hint）→ 正常选表 ----
         d = ID_.ItemDictionary(str(root), str(root / "items.json"))
+        d.mc_hint = (1, 12, 2)
         st = d.build()
-        check("真实 1.12.2 jar → 词典落到 1.12.2 世代", d.legacy_generation == "1.12.2", str(st))
+        check("真实 1.12.2 jar（含版本提示）→ 词典落到 1.12.2 世代",
+              d.legacy_generation == "1.12.2", str(st))
         for name, want_id, want_dmg in (("Acacia Wood", "minecraft:log2", 0),
                                         ("Dark Oak Wood", "minecraft:log2", 1)):
             hits = d.search_items(name)
