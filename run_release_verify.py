@@ -189,7 +189,7 @@ def run_file(rel: str, timeout: float, env_extra: dict | None = None):
     # 假绿检测：退出码说通过，输出里却明明白白打了 [FAIL] —— 判红，证据留在尾部输出里。
     # 有极少数用例是**故意**打印 [FAIL] 正文的（例如测「严格模式下环境缺件要报失败」的
     # fail-closed 分支）：这类用例在文件里自己声明 ``gate-allow-fail-sample``（见下面的
-    # 常量），皮莉卡不集中维护白名单 —— 集中名单会腐烂，本地声明不会，改用例的人一眼能看到。
+    # 常量），本插件不集中维护白名单 —— 集中名单会腐烂，本地声明不会，改用例的人一眼能看到。
     if ok and SAMPLE_MARKER not in _read_head(rel):
         _m = _FAKE_GREEN_RE.search(out or "")
         if _m:
@@ -290,7 +290,7 @@ def check_export_ignore(strict: bool = False) -> list:
                 fam += 1
                 # 只查「是不是非空、叶子里有没有空串」——**不假设键的形态**：
                 # 有的族键是数据值（"0"/"14"），有的族键是具名项（wool/dye/log），
-                # 判据收宽了会把真表判红（皮莉卡当场踩过这个坑）。
+                # 判据收宽了会把真表判红（本插件当场踩过这个坑）。
                 if not isinstance(vs, dict) or not vs:
                     data_bad.append(f"{name}：某族的 variants 不是非空对象")
                 else:

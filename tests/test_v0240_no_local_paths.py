@@ -100,7 +100,7 @@ check("病灶：C:\\Users\\x\\y 被抓",
       bool(scan('P = r"C:\\Users\\x\\y"')))
 check("病灶：C:/Users/x/y 被抓", bool(scan('P = "C:/Users/x/y"')))
 check("病灶：file:/// 被抓", bool(scan('U = "file:///C:/x"')))
-check("病灶：靶场写死被抓", bool(scan('MATRIX = r"C:\\Users\\10316\\Desktop\\mcs-matrix"')))
+check("病灶：靶场写死被抓", bool(scan('MATRIX = r"C:\\Users\\example\\Desktop\\mcs-matrix"')))
 check("病灶：随包发布的 JSON 里写死本机路径被抓",
       bool(scan('{"1.12.2": {"source": "C:\\\\Users\\\\10316\\\\Desktop\\\\jar"}}')))
 check("反例：数据表里的数据值写法不误报",

@@ -843,7 +843,7 @@ class MCWorkflow:
             except RconError as e:
                 # v0.24.2（GPT 全面复核 F01）：RconError 混着两种**相反**语义，必须按阶段分。
                 # 判据不靠异常文本猜，用 core/rcon.py 构造时标注的阶段（与单工具 _exec_checked 同源）。
-                # 注意 command_may_have_run 是 **property**（不是方法）——皮莉卡的回归用例当场咬过这一口。
+                # 注意 command_may_have_run 是 **property**（不是方法）——回归用例当场咬过这一口。
                 if not e.command_may_have_run:
                     # 建连 / 认证阶段失败 = 命令根本没发出去 → 判 failed 安全，后续照旧
                     reports.append({
