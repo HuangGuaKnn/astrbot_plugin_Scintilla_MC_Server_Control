@@ -19,7 +19,7 @@
   · tellraw 空响应**不误报失败**；
   · 非幂等命令空响应**不误报成功**。
 
-找不到 AstrBot 运行时则整体 SKIP（不判失败）。
+N11：找不到 AstrBot 运行时**不算跳过**（跳过=绿）。导入失败一律记 FAIL、rc=1。
 """
 from __future__ import annotations
 
@@ -53,9 +53,9 @@ def check(desc: str, ok: bool, detail: str = "") -> None:
           + (f"  <- {detail}" if detail and not ok else ""))
 
 
-def skip(desc: str) -> None:
-    SKIP.append(desc)
-    print(f"[SKIP] {desc}")
+# N11：**本文件不提供 skip()**。跳过在门禁里等于绿（rc=0），任何「跑不动就跳过」的写法
+# 都会把代码错误静默转成通过。跑不动就记 FAIL；`SKIP` 只为汇总格式保留，必须恒为 0
+# —— main_async 末尾有一条自检盯着它。
 
 
 #: 真实事故原文（2026-09-21 19:18 实测）
@@ -292,8 +292,8 @@ def prompt_cases() -> None:
             CLASSIFIER_SYSTEM,
         )
     except Exception as e:  # noqa: BLE001
-        skip(f"无法导入 agent_prompts，跳过 prompt 用例（{e}）")
-        return
+        check("导入 core.agent_prompts（prompt 用例的前置）", False, f"{type(e).__name__}: {e}")
+        return  # N11：导入失败=真失败，不是跳过
 
     check("★分类 prompt 不再把「原版物品」绝对判 simple（已改为「裸」原版物品）",
           "裸" in CLASSIFIER_SYSTEM, "")
@@ -308,18 +308,17 @@ def prompt_cases() -> None:
 
 
 async def main_async() -> int:
-    if not WORKFLOW_OK:
-        skip(f"找不到 AstrBot 运行时，跳过工作流用例（{IMPORT_ERR}）")
-    else:
+    if WORKFLOW_OK:
         await simple_cases()
         await complex_cases()
         prompt_cases()
+    else:
+        # N11：导入失败**不是**「环境限制」。导入断了说明环境或被测代码坏了，必须红。
+        check("导入插件运行时（core.workflow / core.rcon）", False,
+              f"{IMPORT_ERR or '未知原因'} —— 导入失败不许算「环境限制」")
+    check("★本文件零跳过（N11：跳过=绿，跑不动就红）", not SKIP, " / ".join(SKIP))
 
     print("==========================================")
-    if SKIP:
-        print(f"跳过 {len(SKIP)} 组（环境限制，不算失败）：")
-        for s in SKIP:
-            print("  -", s)
     if FAIL:
         print(f"FAILED {len(FAIL)} 项：")
         for f in FAIL:

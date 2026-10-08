@@ -31,7 +31,8 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.command_result import (  # 
 )
 
 # 端到端那组要 import core.workflow，而它依赖 AstrBot 运行时（astrbot.api.*）。
-# 找不到运行时则**只跳过端到端组**，纯函数组照跑（不整体判失败）。
+# N11：找不到运行时**不许算「只跳过端到端组」** —— 跳过在门禁里等于绿，会把
+# 「模块改名/依赖断了」静默转成通过。纯函数组照跑，端到端组记 FAIL，整条用例红。
 WORKFLOW_OK = True
 IMPORT_ERR = ""
 try:
@@ -42,7 +43,6 @@ except Exception as e:  # noqa: BLE001
     MCWorkflow = None  # type: ignore[assignment]
 
 _fail: list[str] = []
-_skip: list[str] = []
 _pass = 0
 
 
@@ -192,9 +192,9 @@ def build_workflow(cls: dict):
 
 async def dispatch_cases() -> None:
     if not WORKFLOW_OK:
-        print("---- 四、端到端（SKIP：找不到 AstrBot 运行时）----")
-        _skip.append(f"端到端转轨用例（{IMPORT_ERR}）")
-        print(f"[SKIP] 端到端转轨用例（{IMPORT_ERR}）")
+        print("---- 四、端到端（FAIL：找不到 AstrBot 运行时）----")
+        _fail.append(f"端到端转轨用例：导入 core.workflow 失败（{IMPORT_ERR}）")
+        print(f"[FAIL] 端到端转轨用例：导入 core.workflow 失败（{IMPORT_ERR}）")
         return
     print("---- 四、端到端：分类器判 simple，但必须被强制转 complex ----")
     complex_req = "给我发一把附魔锋利5、耐久3的下界合金剑"
@@ -300,7 +300,7 @@ def main() -> int:
         for f in _fail:
             print(f"  - {f}")
         return 1
-    tail = "（含端到端转轨）" if WORKFLOW_OK else "（端到端组已跳过）"
+    tail = "（含端到端转轨）"   # N11：WORKFLOW_OK=False 时上面已经记 FAIL，走不到这行
     print(f"全部通过（{_pass} 项{tail}）：分类失误不再致命 —— "
           f"带数据的请求必被拦进有校验的复杂路径，且版本上下文先于分类器注入")
     return 0

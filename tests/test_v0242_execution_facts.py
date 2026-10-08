@@ -15,6 +15,12 @@ F02｜成功回执里出现 `expected` / `unknown item` 就被判「可安全重
   · 修法：语法词与那批短语改**行首锚定**；成功与错误文本同时出现（多行混合）按
     `unknown` 保守处理，不许宣称「从未执行」。
 
+N11｜「跳过」= 静默变绿，**本文件不许出现跳过**
+  · 病灶：导入失败 `return 0`、替身撞 `AttributeError` 转 `skip()` —— GPT 实测把异常分支
+    改回旧的 `status="failed"` 后仍是 20PASS/1SKIP、rc=0，等于回归门门开着。
+  · 修法：导入失败记 FAIL 并返 1；替身/代码出任何异常都由 `must_run` 记 FAIL；
+    文末自检「零跳过」，一旦有人重新引入跳过就会红。
+
 判据要点：命令**是否真的只下发了一条**（不是只看状态字段）；熔断是否真的会发生。
 跑法：<python> tests\test_v0242_execution_facts.py
 """
@@ -51,9 +57,9 @@ def check(desc: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {desc}" + (f"  <- {detail}" if detail and not ok else ""))
 
 
-def skip(desc: str) -> None:
-    SKIP.append(desc)
-    print(f"[SKIP] {desc}")
+# N11：**本文件不提供 skip()**。跳过在门禁里等于绿（rc=0），任何「跑不动就跳过」的写法
+# 都会把代码错误静默转成通过。跑不动就记 FAIL；`SKIP` 保留只为汇总行格式统一，必须恒为 0
+# —— 文末「守卫有牙」有一条自检盯着它。
 
 
 REAL_OK = "Gave 1 [Diamond Sword] to Steve"
@@ -104,13 +110,28 @@ CMDS = [{"command": "give Steve diamond 1"},
 
 
 async def run_exec(cmds, player, online, *, fail_at=None, exc=None, out=REAL_OK):
-    """跑一次 _exec_commands；撞上本测试没搭的环境（例如 B5 give 改道）就返回 None。"""
+    """跑一次 _exec_commands。异常**不吞**（N11）。"""
     rcon = StubRcon(out, fail_at=fail_at, exc=exc)
+    reports = await wf_exec(rcon, cmds, player, online)
+    return reports, rcon
+
+
+async def must_run(tag: str, cmds, player, online, **kw):
+    """失败关闭版跑法：拿不到执行报告 = 真失败，绝不静默跳过（N11）。
+
+    替身缺成员（AttributeError）既可能是替身过期，也可能是被测代码真的错了
+    （函数改名、属性被删）—— 两种都必须响。所以这里把异常落成 FAIL 并返回 (None, None)，
+    由调用方 `if reports is None: return` 收尾（剩余子用例不再跑，但账已经记上）。
+    """
     try:
-        reports = await wf_exec(rcon, cmds, player, online)
-    except AttributeError as e:
-        return None, rcon, e
-    return reports, rcon, None
+        reports, rcon = await run_exec(cmds, player, online, **kw)
+    except Exception as e:  # noqa: BLE001  替身/代码任何异常都不许转绿
+        check(f"★{tag}：替身环境或被测代码出错（不许算跳过）", False, f"{type(e).__name__}: {e}")
+        return None, None
+    if not reports:
+        check(f"★{tag}：没拿到执行报告（不许算跳过）", False, repr(reports))
+        return None, None
+    return reports, rcon
 
 
 async def wf_exec(rcon, cmds, player, online):
@@ -157,10 +178,10 @@ async def group_f01() -> None:
     online = ["Steve"]
 
     # ① 发送阶段失败（命令可能已到达）→ 只下发 1 条，后续 skipped，且熔断判定为「不确定」
-    reports, rcon, err = await run_exec(CMDS, "Steve", online, fail_at=0,
+    reports, rcon = await must_run("F01 传输层用例", CMDS, "Steve", online, fail_at=0,
                                         exc=RconError("模拟：写失败", phase=RconError.PHASE_SEND))
     if reports is None:
-        skip(f"传输层用例（环境未搭全）：{err}")
+        return  # N11：FAIL 已由 must_run 记下 —— 这里不许跳过
     else:
         check("★send 阶段异常 → 本条 unknown", reports[0]["status"] == "unknown"
               and reports[0].get("unknown") is True, str(reports[0]))
@@ -172,10 +193,10 @@ async def group_f01() -> None:
               wf._halt_on_uncertain(reports) is not None)
 
     # ② 读取阶段失败（第 2 条）：第 1 条成功、第 2 条 unknown、第 3 条未发
-    reports, rcon, err = await run_exec(CMDS, "Steve", online, fail_at=1,
+    reports, rcon = await must_run("F01 传输层用例", CMDS, "Steve", online, fail_at=1,
                                         exc=RconError("模拟：读失败", phase=RconError.PHASE_READ))
     if reports is None:
-        skip(f"读取阶段用例：{err}")
+        return  # N11：FAIL 已由 must_run 记下 —— 这里不许跳过
     else:
         check("read 阶段异常：前一条成功、本条 unknown、后一条 skipped",
               reports[0]["status"] == "success" and reports[1]["status"] == "unknown"
@@ -183,10 +204,10 @@ async def group_f01() -> None:
               f"sent={rcon.sent} reports={[r['status'] for r in reports]}")
 
     # ③ 建连阶段失败（命令根本没发出去）→ 判 failed 安全，后续**照常下发**
-    reports, rcon, err = await run_exec(CMDS, "Steve", online, fail_at=0,
+    reports, rcon = await must_run("F01 传输层用例", CMDS, "Steve", online, fail_at=0,
                                         exc=RconError("模拟：连不上", phase=RconError.PHASE_CONNECT))
     if reports is None:
-        skip(f"建连阶段用例：{err}")
+        return  # N11：FAIL 已由 must_run 记下 —— 这里不许跳过
     else:
         check("connect 阶段异常 → failed（可安全重试档）", reports[0]["status"] == "failed",
               str(reports[0]))
@@ -194,18 +215,18 @@ async def group_f01() -> None:
               len(rcon.sent) == 3, f"sent={rcon.sent}")
 
     # ④ 超时：既有口径不许退化
-    reports, rcon, err = await run_exec(CMDS, "Steve", online, fail_at=0,
+    reports, rcon = await must_run("F01 传输层用例", CMDS, "Steve", online, fail_at=0,
                                         exc=RconTimeoutError("模拟超时"))
     if reports is None:
-        skip(f"超时用例：{err}")
+        return  # N11：FAIL 已由 must_run 记下 —— 这里不许跳过
     else:
         check("超时 → unknown + 只下发一条", reports[0]["status"] == "unknown" and len(rcon.sent) == 1,
               f"sent={rcon.sent}")
 
     # ⑤ 内部异常（非 RCON）：本地报错也不能证明命令没发出去 → 保守 unknown + 停批
-    reports, rcon, err = await run_exec(CMDS, "Steve", online, fail_at=0, exc=ValueError("模拟内部异常"))
+    reports, rcon = await must_run("F01 传输层用例", CMDS, "Steve", online, fail_at=0, exc=ValueError("模拟内部异常"))
     if reports is None:
-        skip(f"内部异常用例：{err}")
+        return  # N11：FAIL 已由 must_run 记下 —— 这里不许跳过
     else:
         check("★内部异常 → unknown + 停批（旧实现判 failed → 会被自动重发）",
               reports[0]["status"] == "unknown" and len(rcon.sent) == 1
@@ -224,18 +245,22 @@ def group_teeth() -> None:
     cr = (Path(__file__).resolve().parents[1] / "core" / "command_result.py").read_text(encoding="utf-8")
     check("语法词已改行首锚定", r'^\s*expected\b' in cr)
     check("行首短语表存在（unknown item 等）", "_SYNTAX_LINE_RE" in cr)
+    # N11 自检：本文件若出现跳过，说明又有「跑不动就变绿」的写法溜进来了。
+    check("★本文件零跳过（N11：跳过=绿，跑不动就红）", not SKIP, " / ".join(SKIP))
 
 
 async def main_async() -> int:
-    if not IMPORT_OK:
-        print(f"[SKIP] 找不到 AstrBot 运行时：{IMPORT_ERR}")
-        return 0
-    print("=" * 78)
-    print("v0.24.2 回归 · 执行事实统一（F01 传输层 + F02 文本层）")
-    print("=" * 78)
-    group_f02()
-    await group_f01()
-    group_teeth()
+    if IMPORT_OK:
+        print("=" * 78)
+        print("v0.24.2 回归 · 执行事实统一（F01 传输层 + F02 文本层）")
+        print("=" * 78)
+        group_f02()
+        await group_f01()
+        group_teeth()
+    else:
+        # N11：导入失败**不是跳过**。导入断了说明环境或代码坏了，必须红。
+        check("导入插件运行时（core.command_result / core.rcon / core.workflow）", False,
+              f"{IMPORT_ERR or '未知原因'} —— 导入失败不许算「环境没搭全」")
     print("\n================ 汇总 ================")
     print("通过 %d 项，失败 %d 项，跳过 %d 项" % (len(PASS_N), len(FAIL), len(SKIP)))
     if FAIL:

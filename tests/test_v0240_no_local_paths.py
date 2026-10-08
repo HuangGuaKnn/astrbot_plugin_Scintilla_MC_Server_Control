@@ -20,15 +20,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: 账户组件（N12）：账户名是**任意非空路径组件**，不是一个 ASCII 单词 ——
+#: 中文账户、带空格的账户、点与连字符都要算。旧判据只认 `[A-Za-z0-9_.-]`，
+#: 于是 `C:/Users/核验账户/Desktop/private.jar` 整条漏掉（实测 9PASS / rc0）。
+#: 仍排除**占位与叙述**：`<账户>` 用尖括号尖出、`…` 是省略号、`*`/`?` 是通配符 ——
+#: 这些都不在 `\w` 与 `.`/`-`/空格 之中，所以讲本规距的文档本身不会被判红。
+_ACCOUNT = r"[\w.\-][\w.\- ]*"
+
 #: 本机痕迹判据（与 CHANGELOG 卫生那条同源，但**扫描范围覆盖源码与 tests/**）。
 #: 只认**真路径形状**：占位写法（`C:/Users/<账户>/…`）与用法说明（`file:///...`）
 #: 属于叙述，不算本机痕迹 —— 判据收得太宽会把讲这条规矩的文档本身也判红。
+#: 分隔符写成 `[\\/]{1,}`：同一个判据同时管 `C:\Users\x`、`C:/Users/x` 与
+#: JSON 里转义后成对的 `C:\\Users\\x`（旧版为这三种各写一条，还漏了混用）。
 PATTERNS = (
-    r"[A-Za-z]:\\+Users\\+[A-Za-z0-9_.-]+",   # C:\Users\<真账户>\…
-    r"[A-Za-z]:/Users/[A-Za-z0-9_.-]+",           # C:/Users/<真账户>/…
-    r"[A-Za-z]:\\+AstrBotOps\\+[A-Za-z0-9_.-]+",  # 运维台账目录
+    r"[A-Za-z]:[\\/]{1,}Users[\\/]{1,}" + _ACCOUNT,
+    r"[A-Za-z]:[\\/]{1,}AstrBotOps[\\/]{1,}" + _ACCOUNT,
     r"file:///[A-Za-z]:/",                        # 本机文件 URL（带盘符）
-    r"Users\\+10316\\+",                      # 本机账户名
 )
 
 #: 自己与「判据声明处」必然含这些串，跳过。
@@ -101,8 +108,20 @@ check("病灶：C:\\Users\\x\\y 被抓",
 check("病灶：C:/Users/x/y 被抓", bool(scan('P = "C:/Users/x/y"')))
 check("病灶：file:/// 被抓", bool(scan('U = "file:///C:/x"')))
 check("病灶：靶场写死被抓", bool(scan('MATRIX = r"C:\\Users\\example\\Desktop\\mcs-matrix"')))
-check("病灶：随包发布的 JSON 里写死本机路径被抓",
-      bool(scan('{"1.12.2": {"source": "C:\\\\Users\\\\10316\\\\Desktop\\\\jar"}}')))
+# N12：账户名是**任意非空路径组件** —— Unicode / 空格 / 混合分隔符 / JSON 转义都要抓。
+# 样本一律用通用账户名：账户名不携带含义，而写死真实账户名本身就是个人痕迹。
+check("★N12 病灶：Unicode 账户名被抓",
+      bool(scan('P = "C:/Users/核验账户/Desktop/private.jar"')))
+check("★N12 病灶：带空格的账户名被抓",
+      bool(scan('P = "C:/Users/John Smith/Desktop/private.jar"')))
+check("★N12 病灶：正反斜杠混用被抓",
+      bool(scan('P = "C:\\Users\\核验账户/Desktop/jar"')))
+check("★N12 病灶：运维台账目录 + Unicode 账户被抓",
+      bool(scan('P = "D:\\AstrBotOps\\核验账户\\ledger"')))
+check("病灶：随包发布的 JSON 里写死本机路径被抓（含 Unicode 账户 + 转义反斜杠）",
+      bool(scan('{"1.12.2": {"source": "C:\\\\Users\\\\核验账户\\\\Desktop\\\\jar"}}')))
+check("反例：占位写法（尖括号）不误报", not scan("见 `C:/Users/<账户>/…`（占位）"))
+check("反例：省略号叙述不误报", not scan("如 `C:\\Users\\…` 这类叙述"))
 check("反例：数据表里的数据值写法不误报",
       not scan('{"log2": {"domain_upper": 1, "variants": {"0": "Acacia Wood"}}}'))
 check("反例：可移植写法不误报",
