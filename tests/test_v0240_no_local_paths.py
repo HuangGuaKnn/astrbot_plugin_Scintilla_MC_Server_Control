@@ -33,7 +33,10 @@ PATTERNS = (
 
 #: 自己与「判据声明处」必然含这些串，跳过。
 SKIP_FILES = {"test_v0240_no_local_paths.py", "test_v0237_changelog_hygiene.py"}
-SKIP_DIRS = {".git", "__pycache__", "node_modules", "data", "_archive_2026-10-05"}
+SKIP_DIRS = {".git", "__pycache__", "node_modules", "_archive_2026-10-05"}
+#: `data/` 下只有**运行缓存**才豁免；`data/legacy_items/` 是**随包发布的运行资产**，
+#: 必须一起受本守卫约束（GPT 复核 F16：此前整目录跳过，等于给发布 JSON 开了后门）。
+DATA_SCAN_DIRS = {"legacy_items"}
 SCAN_EXT = {".py", ".json", ".yaml", ".yml", ".md", ".html", ".sql"}
 
 PASS, FAIL = [], []
@@ -71,7 +74,10 @@ for base, dirs, files in os.walk(ROOT):
     if rel.startswith("docs/_internal"):
         dirs[:] = []
         continue
-    dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+    if rel == "data":
+        dirs[:] = [d for d in dirs if d in DATA_SCAN_DIRS]      # 只放行随包的运行资产
+    else:
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
     for fn in sorted(files):
         if fn in SKIP_FILES or os.path.splitext(fn)[1].lower() not in SCAN_EXT:
             continue
@@ -95,6 +101,10 @@ check("病灶：C:\\Users\\x\\y 被抓",
 check("病灶：C:/Users/x/y 被抓", bool(scan('P = "C:/Users/x/y"')))
 check("病灶：file:/// 被抓", bool(scan('U = "file:///C:/x"')))
 check("病灶：靶场写死被抓", bool(scan('MATRIX = r"C:\\Users\\10316\\Desktop\\mcs-matrix"')))
+check("病灶：随包发布的 JSON 里写死本机路径被抓",
+      bool(scan('{"1.12.2": {"source": "C:\\\\Users\\\\10316\\\\Desktop\\\\jar"}}')))
+check("反例：数据表里的数据值写法不误报",
+      not scan('{"log2": {"domain_upper": 1, "variants": {"0": "Acacia Wood"}}}'))
 check("反例：可移植写法不误报",
       not scan('MATRIX = os.path.join(os.path.expanduser("~"), "Desktop", "mcs-matrix")')
       and not scan('D = Path.home() / ".astrbot" / "data"')

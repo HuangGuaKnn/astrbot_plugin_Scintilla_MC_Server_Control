@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -134,6 +135,23 @@ def kill_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+#: 「假绿」检测（2026-10-08 · F15 同类防护）：子进程自己打印了 ``[FAIL]`` 却退出 0。
+#: 门禁只看退出码，所以「断言全跑完但收尾漏了/缩进在可选分支里」（F15 正是如此）必须在这里拦下。
+_FAKE_GREEN_RE = re.compile(r"^\s*\[FAIL\]", re.M)
+
+#: 用例可自声明的豁免标记：文件里出现它，假绿检测就不咬这一件（附上为什么）。
+SAMPLE_MARKER = "gate-allow-fail-sample"
+
+
+def _read_head(rel: str, limit: int = 8000) -> str:
+    """读用例文件开头（只为了看有没有自声明豁免标记；读不到就当没有）。"""
+    try:
+        with open(ROOT / rel, encoding="utf-8", errors="replace") as fh:
+            return fh.read(limit)
+    except Exception:                                             # noqa: BLE001
+        return ""
+
+
 def run_file(rel: str, timeout: float, env_extra: dict | None = None):
     """跑一个用例文件，返回 (是否通过, 用时, 尾部输出, 是否超时)。
 
@@ -168,6 +186,17 @@ def run_file(rel: str, timeout: float, env_extra: dict | None = None):
             out = ""
     cost = time.time() - t0
     ok = (not timed_out) and proc.returncode == 0
+    # 假绿检测：退出码说通过，输出里却明明白白打了 [FAIL] —— 判红，证据留在尾部输出里。
+    # 有极少数用例是**故意**打印 [FAIL] 正文的（例如测「严格模式下环境缺件要报失败」的
+    # fail-closed 分支）：这类用例在文件里自己声明 ``gate-allow-fail-sample``（见下面的
+    # 常量），皮莉卡不集中维护白名单 —— 集中名单会腐烂，本地声明不会，改用例的人一眼能看到。
+    if ok and SAMPLE_MARKER not in _read_head(rel):
+        _m = _FAKE_GREEN_RE.search(out or "")
+        if _m:
+            ok = False
+            out = (out or "") + (
+                "\n[门禁] 假绿检测：本文件打印了「%s」却退出 0 —— 判为失败。"
+                "请把所有断言之后的收尾（汇总 + 非零退出）挪到文件最末尾。\n" % _m.group(0).strip())
     return ok, cost, (out or ""), timed_out
 
 
@@ -222,10 +251,65 @@ def check_export_ignore(strict: bool = False) -> list:
     leaked = [n for n in files if n.startswith("tests/")
               or (n.startswith("run_") and n.endswith(".py")) or _is_internal_doc(n)]
     must_keep = ["main.py", "metadata.yaml", "_conf_schema.json",
-                 "docs/configure.md", "docs/faq.md", "docs/usage.md", "docs/gallery.md"]
+                 "docs/configure.md", "docs/faq.md", "docs/usage.md", "docs/gallery.md",
+                 # 运行数据表：生成链要用，**必须**随包 —— v0.24.0 实案是 .gitignore 把它们
+                 # 挡在包外、而这张清单里没有它们，于是门禁全绿、用户包缺件（GPT 复核 F16）。
+                 "data/legacy_items/1.7.10.json", "data/legacy_items/1.12.2.json"]
     missing = [m for m in must_keep if m not in files]
     if not any(n.startswith("docs/images/") for n in files):
         missing.append("docs/images/*")
+    # ---- 运行数据表：**真的进包了，而且真的能解析**（F16：只查文件名不够，表坏了同样是发事故）----
+    data_bad: list = []
+    tar_obj = None
+    try:
+        tar_obj = tarfile.open(fileobj=io.BytesIO(r.stdout), encoding="utf-8", errors="replace")
+    except Exception:                                             # noqa: BLE001
+        pass
+    tables = [n for n in files if n.startswith("data/legacy_items/") and n.endswith(".json")]
+    if not tables:
+        data_bad.append("data/legacy_items/*.json 一个都没进包")
+    for name in sorted(tables):
+        try:
+            obj = json.loads(tar_obj.extractfile(name).read().decode("utf-8"))
+        except Exception as e:                                    # noqa: BLE001
+            data_bad.append(f"{name} 读不出来/解析失败：{e}")
+            continue
+        # 形状无关的体检：表是分节的（meta / bridges / 各族……），所以**递归**找「带 variants 的族」，
+        # 不假设顶层是平铺映射。只要有一张表的族数塌了（截断、写坏、被误改），下面就会红。
+        if not isinstance(obj, dict) or not obj:
+            data_bad.append(f"{name} 顶层不是非空对象")
+            continue
+        fam = 0
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            vs = node.get("variants")
+            if "variants" in node:
+                fam += 1
+                # 只查「是不是非空、叶子里有没有空串」——**不假设键的形态**：
+                # 有的族键是数据值（"0"/"14"），有的族键是具名项（wool/dye/log），
+                # 判据收宽了会把真表判红（皮莉卡当场踩过这个坑）。
+                if not isinstance(vs, dict) or not vs:
+                    data_bad.append(f"{name}：某族的 variants 不是非空对象")
+                else:
+                    for key, disp in vs.items():
+                        if isinstance(disp, str):
+                            if not disp.strip():
+                                data_bad.append(f"{name}：variants[{key!r}] 展示名为空")
+                        elif isinstance(disp, dict):
+                            if not disp:
+                                data_bad.append(f"{name}：variants[{key!r}] 是空对象")
+                        else:
+                            data_bad.append(f"{name}：variants[{key!r}] 类型异常（{type(disp).__name__}）")
+            stack.extend(v for v in node.values() if isinstance(v, dict))
+        if fam < 10:
+            data_bad.append(f"{name} 只找到 {fam} 个变体族（正常应 ≥ 10，疑似截断/写坏）")
+    if data_bad:
+        print(f"[FAIL] 发布包运行数据表有问题：{data_bad[:5]}"
+              + (f" …共 {len(data_bad)} 条" if len(data_bad) > 5 else ""))
+        out.append("发布包卫生：运行数据表缺件或损坏")
     if leaked:
         print(f"[FAIL] 发布包里混进不该带的东西：{leaked[:6]}"
               + (f" …共 {len(leaked)} 个" if len(leaked) > 6 else ""))

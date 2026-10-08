@@ -229,15 +229,6 @@ if HAS_MATRIX:
           li.is_preflatten(d122) and not li.is_preflatten(ItemDictionary(".")))
     check("预览可用（失败给可读原因）", li.render_preview(d122, "Knn", "minecraft:planks", 1, 9).startswith("[拒绝]"))
 
-    print("\n" + "=" * 78)
-    if FAIL:
-        print("FAILED %d 项（共 %d）：" % (len(FAIL), len(PASS) + len(FAIL)))
-        for f in FAIL:
-            print("  - " + f)
-        sys.exit(1)
-
-print("全部通过（%d 项）：预扁平化世代「名优先 + 家族名 + 数据值」生成链，"
-      "域外值一律拒绝，版本门按世代分派，现代路径不受影响。" % len(PASS))
 
 # ================= P4 真机验收回填（2026-10-07 · 1.12.2 工地实测） =================
 # 实测回执（不是猜的）：`give HuangGuaKnn minecraft:stick 1 0`
@@ -274,4 +265,15 @@ check("P4 登记：give 的锚定模式同时含 1.16+ 与 pre-1.13 两代措辞
       any("gave" in p for p in _cr.ANCHORED_SUCCESS_PATTERNS.get("give", ()))
       and any("given" in p for p in _cr.ANCHORED_SUCCESS_PATTERNS.get("give", ())),
       str(_cr.ANCHORED_SUCCESS_PATTERNS.get("give")))
-
+# ===================== 统一收尾（2026-10-08 · F15 修复） =====================
+# **只此一处收尾**：不管有没有靶场、不管 FAIL 来自哪一节（含上面的 P4 段），都在这里汇总并定退出码。
+# 旧写法把 ``sys.exit(1)`` 缩进在 ``if HAS_MATRIX:`` 里面、P4 断言又排在它之后 —— 于是
+# 「打印了 [FAIL] 却退出 0」，无靶场的 CI 直接误绿（GPT 全面复核 F15；探针见复核报告）。
+print("\n" + "=" * 78)
+if FAIL:
+    print("FAILED %d 项（共 %d）：" % (len(FAIL), len(PASS) + len(FAIL)))
+    for _f in FAIL:
+        print("  - " + _f)
+    sys.exit(1)
+print("全部通过（%d 项）：预扁平化世代「名优先 + 家族名 + 数据值」生成链，"
+      "域外值一律拒绝，版本门按世代分派，现代路径不受影响。" % len(PASS))
