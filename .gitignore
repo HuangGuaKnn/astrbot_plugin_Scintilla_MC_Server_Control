@@ -25,6 +25,12 @@ plugin_config*.json
 !/data/legacy_items/
 !/data/legacy_items/1.7.10.json
 !/data/legacy_items/1.12.2.json
+# 旧版**真 Item 注册表**快照（v0.24.3 · N04）：运行期与 CI 的判据，必须随包。
+# 踩过的坑（F16）：/data/* 这种一锅端规则会把运行数据挡在包外，而门禁只看文件名时会全绿 ——
+# 所以闸门里既查「在不在包」，也拿它逐条核 data/legacy_items/*.json 的成员资格。
+!/data/legacy_registry/
+!/data/legacy_registry/items_1.7.10.json
+!/data/legacy_registry/items_1.12.2.json
 run_full.py
 run_ui.py
 

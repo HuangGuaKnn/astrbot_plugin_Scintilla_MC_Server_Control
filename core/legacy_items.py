@@ -75,11 +75,35 @@ def generation_of(dictionary) -> str:
     return str(getattr(dictionary, "legacy_generation", "") or "")
 
 
+#: 「ID 型输入」：纯 ASCII 标识符（``water`` / ``minecraft:water`` / ``red_wool``）。
+#: 这类输入只许**精确 / 强命中** —— 旧行为会拿前缀抢先的搜索结果顶包，把
+#: ``minecraft:water`` 悄悄解析成 ``minecraft:waterlily``（用户要水、拿到睡莲）。
+_ID_LIKE_RE = _re.compile(r"^[a-z0-9_:.\-]+$")
+
+
+def _norm_name(value) -> str:
+    """名字归一化：小写、去首尾空白、把空白与下划线等同（``Red Wool`` ≡ ``red_wool``）。"""
+    return _re.sub(r"[\s_]+", "_", str(value or "").strip().lower())
+
+
+def _strong_hit(raw: str, row: dict) -> bool:
+    """这条搜索命中是不是**强命中**（名字真的等于用户输入，而不是前缀 / 子串蹭上来的）。"""
+    want = _norm_name(str(raw).split(":")[-1])
+    names = {_norm_name(str(row.get("id") or "").split(":")[-1]),
+             _norm_name(row.get("en")), _norm_name(row.get("zh")),
+             _norm_name(row.get("variant_display"))}
+    return bool(want) and want in {n for n in names if n}
+
+
 def resolve_entry(dictionary, item: str):
     """把「用户怎么说」解析成词典条目。
 
     返回 ``(entry_id, entry, hit_damage, hit_display)``；解析不到返回 ``(None, None, None, None)``。
     顺序：直接 ID（``minecraft:x`` 或裸 ``x``）→ 词典模糊搜索（含变体展示名）。
+
+    v0.24.3（N04）：**ID 型输入**（纯 ASCII 标识符）只接受强命中 —— 名字必须等于用户输入
+    （含变体展示名），否则一律 fail-closed。人话输入（``diamond sword`` / ``钻石剑`` /
+    ``红羊毛``）仍走模糊匹配，那本来就是要「猜用户指哪个」的场景。
     """
     raw = str(item or "").strip()
     if not raw:
@@ -91,12 +115,18 @@ def resolve_entry(dictionary, item: str):
             return (cand, items[cand], None, None)
     # ② 词典搜索（B5 已支持变体展示名并带回数据值）
     try:
-        rows = dictionary.search_items(raw, limit=1)
+        rows = dictionary.search_items(raw, limit=15)
     except Exception:  # noqa: BLE001
         rows = []
     if not rows:
         return (None, None, None, None)
-    row = rows[0]
+    if _ID_LIKE_RE.match(raw.lower()):
+        # ID 型输入：宁可不发，也不换成别的物品（见 _ID_LIKE_RE 的注释）。
+        row = next((r for r in rows if _strong_hit(raw, r)), None)
+        if row is None:
+            return (None, None, None, None)
+    else:
+        row = rows[0]     # 展示名 / 中文名这种「人话」输入，继续走模糊匹配
     rid = row.get("id")
     return (rid, items.get(rid) or row, row.get("variant_damage"), row.get("variant_display"))
 

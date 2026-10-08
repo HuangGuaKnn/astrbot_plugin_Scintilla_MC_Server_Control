@@ -254,7 +254,11 @@ def check_export_ignore(strict: bool = False) -> list:
                  "docs/configure.md", "docs/faq.md", "docs/usage.md", "docs/gallery.md",
                  # 运行数据表：生成链要用，**必须**随包 —— v0.24.0 实案是 .gitignore 把它们
                  # 挡在包外、而这张清单里没有它们，于是门禁全绿、用户包缺件（GPT 复核 F16）。
-                 "data/legacy_items/1.7.10.json", "data/legacy_items/1.12.2.json"]
+                 "data/legacy_items/1.7.10.json", "data/legacy_items/1.12.2.json",
+                 # 旧版真 Item 注册表快照（v0.24.3 · N04）：没有它，运行期就只剩
+                 # 「表里写什么就发什么」，water / charcoal 这类名字又会生成命令。
+                 "data/legacy_registry/items_1.7.10.json",
+                 "data/legacy_registry/items_1.12.2.json"]
     missing = [m for m in must_keep if m not in files]
     if not any(n.startswith("docs/images/") for n in files):
         missing.append("docs/images/*")
@@ -265,6 +269,43 @@ def check_export_ignore(strict: bool = False) -> list:
         tar_obj = tarfile.open(fileobj=io.BytesIO(r.stdout), encoding="utf-8", errors="replace")
     except Exception:                                             # noqa: BLE001
         pass
+
+    # ---- 真注册表快照：**必须进包，而且是可用的判据**（v0.24.3 · N04）----
+    snaps: dict = {}
+    for gen in ("1.7.10", "1.12.2"):
+        name = f"data/legacy_registry/items_{gen}.json"
+        if name not in files:
+            data_bad.append(f"{name} 没进包 —— 运行期会失去「名字能不能 give」的判据")
+            continue
+        try:
+            obj = json.loads(tar_obj.extractfile(name).read().decode("utf-8"))
+        except Exception as e:                                    # noqa: BLE001
+            data_bad.append(f"{name} 读不出来/解析失败：{e}")
+            continue
+        items = obj.get("items")
+        if not isinstance(items, dict) or len(items) < 300:
+            data_bad.append(f"{name} 的 items 表异常（{type(items).__name__}，"
+                            f"{len(items) if isinstance(items, dict) else '?'} 条）")
+            continue
+        if not (obj.get("source") or {}).get("jar_sha256"):
+            data_bad.append(f"{name} 缺来源指纹 —— 说不清是从哪个 jar 抽的")
+        snaps[gen] = items
+
+    # 点名目标：真名必须在、假名必须不在（两代各点名，防的正是「两代同错全绿」）
+    canary_in = {"1.12.2": ["diamond", "coal", "fence_gate", "wooden_door",
+                            "silver_glazed_terracotta", "end_portal_frame"],
+                 "1.7.10": ["diamond", "coal", "fence_gate", "wooden_door", "water", "fire"]}
+    canary_out = {"1.12.2": ["charcoal", "oak_door", "oak_fence_gate",
+                             "light_gray_glazed_terracotta", "water", "frosted_ice", "pumpkin_stem"],
+                  "1.7.10": ["charcoal", "oak_door", "oak_fence_gate", "frosted_ice", "pumpkin_stem"]}
+    for gen, items in snaps.items():
+        for n in canary_in[gen]:
+            if n not in items:
+                data_bad.append(f"{gen} 快照缺真注册名 {n}")
+        for n in canary_out[gen]:
+            if n in items:
+                data_bad.append(f"{gen} 快照把 {n} 当成了注册名（它只是方块名/别名/变体名）")
+
     tables = [n for n in files if n.startswith("data/legacy_items/") and n.endswith(".json")]
     if not tables:
         data_bad.append("data/legacy_items/*.json 一个都没进包")
@@ -316,6 +357,24 @@ def check_export_ignore(strict: bool = False) -> list:
             stack.extend(v for v in node.values() if isinstance(v, dict))
         if fam < 10:
             data_bad.append(f"{name} 只找到 {fam} 个变体族（正常应 ≥ 10，疑似截断/写坏）")
+
+        # v0.24.3（N04）：**逐条 membership** —— 表里每个 registry / 变体族都必须在
+        # 「该代」真注册表里。两代一致顶不了这件事：两代同错照样一致（旧审计全绿）。
+        gen = Path(name).stem
+        items = snaps.get(gen)
+        if items is None:
+            data_bad.append(f"{name}：没有对应的真注册表快照（{gen}），无法核对可发放性")
+        else:
+            bad_pairs = [f"{k}→{v.get('registry')}"
+                         for k, v in (obj.get("bridge") or {}).items()
+                         if isinstance(v, dict) and v.get("registry") not in items]
+            bad_fams = [f for f in (obj.get("variants") or {}) if f not in items]
+            if bad_pairs:
+                data_bad.append(f"{name}：{len(bad_pairs)} 条桥接不是 {gen} 的注册名"
+                                f"（{bad_pairs[:3]}）")
+            if bad_fams:
+                data_bad.append(f"{name}：{len(bad_fams)} 个变体族不是 {gen} 的注册名"
+                                f"（{bad_fams[:3]}）")
     if data_bad:
         print(f"[FAIL] 发布包运行数据表有问题：{data_bad[:5]}"
               + (f" …共 {len(data_bad)} 条" if len(data_bad) > 5 else ""))

@@ -10,6 +10,12 @@
   A. 离线层（CI 必跑）：报告点名项逐条核对 + log 族域 + 「两代表不许互相打脸」
      （同一件物品在两代的注册名必须一致，例外只能写进 `_CROSS_GEN_EXCEPTIONS`）
      + 被证伪的写法不得回流 + 离线 fixture 在库。
+
+  v0.24.3（N04）补强：**成员资格**这条从「两代一致」升级为「逐代真注册表」——
+  判据 = `data/legacy_registry/items_<mc>.json`（真 jar 字节码抽出的 Item 注册表，
+  见 `tests/make_legacy_registry_snapshot.py`）。点名目标缺席一律 FAIL（旧写法在这里
+  SKIP，等于给错表发免死金牌）；`_CROSS_GEN_EXCEPTIONS` 随之清空 —— 它唯一那条
+  「Charcoal 1.12.2 = charcoal」正是 N04 点名要修的假差异。
   B. 靶场层（有 jar 才跑）：用插件自己的词典管线 + 真实 1.12.2 jar，按报告原句验证
      「Acacia Wood → log2 data0 / Dark Oak Wood → log2 data1 / log 4 拒绝 / log2 1 允许」。
      目录由 SCINTILLA_MATRIX_DIR 给出；缺席即 SKIP（不在 CI 上假装跑过）。
@@ -39,11 +45,10 @@ FIXDIR = ROOT / "tests" / "fixtures" / "legacy_registry"
 
 
 #: 允许两代不一致的例外（键 = 展示名）—— 加一条必须写清证据，不许拿来消音。
-#: Charcoal：1.7.10 里焦炭是 **coal 的数据值 1**（同一注册名 + 数据值），
-#:           1.12.2 已经是独立注册名 charcoal —— 两代都对，属于真实代际差异。
-_CROSS_GEN_EXCEPTIONS: dict = {
-    "Charcoal": {"1.12.2": "charcoal", "1.7.10": "coal"},
-}
+#: v0.24.3（N04）**已清空**：唯一那条「Charcoal 1.12.2 = charcoal」正是复核材料点名的
+#: 假差异 —— 1.12.2 真注册表里根本没有 charcoal 这个名字（木炭是 coal 的 data 1，两代
+#: 一样）。留着它等于给错表发免死金牌：例外表一开，判据就从「谁对」退化成「别再吵了」。
+_CROSS_GEN_EXCEPTIONS: dict = {}
 
 _EXPECT = {
     "1.12.2": {
@@ -56,7 +61,7 @@ _EXPECT = {
     },
     "1.7.10": {
         "Dead Bush": "deadbush",
-        "Oak Fence": "fence",
+        "Fence": "fence",          # 1.7.10 的 lang 就叫 Fence（Oak Fence 是 1.12.2 的写法）
         "Jack o'Lantern": "lit_pumpkin",
         "Stone Bricks": "stonebrick",
     },
@@ -102,10 +107,24 @@ def part_a():
         by_disp = reg_by_disp(table)
         for disp, want in _EXPECT[gen].items():
             got = by_disp.get(disp)
-            if got is None:
-                skip(f"{gen}：表里没有「{disp}」（该代可能确实没有此物品）")
-                continue
+            # v0.24.3（N04）：点名目标**缺失就是失败**。旧写法在这里 skip —— 查不到被翻成
+            # 「跳过」，等于给错表发免死金牌（复核报告点名的洞：缺席不许当通过）。
+            check(f"★{gen}：点名目标「{disp}」在表里", got is not None, "表里没有这个展示名")
             check(f"★{gen}：「{disp}」的注册名 = {want}", got == want, f"表里写的是 {got}")
+
+    # v0.24.3（N04）：逐条 membership 的判据来自**真 jar 抽出的注册表快照**，不是夹具。
+    reg_dir = ROOT / "data" / "legacy_registry"
+    for gen, table in (("1.12.2", t122), ("1.7.10", t710)):
+        fp = reg_dir / f"items_{gen}.json"
+        if not fp.exists():
+            check(f"★{gen}：真注册表快照在库（{fp.name}）", False, str(fp))
+            continue
+        items = set((json.loads(fp.read_text(encoding="utf-8")).get("items") or {}))
+        bad = [f"{k}→{(v or {}).get('registry')}" for k, v in (table.get("bridge") or {}).items()
+               if (v or {}).get("registry") not in items]
+        bad += [f"族 {f}" for f in (table.get("variants") or {}) if f not in items]
+        check(f"★{gen}：每条桥接/变体族都在**该代**真注册表里（快照 {len(items)} 枚）",
+              not bad, str(bad[:6]))
 
     for gen, table in (("1.12.2", t122), ("1.7.10", t710)):
         fam = (table.get("variants") or {})

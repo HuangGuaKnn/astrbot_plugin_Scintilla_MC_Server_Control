@@ -1,0 +1,1938 @@
+{
+ "blocks_only": [
+  "air",
+  "lit_redstone_lamp",
+  "lit_redstone_ore",
+  "melon_stem",
+  "piston_extension",
+  "piston_head",
+  "powered_comparator",
+  "powered_repeater",
+  "pumpkin_stem",
+  "redstone_wire",
+  "standing_sign",
+  "tripwire",
+  "unlit_redstone_torch",
+  "unpowered_comparator",
+  "unpowered_repeater",
+  "wall_sign"
+ ],
+ "counts": {
+  "block_items": 144,
+  "blocks": 171,
+  "explicit": 171,
+  "items": 315,
+  "max_stacks": {
+   "1": 84,
+   "16": 5,
+   "64": 226
+  }
+ },
+ "default_max": 64,
+ "generation": "legacy_preflatten",
+ "items": {
+  "acacia_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "activator_rail": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "anvil": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "apple": {
+   "id": 260,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "arrow": {
+   "id": 262,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "baked_potato": {
+   "id": 393,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "beacon": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "bed": {
+   "id": 355,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "bedrock": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "beef": {
+   "id": 363,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "birch_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "blaze_powder": {
+   "id": 377,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "blaze_rod": {
+   "id": 369,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "boat": {
+   "id": 333,
+   "max": 1,
+   "max_src": "ctor:abj",
+   "origin": "explicit"
+  },
+  "bone": {
+   "id": 352,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "book": {
+   "id": 340,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "bookshelf": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "bow": {
+   "id": 261,
+   "max": 1,
+   "max_src": "ctor:abm",
+   "origin": "explicit"
+  },
+  "bowl": {
+   "id": 281,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "bread": {
+   "id": 297,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "brewing_stand": {
+   "id": 379,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "brick": {
+   "id": 336,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "brick_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "brick_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "brown_mushroom": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "brown_mushroom_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "bucket": {
+   "id": 325,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cactus": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "cake": {
+   "id": 354,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "carpet": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "carrot": {
+   "id": 391,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "carrot_on_a_stick": {
+   "id": 398,
+   "max": 1,
+   "max_src": "ctor:abp",
+   "origin": "explicit"
+  },
+  "carrots": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "cauldron": {
+   "id": 380,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "chainmail_boots": {
+   "id": 305,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "chainmail_chestplate": {
+   "id": 303,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "chainmail_helmet": {
+   "id": 302,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "chainmail_leggings": {
+   "id": 304,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "chest": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "chest_minecart": {
+   "id": 342,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "chicken": {
+   "id": 365,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "clay": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "clay_ball": {
+   "id": 337,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "clock": {
+   "id": 347,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "coal": {
+   "id": 263,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "coal_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "coal_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "cobblestone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "cobblestone_wall": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "cocoa": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "command_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "command_block_minecart": {
+   "id": 422,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "comparator": {
+   "id": 404,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "compass": {
+   "id": 345,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cooked_beef": {
+   "id": 364,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cooked_chicken": {
+   "id": 366,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cooked_fished": {
+   "id": 350,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cooked_porkchop": {
+   "id": 320,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "cookie": {
+   "id": 357,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "crafting_table": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "dark_oak_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "daylight_detector": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "deadbush": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "detector_rail": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "diamond": {
+   "id": 264,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "diamond_axe": {
+   "id": 279,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "diamond_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "diamond_boots": {
+   "id": 313,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "diamond_chestplate": {
+   "id": 311,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "diamond_helmet": {
+   "id": 310,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "diamond_hoe": {
+   "id": 293,
+   "max": 1,
+   "max_src": "ctor:ada",
+   "origin": "explicit"
+  },
+  "diamond_horse_armor": {
+   "id": 419,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "diamond_leggings": {
+   "id": 312,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "diamond_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "diamond_pickaxe": {
+   "id": 278,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "diamond_shovel": {
+   "id": 277,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "diamond_sword": {
+   "id": 276,
+   "max": 1,
+   "max_src": "ctor:aeh",
+   "origin": "explicit"
+  },
+  "dirt": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "dispenser": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "double_plant": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "double_stone_slab": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "double_wooden_slab": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "dragon_egg": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "dropper": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "dye": {
+   "id": 351,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "egg": {
+   "id": 344,
+   "max": 16,
+   "max_src": "ctor:ack",
+   "origin": "explicit"
+  },
+  "emerald": {
+   "id": 388,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "emerald_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "emerald_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "enchanted_book": {
+   "id": 403,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "enchanting_table": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "end_portal": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "end_portal_frame": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "end_stone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "ender_chest": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "ender_eye": {
+   "id": 381,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "ender_pearl": {
+   "id": 368,
+   "max": 16,
+   "max_src": "ctor:aco",
+   "origin": "explicit"
+  },
+  "experience_bottle": {
+   "id": 384,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "farmland": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "feather": {
+   "id": 288,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "fence": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "fence_gate": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "fermented_spider_eye": {
+   "id": 376,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "filled_map": {
+   "id": 358,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "fire": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "fire_charge": {
+   "id": 385,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "firework_charge": {
+   "id": 402,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "fireworks": {
+   "id": 401,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "fish": {
+   "id": 349,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "fishing_rod": {
+   "id": 346,
+   "max": 1,
+   "max_src": "ctor:acv",
+   "origin": "explicit"
+  },
+  "flint": {
+   "id": 318,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "flint_and_steel": {
+   "id": 259,
+   "max": 1,
+   "max_src": "ctor:acw",
+   "origin": "explicit"
+  },
+  "flower_pot": {
+   "id": 390,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "flowing_lava": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "flowing_water": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "furnace": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "furnace_minecart": {
+   "id": 343,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "ghast_tear": {
+   "id": 370,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "glass": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "glass_bottle": {
+   "id": 374,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "glass_pane": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "glowstone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "glowstone_dust": {
+   "id": 348,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "gold_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "gold_ingot": {
+   "id": 266,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "gold_nugget": {
+   "id": 371,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "gold_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "golden_apple": {
+   "id": 322,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "golden_axe": {
+   "id": 286,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "golden_boots": {
+   "id": 317,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "golden_carrot": {
+   "id": 396,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "golden_chestplate": {
+   "id": 315,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "golden_helmet": {
+   "id": 314,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "golden_hoe": {
+   "id": 294,
+   "max": 1,
+   "max_src": "ctor:ada",
+   "origin": "explicit"
+  },
+  "golden_horse_armor": {
+   "id": 418,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "golden_leggings": {
+   "id": 316,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "golden_pickaxe": {
+   "id": 285,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "golden_rail": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "golden_shovel": {
+   "id": 284,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "golden_sword": {
+   "id": 283,
+   "max": 1,
+   "max_src": "ctor:aeh",
+   "origin": "explicit"
+  },
+  "grass": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "gravel": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "gunpowder": {
+   "id": 289,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "hardened_clay": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "hay_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "heavy_weighted_pressure_plate": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "hopper": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "hopper_minecart": {
+   "id": 408,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "ice": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "iron_axe": {
+   "id": 258,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "iron_bars": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "iron_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "iron_boots": {
+   "id": 309,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "iron_chestplate": {
+   "id": 307,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "iron_door": {
+   "id": 330,
+   "max": 1,
+   "max_src": "ctor:ach",
+   "origin": "explicit"
+  },
+  "iron_helmet": {
+   "id": 306,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "iron_hoe": {
+   "id": 292,
+   "max": 1,
+   "max_src": "ctor:ada",
+   "origin": "explicit"
+  },
+  "iron_horse_armor": {
+   "id": 417,
+   "max": 1,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "iron_ingot": {
+   "id": 265,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "iron_leggings": {
+   "id": 308,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "iron_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "iron_pickaxe": {
+   "id": 257,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "iron_shovel": {
+   "id": 256,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "iron_sword": {
+   "id": 267,
+   "max": 1,
+   "max_src": "ctor:aeh",
+   "origin": "explicit"
+  },
+  "item_frame": {
+   "id": 389,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "jukebox": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "jungle_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "ladder": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lapis_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lapis_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lava": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lava_bucket": {
+   "id": 327,
+   "max": 1,
+   "max_src": "ctor:abo",
+   "origin": "explicit"
+  },
+  "lead": {
+   "id": 420,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "leather": {
+   "id": 334,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "leather_boots": {
+   "id": 301,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "leather_chestplate": {
+   "id": 299,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "leather_helmet": {
+   "id": 298,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "leather_leggings": {
+   "id": 300,
+   "max": 1,
+   "max_src": "ctor:abb",
+   "origin": "explicit"
+  },
+  "leaves": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "leaves2": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lever": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "light_weighted_pressure_plate": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lit_furnace": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "lit_pumpkin": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "log": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "log2": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "magma_cream": {
+   "id": 378,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "map": {
+   "id": 395,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "melon": {
+   "id": 360,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "melon_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "melon_seeds": {
+   "id": 362,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "milk_bucket": {
+   "id": 335,
+   "max": 1,
+   "max_src": "ctor:adi",
+   "origin": "explicit"
+  },
+  "minecart": {
+   "id": 328,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "mob_spawner": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "monster_egg": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "mossy_cobblestone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "mushroom_stew": {
+   "id": 282,
+   "max": 1,
+   "max_src": "ctor:abn",
+   "origin": "explicit"
+  },
+  "mycelium": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "name_tag": {
+   "id": 421,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "nether_brick": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "nether_brick_fence": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "nether_brick_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "nether_star": {
+   "id": 399,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "nether_wart": {
+   "id": 372,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "netherbrick": {
+   "id": 405,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "netherrack": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "noteblock": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "oak_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "obsidian": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "packed_ice": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "painting": {
+   "id": 321,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "paper": {
+   "id": 339,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "piston": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "planks": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "poisonous_potato": {
+   "id": 394,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "porkchop": {
+   "id": 319,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "portal": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "potato": {
+   "id": 392,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "potatoes": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "potion": {
+   "id": 373,
+   "max": 1,
+   "max_src": "ctor:adp",
+   "origin": "explicit"
+  },
+  "pumpkin": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "pumpkin_pie": {
+   "id": 400,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "pumpkin_seeds": {
+   "id": 361,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "quartz": {
+   "id": 406,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "quartz_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "quartz_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "quartz_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "rail": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "record_11": {
+   "id": 2266,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_13": {
+   "id": 2256,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_blocks": {
+   "id": 2258,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_cat": {
+   "id": 2257,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_chirp": {
+   "id": 2259,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_far": {
+   "id": 2260,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_mall": {
+   "id": 2261,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_mellohi": {
+   "id": 2262,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_stal": {
+   "id": 2263,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_strad": {
+   "id": 2264,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_wait": {
+   "id": 2267,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "record_ward": {
+   "id": 2265,
+   "max": 1,
+   "max_src": "ctor:adr",
+   "origin": "explicit"
+  },
+  "red_flower": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "red_mushroom": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "red_mushroom_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "redstone": {
+   "id": 331,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "redstone_block": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "redstone_lamp": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "redstone_ore": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "redstone_torch": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "reeds": {
+   "id": 338,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "repeater": {
+   "id": 356,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "rotten_flesh": {
+   "id": 367,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "saddle": {
+   "id": 329,
+   "max": 1,
+   "max_src": "ctor:adt",
+   "origin": "explicit"
+  },
+  "sand": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "sandstone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "sandstone_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "sapling": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "shears": {
+   "id": 359,
+   "max": 1,
+   "max_src": "ctor:adx",
+   "origin": "explicit"
+  },
+  "sign": {
+   "id": 323,
+   "max": 16,
+   "max_src": "ctor:adz",
+   "origin": "explicit"
+  },
+  "skull": {
+   "id": 397,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "slime_ball": {
+   "id": 341,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "snow": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "snow_layer": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "snowball": {
+   "id": 332,
+   "max": 16,
+   "max_src": "ctor:aed",
+   "origin": "explicit"
+  },
+  "soul_sand": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "spawn_egg": {
+   "id": 383,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "speckled_melon": {
+   "id": 382,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "spider_eye": {
+   "id": 375,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "sponge": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "spruce_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stained_glass": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stained_glass_pane": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stained_hardened_clay": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stick": {
+   "id": 280,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "sticky_piston": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_axe": {
+   "id": 275,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "stone_brick_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_button": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_hoe": {
+   "id": 291,
+   "max": 1,
+   "max_src": "ctor:ada",
+   "origin": "explicit"
+  },
+  "stone_pickaxe": {
+   "id": 274,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "stone_pressure_plate": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_shovel": {
+   "id": 273,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "stone_slab": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_stairs": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "stone_sword": {
+   "id": 272,
+   "max": 1,
+   "max_src": "ctor:aeh",
+   "origin": "explicit"
+  },
+  "stonebrick": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "string": {
+   "id": 287,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "sugar": {
+   "id": 353,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "tallgrass": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "tnt": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "tnt_minecart": {
+   "id": 407,
+   "max": 1,
+   "max_src": "ctor:adj",
+   "origin": "explicit"
+  },
+  "torch": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "trapdoor": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "trapped_chest": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "tripwire_hook": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "vine": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "water": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "water_bucket": {
+   "id": 326,
+   "max": 1,
+   "max_src": "ctor:abo",
+   "origin": "explicit"
+  },
+  "waterlily": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "web": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "wheat": {
+   "id": 296,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "wheat_seeds": {
+   "id": 295,
+   "max": 64,
+   "max_src": "default",
+   "origin": "explicit"
+  },
+  "wooden_axe": {
+   "id": 271,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "wooden_button": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "wooden_door": {
+   "id": 324,
+   "max": 1,
+   "max_src": "ctor:ach",
+   "origin": "explicit"
+  },
+  "wooden_hoe": {
+   "id": 290,
+   "max": 1,
+   "max_src": "ctor:ada",
+   "origin": "explicit"
+  },
+  "wooden_pickaxe": {
+   "id": 270,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "wooden_pressure_plate": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "wooden_shovel": {
+   "id": 269,
+   "max": 1,
+   "max_src": "ctor:acg",
+   "origin": "explicit"
+  },
+  "wooden_slab": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "wooden_sword": {
+   "id": 268,
+   "max": 1,
+   "max_src": "ctor:aeh",
+   "origin": "explicit"
+  },
+  "wool": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  },
+  "writable_book": {
+   "id": 386,
+   "max": 1,
+   "max_src": "ctor:ael",
+   "origin": "explicit"
+  },
+  "written_book": {
+   "id": 387,
+   "max": 16,
+   "max_src": "site",
+   "origin": "explicit"
+  },
+  "yellow_flower": {
+   "id": null,
+   "max": 64,
+   "max_src": "default",
+   "origin": "block"
+  }
+ },
+ "mc": "1.7.10",
+ "notes": "本文件是**离线事实快照**：由上面那条命令从指名的真 jar 抽出来，运行期与 CI 都据此判断某个名字能不能 give，不需要机器上有 jar。改了 GENERATIONS 里的 jar_sha256 就必须重新复核全部条目。",
+ "source": {
+  "block_registry_class": "aji.class",
+  "cfr": "cfr-0.152.jar",
+  "command": "python tests/make_legacy_registry_snapshot.py --mc 1.7.10   # 需 MC_MATRIX_DIR 指向 mcs-matrix",
+  "extractor": "tests/make_legacy_registry_snapshot.py",
+  "extractor_version": 1,
+  "item_class": "adb.class",
+  "jar": "minecraft_server.1.7.10.jar",
+  "jar_sha256": "c70870f00c4024d829e154f7e5f4e885b02dd87991726a3308d81f513972f3fc",
+  "method": "显式物品注册 + 方块物品注册；堆叠上限 = 基类默认 → 继承链构造器 → 注册现场链式设置器"
+ }
+}

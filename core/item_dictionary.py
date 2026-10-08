@@ -41,6 +41,13 @@ _LEGACY_LANG_TARGETS = ("assets/minecraft/lang/en_us.lang", "assets/minecraft/la
 #: 逐世代预扁平化数据表目录（随插件发布；也可放在缓存目录旁）。
 _LEGACY_DATA_DIR = "legacy_items"
 
+#: 旧版（1.13 以下）**真实 Item 注册表**快照目录（v0.24.3 · N04）。
+#: 由 ``tests/make_legacy_registry_snapshot.py`` 从真 jar 字节码抽出（名字 / 数值 ID /
+#: 真实堆叠上限），运行期据此判断「某个名字到底能不能 give」；缺了它只能退回
+#: 「表里写什么就发什么」的旧行为 —— 那条路上 water / charcoal / oak_fence_gate 这类
+#: 名字照样会生成命令，然后被服务端当场打回。
+_LEGACY_REGISTRY_DIR = "legacy_registry"
+
 #: v0.24.2（GPT 全面复核 F09）：完整性只能由**完整来源**证明，不能由「有几个 namespace 条目」
 #: 推断 —— 旧判据是「只要有一个 minecraft: 键就跳过原版核」，某个 mod 自带一个 minecraft:
 #: 语言键（例如它自己的方块名），整张原版表就被跳过，diamond 这类基础物品彻底消失。
@@ -92,6 +99,12 @@ class ItemDictionary:
         #: 静默失败是事故之母 —— 这条必须能一眼看出是「没有 .lang」「版本不在世代 range 内」
         #: 还是「缺 data/legacy_items 目录」。
         self.legacy_diag: str = ""
+        #: 该代**真实 Item 注册表**（``{名字: {"id","max",...}}``；快照缺席时为空）。
+        self.legacy_item_registry: dict[str, dict] = {}
+        #: 快照装载诊断（命中哪个文件 / 为什么没用上）。
+        self.legacy_registry_diag: str = ""
+        #: 被注册表判据**剔掉**的桥接与变体族（发不出去的名字，留痕用）。
+        self.legacy_registry_dropped: list[str] = []
 
     # ================= 构建 =================
 
@@ -131,6 +144,8 @@ class ItemDictionary:
         self.legacy_generation = ""
         self.legacy_variants, self.legacy_bridge = {}, {}
         self.legacy_diag = ""
+        self.legacy_item_registry = {}
+        self.legacy_registry_diag, self.legacy_registry_dropped = "", []
         setattr(self, _VANILLA_SRC_FLAG, False)
         mods_dir = self.server_dir / "mods"
         jar_files: list[Path] = []
@@ -151,6 +166,8 @@ class ItemDictionary:
             "jars": len(jar_files),
             "legacy": self.legacy_generation or "-",
             "legacy_diag": self.legacy_diag or "-",
+            "legacy_registry": self.legacy_registry_diag or "-",
+            "legacy_registry_dropped": len(self.legacy_registry_dropped),
         }
 
     def _adopt(self, fresh: "ItemDictionary") -> None:
@@ -169,6 +186,9 @@ class ItemDictionary:
         self.legacy_variants = fresh.legacy_variants
         self.legacy_bridge = fresh.legacy_bridge
         self.legacy_diag = fresh.legacy_diag
+        self.legacy_item_registry = fresh.legacy_item_registry
+        self.legacy_registry_diag = fresh.legacy_registry_diag
+        self.legacy_registry_dropped = list(fresh.legacy_registry_dropped)
         setattr(self, _VANILLA_SRC_FLAG, bool(getattr(fresh, _VANILLA_SRC_FLAG, False)))
 
     def _vanilla_jar_candidates(self) -> list[Path]:
@@ -279,6 +299,108 @@ class ItemDictionary:
             except OSError:
                 continue
         return None
+
+
+
+    # ---- 真实 Item 注册表快照（v0.24.3 · N04）----
+
+    def _legacy_registry_dir(self) -> "Path | None":
+        """真实注册表快照目录：优先插件自带 ``data/legacy_registry/``，其次缓存目录旁。"""
+        cands = [Path(__file__).resolve().parent.parent / "data" / _LEGACY_REGISTRY_DIR]
+        if self.cache_path:
+            cands.append(self.cache_path.parent / _LEGACY_REGISTRY_DIR)
+        for c in cands:
+            try:
+                if c.is_dir() and any(c.glob("items_*.json")):
+                    return c
+            except OSError:
+                continue
+        return None
+
+    def _load_legacy_registry(self, gen: str) -> "dict | None":
+        """读某代注册表快照；缺失 / 结构不符都返回 ``None`` 并写明原因（不静默）。"""
+        d = self._legacy_registry_dir()
+        if not d:
+            self.legacy_registry_diag = (
+                f"缺真实注册表快照目录（{_LEGACY_REGISTRY_DIR}/items_<mc>.json）"
+                " → 无法判定名字能不能发放，本次**不做**成员过滤（回到「表里写什么就发什么」）")
+            return None
+        path = d / f"items_{gen}.json"
+        if not path.exists():
+            self.legacy_registry_diag = (f"没有 {path.name}（目录 {d}）"
+                                         f" → 无法判定 {gen} 的可发放性，本次**不做**成员过滤")
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:                                      # noqa: BLE001
+            self.legacy_registry_diag = f"{path.name} 读不动（{exc}）→ 本次**不做**成员过滤"
+            return None
+        items = (data or {}).get("items")
+        if not isinstance(items, dict) or not items:
+            self.legacy_registry_diag = f"{path.name} 里没有 items 表（结构不符）→ 本次**不做**成员过滤"
+            return None
+        src_jar = ((data.get("source") or {}).get("jar")) or "?"
+        self.legacy_registry_diag = ("注册表快照命中：" + path.name
+                                     + f"（Item {len(items)} 枚，来源 jar {src_jar}）")
+        return data
+
+    @staticmethod
+    def _clean_display(value: str) -> str:
+        """展示名归一化：去掉行尾符与连续空白（旧表里 1.7.10 整批带 ``\r``）。"""
+        return re.sub(r"\s+", " ", str(value or "").replace("\r", " ").replace("\n", " ")).strip()
+
+    def _normalize_legacy_displays(self) -> int:
+        """把桥接与变体族的展示名洗一遍，返回改动条数（0 = 本来就干净）。"""
+        n = 0
+        for row in self.legacy_bridge.values():
+            if not isinstance(row, dict):
+                continue
+            clean = self._clean_display(row.get("display"))
+            if clean and clean != row.get("display"):
+                row["display"] = clean
+                n += 1
+        for info in self.legacy_variants.values():
+            variants = (info or {}).get("variants") or {}
+            for key, name in list(variants.items()):
+                clean = self._clean_display(name)
+                if clean and clean != name:
+                    variants[key] = clean
+                    n += 1
+        return n
+
+    def _apply_legacy_registry_filter(self) -> None:
+        """拿**该代真实 Item 注册表**把发不出去的桥接 / 变体族剔掉（v0.24.3 · N04）。
+
+        为什么必须剔：``give`` 取的是服务端的 Item registry。旧数据表里有 13 条名字只是
+        **方块名 / 别名 / 变体名** —— ``water`` ``lava`` ``fire`` ``portal`` ``cocoa``
+        ``potatoes`` ``frosted_ice`` ``pumpkin_stem`` 是方块只读（该代没有对应 Item），
+        ``charcoal`` 只是 ``coal`` 的 data 1，``oak_fence_gate`` / ``oak_door`` 该代真名是
+        ``fence_gate`` / ``wooden_door``，``light_gray_glazed_terracotta`` 该代真名是
+        ``silver_glazed_terracotta``。照表生成命令能过参数检查，到服务端当场报错。
+
+        快照缺席时**不假装通过**：``legacy_registry_diag`` 里写清「本次没过滤」，
+        让日志与上层都能看见这条降级。
+        """
+        reg = self._load_legacy_registry(self.legacy_generation)
+        if not reg:
+            self.legacy_item_registry = {}
+            return
+        items = reg["items"]
+        self.legacy_item_registry = dict(items)
+        dropped: list[str] = []
+        for key, ent in list(self.legacy_bridge.items()):
+            rid = str((ent or {}).get("registry") or "")
+            if rid and rid not in items:
+                dropped.append(f"{key}→{rid}")
+                self.legacy_bridge.pop(key, None)
+        for fam in list(self.legacy_variants):
+            if fam not in items:
+                dropped.append(f"族:{fam}")
+                self.legacy_variants.pop(fam, None)
+        self.legacy_registry_dropped = dropped
+        if dropped:
+            head = "、".join(dropped[:6]) + ("…" if len(dropped) > 6 else "")
+            self.legacy_registry_diag += f"；按注册表剔掉 {len(dropped)} 条发不出去的名字（{head}）"
 
 
     @staticmethod
@@ -497,12 +619,17 @@ class ItemDictionary:
             self.legacy_generation = str(table.get("mc") or path.stem)
             self.legacy_variants = dict(table.get("variants") or {})
             self.legacy_bridge = dict(table.get("bridge") or {})
+            # 数据卫生（v0.24.3 · N04）：旧表（尤其 1.7.10）的展示名整批带 CRLF 残留
+            # 的 ``\r``，会让「按展示名搜索」整族搜不到（"Wooden Door" ≠ "Wooden Door\r"）。
+            fixed = self._normalize_legacy_displays()
+
             # v0.24.3（N07）：空表**不许**当成功 —— 旧实现在未知版本下挑中夹具/垃圾文件，
             # 产出「0 桥接 + 0 变体」却照样写 legacy_generation，日志还报「通道命中」。
             if not self.legacy_bridge and not self.legacy_variants:
                 self.legacy_diag = (f"{path.name} 解析后既无桥接也无变体族（空表 / 结构不符）"
                                     "→ 拒绝按成功处理")
                 continue
+            self._apply_legacy_registry_filter()
             self._parse_preflatten_lang(text, self.legacy_bridge)
 
             # 表兜底：jar 里没有 lang（或键不全）时，用内置表把条目补齐
@@ -519,8 +646,13 @@ class ItemDictionary:
                 cur["variants"] = merged
                 cur["domain_upper"] = int(fv.get("domain_upper", -1))
                 cur["legacy_key"] = fam
+            if fixed:
+                self.legacy_diag += f"；展示名归一化 {fixed} 条（去 CRLF 残留）"
             self.legacy_diag = (f"预扁平化通道命中：{jar.name} → 世代 {self.legacy_generation}"
                                 f"（桥接 {len(self.legacy_bridge)} / 变体族 {len(self.legacy_variants)}）")
+            if self.legacy_registry_diag:
+                self.legacy_diag += "；" + self.legacy_registry_diag
+
             return True
         self.legacy_diag = (f"候选 jar {len(cands)} 个，其中带 legacy .lang 的 {seen_lang} 个"
                             f"（server_dir={self.server_dir}）→ 未装载")

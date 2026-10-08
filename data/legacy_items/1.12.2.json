@@ -3,7 +3,7 @@
  "generation": "legacy_preflatten",
  "lang_file": "assets/minecraft/lang/en_us.lang",
  "lang_keys": 3303,
- "bridge_count": 381,
+ "bridge_count": 372,
  "unresolved": [
   {
    "key": "air",
@@ -42,14 +42,6 @@
   "bedrock": {
    "registry": "bedrock",
    "display": "Bedrock"
-  },
-  "water": {
-   "registry": "water",
-   "display": "Water"
-  },
-  "lava": {
-   "registry": "lava",
-   "display": "Lava"
   },
   "sand": {
    "registry": "sand",
@@ -138,10 +130,6 @@
   "torch": {
    "registry": "torch",
    "display": "Torch"
-  },
-  "fire": {
-   "registry": "fire",
-   "display": "Fire"
   },
   "mobSpawner": {
    "registry": "mob_spawner",
@@ -288,7 +276,7 @@
    "display": "Acacia Fence"
   },
   "fenceGate": {
-   "registry": "oak_fence_gate",
+   "registry": "fence_gate",
    "display": "Oak Fence Gate"
   },
   "spruceFenceGate": {
@@ -326,10 +314,6 @@
   "lightgem": {
    "registry": "glowstone",
    "display": "Glowstone"
-  },
-  "portal": {
-   "registry": "portal",
-   "display": "Portal"
   },
   "dispenser": {
    "registry": "dispenser",
@@ -416,8 +400,8 @@
    "display": "End Stone"
   },
   "endPortalFrame": {
-   "registry": "end_portal",
-   "display": "End Portal"
+   "registry": "end_portal_frame",
+   "display": "End Portal Frame"
   },
   "mycel": {
    "registry": "mycelium",
@@ -434,10 +418,6 @@
   "redstoneLight": {
    "registry": "redstone_lamp",
    "display": "Redstone Lamp"
-  },
-  "cocoa": {
-   "registry": "cocoa",
-   "display": "Cocoa"
   },
   "enderChest": {
    "registry": "ender_chest",
@@ -470,10 +450,6 @@
   "carrots": {
    "registry": "carrot",
    "display": "Carrot"
-  },
-  "potatoes": {
-   "registry": "potatoes",
-   "display": "Potatoes"
   },
   "daylightDetector": {
    "registry": "daylight_detector",
@@ -738,10 +714,6 @@
   "coal": {
    "registry": "coal",
    "display": "Coal"
-  },
-  "charcoal": {
-   "registry": "charcoal",
-   "display": "Charcoal"
   },
   "diamond": {
    "registry": "diamond",
@@ -1040,7 +1012,7 @@
    "display": "Golden Apple"
   },
   "doorOak": {
-   "registry": "oak_door",
+   "registry": "wooden_door",
    "display": "Oak Door"
   },
   "doorSpruce": {
@@ -1467,10 +1439,6 @@
    "registry": "wooden_button",
    "display": "Button"
   },
-  "frostedIce": {
-   "registry": "frosted_ice",
-   "display": "Frosted Ice"
-  },
   "clayHardenedStained": {
    "registry": "stained_hardened_clay",
    "display": "Stained Terracotta"
@@ -1478,10 +1446,6 @@
   "clayHardened": {
    "registry": "hardened_clay",
    "display": "Terracotta"
-  },
-  "pumpkinStem": {
-   "registry": "pumpkin_stem",
-   "display": "Pumpkin Stem"
   },
   "litpumpkin": {
    "registry": "lit_pumpkin",
@@ -1528,7 +1492,7 @@
    "display": "Light Gray Shulker Box"
   },
   "glazedTerracottaSilver": {
-   "registry": "light_gray_glazed_terracotta",
+   "registry": "silver_glazed_terracotta",
    "display": "Light Gray Glazed Terracotta"
   },
   "splash_potion": {
@@ -1997,5 +1961,30 @@
   "1.8.0",
   "1.13.0"
  ],
- "_note_trim": "域内无独立展示名的值已剔除（v0.23.9）：这类值服务端不报错，但客户端渲染会取不到图标 —— 2026-10-07 B13 客户端崩溃即此类。待补：用真机 lang 重新采集这些族的正确名（见 trimmed_values）。"
+ "_note_trim": "域内无独立展示名的值已剔除（v0.23.9）：这类值服务端不报错，但客户端渲染会取不到图标 —— 2026-10-07 B13 客户端崩溃即此类。待补：用真机 lang 重新采集这些族的正确名（见 trimmed_values）。",
+ "_note_n04": {
+  "什么": "2026-10-08 · N04：拿真 jar 抽出的 Item 注册表当判据，把 13 条**发不出去**的桥接修掉",
+  "判据": "data/legacy_registry/items_1.12.2.json（由 tests/make_legacy_registry_snapshot.py 从真 jar 字节码抽出，含名字/数值 ID/真实堆叠上限；CI 与运行期都据此判断「这个名字到底能不能 give」）",
+  "删掉的 9 条": {
+   "charcoal": "该代没有 charcoal 这个注册名；木炭是 coal 的 data 1，已由 coal 变体族覆盖",
+   "cocoa": "方块 cocoa；可可豆是 dye 的 data 3，已由 dye 变体族覆盖",
+   "fire": "同上（方块只读）",
+   "frosted_ice": "方块只读",
+   "lava": "同上（方块只读）",
+   "portal": "同上（方块只读）",
+   "potatoes": "方块 potatoes；马铃薯单件是 potato（表里已有 potato）",
+   "pumpkin_stem": "方块只读",
+   "water": "1.12.2 的 water 只是方块，没有物品形态",
+   "frostedIce": "方块只读（键是驼峰 frostedIce）",
+   "pumpkinStem": "方块只读（键是驼峰 pumpkinStem）"
+  },
+  "改名的 4 条": {
+   "doorOak": "oak_door → wooden_door",
+   "endPortalFrame": "end_portal → end_portal_frame",
+   "fenceGate": "oak_fence_gate → fence_gate",
+   "glazedTerracottaSilver": "light_gray_glazed_terracotta → silver_glazed_terracotta"
+  },
+  "复验": "python tests/make_legacy_registry_snapshot.py --check 与 python tests/test_v0243_legacy_registry_membership.py",
+  "教训": "「Block 注册名存在」「.lang 里有这个键」都**不能**证明能发放；旧夹具审计只比两代一致性，两代同错时全绿 —— 判据必须来自该代真注册表"
+ }
 }
