@@ -333,6 +333,107 @@ def _make_text_part(text: str):
 #     .editorconfig、CHANGELOG.md、Issue 模板与 README 徽章；Release 包不再带 tests/。
 #
 
+def _ctx_signature(plugin) -> "tuple | None":
+    """当前「本地上下文签名」；装配不全（替身 / 降级实例）时返回 ``None`` = 不作废。
+
+    v0.24.3（GPT v0.24.2 复核 N02）：放**模块级**是故意的 —— 替身与降级装配只有插件类
+    的一部分方法，直接 ``self._ctx_sig()`` 会 AttributeError（实测：老的生命周期用例
+    当场炸）。拿不到就是「没有签名概念」，让老路径照常工作（与仓库里「替身不假造新
+    能力、也不该被新能力拖下水」的口径一致）。
+    """
+    fn = getattr(plugin, "_ctx_sig", None)
+    if not callable(fn):
+        return None
+    try:
+        return tuple(fn())
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
+def _cfg_generation(plugin) -> int:
+    """当前配置代际号；拿不到就按第 0 代（替身 / 降级实例）。"""
+    fn = getattr(plugin, "_cfg_gen", None)
+    try:
+        return int(fn()) if callable(fn) else 0
+    except Exception:                                             # noqa: BLE001
+        return 0
+
+
+def _is_terminated(plugin) -> bool:
+    """本实例是否已经走过 terminate（**不可逆**）。装配不全时按「未终止」处理。
+
+    v0.24.3（GPT v0.24.2 复核 N03）：终止必须是不可逆的事实。旧实现在 terminate 里
+    只关后台登记簿与监听器，却没有「我死过」这个标记 —— 于是排队中的 restart 拿到锁
+    之后**照样把监听器起回来**（实测：登记册已收口而 watcher 仍在 running）。
+
+    口径有意写成**先读 ``_terminated`` 属性、再退回同名方法**：属性是唯一事实来源，
+    这样「模块级函数 ↔ 类内薄封装」不可能互相递归（踩过一次：互相调用 → 递归异常被
+    兜底吞成「未终止」，恰好是最危险的那个默认值）。
+    """
+    if hasattr(plugin, "_terminated"):
+        return bool(getattr(plugin, "_terminated"))
+    fn = getattr(plugin, "_terminated_now", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:                                         # noqa: BLE001
+            return False
+    return False
+
+
+def _stale_note(plugin, sig, gen) -> str:
+    """本次计算的结论是否已被更新的配置取代（取代则返回原因，否则空串）。
+
+    ``sig is None`` = 装配不全（替身 / 降级实例拿不到签名）→ 返回空串**不误伤**；
+    签名拿得到、且和进门时不一样 → 这次结论作废（N02 靶心）。
+    """
+    if sig is None:
+        return ""
+    cur = _ctx_signature(plugin)
+    if cur is None or cur == sig:
+        return ""
+    return (f"配置已被更新的保存取代（代际 {gen} → {_cfg_generation(plugin)}）："
+            "本次结果作废，一切以最新一次配置为准")
+
+
+async def _start_watcher(plugin, server_dir: str) -> bool:
+    """在**已持生命周期锁**的前提下发布日志监听器（v0.24.3 · N03）。
+
+    发布前后各复核一次终止态：排队中的旧请求可能等锁等了很久，必须在动手前自行失效；
+    万一「起来之后」才撞上 terminate，就立刻把刚起来的那个收掉 —— 绝不让一个已终止的
+    实例留下活着的监听任务。放模块级同样是为了替身 / 降级装配能直接复用真逻辑。
+    """
+    plugin._watcher_start_error = ""
+    if _is_terminated(plugin):
+        return False
+    old = getattr(plugin, "_watcher", None)
+    if old is not None:
+        try:
+            await old.stop()
+        except Exception:                                         # noqa: BLE001
+            pass
+        plugin._watcher = None
+    if _is_terminated(plugin):
+        return False
+    try:
+        w = LogWatcher(server_dir, plugin._on_server_event)
+        await w.start()
+    except Exception as e:                                        # noqa: BLE001
+        plugin._watcher_start_error = f"{type(e).__name__}: {e}"
+        logger = getattr(plugin, "logger", None)
+        if logger is not None:
+            logger.warning("日志监听启动失败: %s", e)
+        return False
+    if _is_terminated(plugin):
+        try:
+            await w.stop()
+        except Exception:                                         # noqa: BLE001
+            pass
+        return False
+    plugin._watcher = w
+    return True
+
+
 class McControlPlugin(Star):
     """AstrBot Minecraft 服务器控制插件（RCON + 服务器事件转发）。"""
 
@@ -601,13 +702,26 @@ class McControlPlugin(Star):
                     server_dir,
                 )
             else:
-                self._watcher = LogWatcher(server_dir, self._on_server_event)
-                await self._watcher.start()
-                self.logger.info(
-                    "日志监听已启动: %s/logs/latest.log", server_dir
-                )
+                # v0.24.3（N03）：与热应用共用**同一生命周期入口** —— 拿锁 +
+                # 发布前后复核终止态，免得排队中的旧请求在 terminate 之后又把
+                # 监听器起回来（初始化阶段也统一走它，不再各写一份发布代码）。
+                async with self._listener_lock():
+                    ok = await self._publish_watcher(server_dir)
+                if ok:
+                    self.logger.info(
+                        "日志监听已启动: %s/logs/latest.log", server_dir
+                    )
+                else:
+                    self.logger.warning(
+                        "日志监听未启动（插件已终止或启动失败）: %s", server_dir
+                    )
+
 
     async def terminate(self):
+        # v0.24.3（GPT v0.24.2 复核 N03）：**终止不可逆** —— 标记写在第一个 await 之前。
+        # 旧实现只关登记簿与监听器，却没有「我死过」这个事实，于是排队中的 restart
+        # 拿到锁之后照样把监听器起回来（实测：登记册已收口而 watcher 仍在 running）。
+        self._terminated = True
         # v0.23.5 外部复核：先让「延迟窗口里的热重载排程」失效 —— 本次 terminate 本身
         # 就说明已经有一次重载/卸载在发生，那个还睡在 0.6 秒里的任务再去重载一次纯属多余
         # （它带收口豁免，取消不了，只能靠凭证让它在动手前自行放弃）。
@@ -795,7 +909,12 @@ class McControlPlugin(Star):
             written.append(key)
         if written:
             self._save_config()
+            # v0.24.3（GPT v0.24.2 复核 N02）：**配置写入即换代** —— 一切「基于旧配置
+            # 算出来的结论」在提交前都要复核代际/签名：慢的那一次不许把新配置的结果
+            # 覆盖回旧的（实测：旧刷新能把用户刚开启的异地模式又变回本地能力全开）。
+            self._config_generation = _cfg_generation(self) + 1
         return written
+
 
     def _tool_enabled(self, name: str) -> bool:
         """读取对应 LLM 工具的开关配置（配置变更即时生效）。"""
@@ -1321,6 +1440,52 @@ class McControlPlugin(Star):
         except Exception as e:
             self.logger.debug("知识库向量补算调度异常（已忽略）: %s", e)
 
+    # ================= 配置代际 / 本地上下文签名（v0.24.3 · N02） =================
+
+    #: 决定「当前服务端是谁 / 本地文件能力开不开」的配置键（键名, 默认值）。
+    #: 只有这些键变了，正在跑的指纹重算与词典重建才**必须**作废；改个无关项
+    #: （比如聊天桥关键词）不该让一次重算白跑 —— 所以这里比代际号更精确。
+    _CTX_KEYS = (
+        ("server_dir", ""),
+        ("remote_rcon_mode", False),
+        ("knowledge_enabled", True),
+        ("dictionary_enabled", True),
+        ("enable_event_listener", False),
+        ("knowledge_search_engine", "bm25"),
+        ("knowledge_semantic_search", False),
+        ("knowledge_rerank", False),
+    )
+
+    def _cfg_gen(self) -> int:
+        """配置代际号：每次配置写入（``_set_cfg_batch``）自增一次（v0.24.3 · N02）。"""
+        return int(getattr(self, "_config_generation", 0) or 0)
+
+    def _ctx_sig(self) -> tuple:
+        """**本地上下文签名** —— 代际号的精确版。
+
+        只认「决定本地能力与当前服务端」的那几个键：签名没变，说明这次算出来的结论
+        仍然成立；签名变了，结论里的服务端身份 / 知识库 / 词典就**必须**作废。
+        """
+        return tuple(self._cfg(k, d) for k, d in self._CTX_KEYS)
+
+    def _stale_context(self, sig, gen) -> str:
+        """本次计算的结论是否已被更新的配置取代（薄封装，实现见 ``_stale_note``）。"""
+        return _stale_note(self, sig, gen)
+
+    def _terminated_now(self) -> bool:
+        """本实例是否已经走过 ``terminate``（**不可逆**）。
+
+        直接读属性、**不**转调模块级 ``_is_terminated`` —— 否则两者互相递归。
+        """
+        return bool(getattr(self, "_terminated", False))
+
+    async def _publish_watcher(self, server_dir: str) -> bool:
+        """发布日志监听器（薄封装，实现与终止态复核见模块级 ``_start_watcher``）。
+
+        调用方必须**已持生命周期锁** —— 这里不再自己拿锁，免得嵌套自锁。
+        """
+        return await _start_watcher(self, server_dir)
+
     def _listener_lock(self) -> asyncio.Lock:
         """日志监听器生命周期锁（v0.24.2 · F04）。
 
@@ -1340,14 +1505,27 @@ class McControlPlugin(Star):
 
         v0.24.2（GPT 全面复核 F04）：整段（停旧 → 判定 → 建新）在一把插件级锁里跑 ——
         并发保存不再各建一个监听器，只留得住一个的那种事故就此收口。
+
+        v0.24.3（GPT v0.24.2 复核 N02 + N03）再加两道：
+
+        * **终止态优先**：已 terminate 过的实例不许再把监听器起回来（排队中的旧请求
+          拿到锁之后必须自行失效）；
+        * **上下文签名兜底**：拿锁后与发布前各复核一次，慢的那一次保存不许把新配置
+          指向的目录 / 模式盖回旧的。
         """
+        sig, gen = _ctx_signature(self), _cfg_generation(self)
         async with self._listener_lock():
+            if _is_terminated(self):
+                return "插件正在卸载 / 已终止：不再重建日志监听器"
+            stale = _stale_note(self, sig, gen)
+            if stale:
+                return stale
             # 先停掉旧的监听任务
             old = getattr(self, "_watcher", None)
             if old is not None:
                 try:
                     await old.stop()
-                except Exception:
+                except Exception:                                     # noqa: BLE001
                     pass
                 self._watcher = None
             if not self._cfg("enable_event_listener", False):
@@ -1366,13 +1544,19 @@ class McControlPlugin(Star):
                     "服务器事件转发未启动：服务端目录未通过结构校验（"
                     f"{(chk.get('errors') or ['结构不符'])[0]}）"
                 )
-            try:
-                self._watcher = LogWatcher(server_dir, self._on_server_event)
-                await self._watcher.start()
+            # 停旧与判定期间可能刚好被 terminate、或又被一次新保存取代 —— 发布前最后复核
+            if _is_terminated(self):
+                return "插件正在卸载 / 已终止：不再重建日志监听器"
+            stale = _stale_note(self, sig, gen)
+            if stale:
+                return stale
+            if await _start_watcher(self, server_dir):
                 return "服务器事件转发已重启并生效"
-            except Exception as e:
-                self.logger.warning("服务器事件转发重启失败: %s", e)
-                return f"服务器事件转发启动失败：{e}"
+            err = getattr(self, "_watcher_start_error", "")
+            if err:
+                return f"服务器事件转发启动失败：{err}"
+            return "服务器事件转发未启动：插件已终止（本次请求作废）"
+
 
     async def _sync_server_context(self, *, rebuild_dictionary: bool = True) -> str:
         """按当前配置重新识别「当前服务端」：指纹 / 物品词典 / 知识库基准。
@@ -1382,6 +1566,11 @@ class McControlPlugin(Star):
 
         返回人类可读的结果说明（供 WebUI 保存提示展示）。
         """
+        # v0.24.3（GPT v0.24.2 复核 N02）：进门先记下**本地上下文签名**与代际 ——
+        # 每次 await 之后、提交任何状态之前都要复核：慢的那一次保存算出来的结论
+        # 已经过时（B 慢 / C 快 → 旧结果会把 C 的配置盖回 B 的服务端），必须整体作废。
+        sig, gen = _ctx_signature(self), _cfg_generation(self)
+
         server_dir = str(self._cfg("server_dir", "") or "").strip()
         kdir = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control")
         parts: list[str] = []
@@ -1424,7 +1613,13 @@ class McControlPlugin(Star):
                 self.logger.warning("服务端指纹重算失败: %s", e)
                 parts.append(f"服务端指纹重算失败：{e}")
             else:
+                stale = _stale_note(self, sig, gen)
+                if stale:
+                    # 提交前复核（N02）：不写身份、不建知识库 —— 让最新一次配置说了算。
+                    parts.append(stale)
+                    return "；".join(parts)
                 self._server_identity = ident
+
                 kid = ident["fingerprint"]
                 man = getattr(self, "_kbman", None)
                 if man is None:
@@ -1489,13 +1684,21 @@ class McControlPlugin(Star):
             parts.append("物品词典未重建（server_dir 未配置或不是有效目录）")
         elif rebuild_dictionary or self._dictionary is None:
             try:
-                self._dictionary = ItemDictionary(server_dir, str(kdir / "items.json"))
+                # v0.24.3（N02）：**先建到局部变量，复核代际后再提交** —— 旧实现一边构
+                # 对象一边 await 构建，构建期间挤进一次新保存时，这个指向旧服务端的
+                # 词典会在 await 之后照样被挂上去（正是「旧刷新覆盖新配置」那一类）。
+                dic = ItemDictionary(server_dir, str(kdir / "items.json"))
                 try:  # B5：同上 —— 版本提示供预扁平化世代表选择
                     _vi = self._resolve_version_info()
-                    self._dictionary.mc_hint = tuple(_vi.mc) if _vi.mc else None
+                    dic.mc_hint = tuple(_vi.mc) if _vi.mc else None
                 except Exception:  # noqa: BLE001
                     pass
-                stats = await asyncio.to_thread(self._dictionary.build)
+                stats = await asyncio.to_thread(dic.build)
+                stale = _stale_note(self, sig, gen)
+                if stale:
+                    parts.append(stale)
+                    return "；".join(parts)
+                self._dictionary = dic
                 parts.append(
                     f"物品词典已重建（{stats['mods']} 个 Mod / "
                     f"{stats['items']} 个物品 / {stats['recipes']} 条配方）"
@@ -1503,6 +1706,7 @@ class McControlPlugin(Star):
             except Exception as e:
                 self.logger.warning("物品词典重建失败: %s", e)
                 parts.append(f"物品词典重建失败：{e}")
+
         return "；".join(parts) or "服务端识别已完成（无变化）"
 
     # ================= 异地 RCON 模式 · 本地文件能力闸门（v0.21.15） =================

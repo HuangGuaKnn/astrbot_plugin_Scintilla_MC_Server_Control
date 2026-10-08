@@ -686,7 +686,18 @@ class McControlWebApi:
         cfg_save_error = str(getattr(self.plugin, "_last_cfg_save_error", "") or "")
 
         # ---------- 热应用（无需重启） ----------
+        # v0.24.3（GPT v0.24.2 复核 N02）：记下本次保存的**本地上下文签名**。
+        # 底下每一处 await（RCON 重置 / 监听器重启 / 服务端识别刷新）都是一个窗口 ——
+        # 窗口里可能挤进一次更新的保存；那次说了算，这一次只许作废，不许盖回去。
+        _sig0 = self._plugin_ctx_sig()
+
+        def _superseded() -> str:
+            if self._plugin_ctx_sig() == _sig0:
+                return ""
+            return "检测到更新的保存：本次热应用已作废（一切以最新一次配置为准）"
+
         effects: list[str] = []
+
         if "admin_ids" in changed:
             try:
                 self.plugin._admins = set(str(x) for x in parsed["admin_ids"])
@@ -720,14 +731,22 @@ class McControlWebApi:
             except Exception as e:
                 effects.append(f"服务端识别刷新失败：{e}")
 
-        if remote_mode and ({"remote_rcon_mode", "server_dir"} & changed):
+        # v0.24.3（N02）：两处 await 走完，复核一次 —— 已被更新的保存取代，
+        # 后面的同步热应用一律不再执行（它们的依据是**本次**的 changed 集，
+        # 照做就是把旧值盖回新配置上去）。
+        superseded = _superseded()
+        if superseded:
+            effects.append(superseded)
+        if not superseded and remote_mode and ({"remote_rcon_mode", "server_dir"} & changed):
             effects.append(
                 "异地 RCON 模式已开启：只走 RCON —— 物品词典 / 知识库 / 服务器事件播报 / "
                 "版本探测 / 进程指标已按设计禁用"
             )
 
+
         # v0.21.40：切换知识库检索引擎 → 立即换引擎（不必重建库实例、不必重载插件）
-        if "knowledge_search_engine" in changed:
+        if not superseded and "knowledge_search_engine" in changed:
+
             try:
                 eng = self.plugin._kb_engine()
                 if self.plugin._kbman is not None:
@@ -739,7 +758,8 @@ class McControlWebApi:
                 effects.append(f"检索引擎切换失败：{e}")
 
         # v0.21.41：开关语义增强检索 → 立即切换通道，并把缺向量后台补齐
-        if "knowledge_semantic_search" in changed:
+        if not superseded and "knowledge_semantic_search" in changed:
+
             try:
                 on = self.plugin._kb_semantic()
                 if self.plugin._kbman is not None:
@@ -767,7 +787,8 @@ class McControlWebApi:
                 effects.append(f"语义增强检索切换失败：{e}")
 
         # v0.21.42：开关重排序精排 → 立即生效（注入/撤销 rerank 调用）
-        if "knowledge_rerank" in changed:
+        if not superseded and "knowledge_rerank" in changed:
+
             try:
                 on = self.plugin._kb_rerank()
                 if self.plugin._kbman is not None:
@@ -790,7 +811,8 @@ class McControlWebApi:
         # v0.21.43：改「指定嵌入 / 重排序模型」→ 立即重新注入调用
         # 注意：换了嵌入模型，旧向量是**别的模型**算出来的（维度与语义空间都不通用），
         # 必须整库重算，不能留着串味 —— 所以这里用 force 重建而不是增量补齐。
-        if {"knowledge_embed_provider_id", "knowledge_rerank_provider_id"} & changed:
+        if not superseded and {"knowledge_embed_provider_id", "knowledge_rerank_provider_id"} & changed:
+
             try:
                 if "knowledge_rerank_provider_id" in changed:
                     if self.plugin._inject_rerank_fn():
@@ -1642,8 +1664,31 @@ class McControlWebApi:
 
     # ================= 知识库预设（v0.18.0） =================
 
+    def _plugin_ctx_sig(self) -> tuple:
+        """插件当前的本地上下文签名（老装配 / 替身没有这个方法 → 空元组 = 永不作废）。"""
+        fn = getattr(self.plugin, "_ctx_sig", None)
+        try:
+            return tuple(fn()) if callable(fn) else ()
+        except Exception:                                             # noqa: BLE001
+            return ()
+
     def _kbman(self):
+        """知识库管理器入口（v0.24.3 · GPT v0.24.2 复核 N02）。
+
+        旧对象可能是**上一代配置**留下的（异地模式已开、目录已换，某次旧刷新又把
+        它塞了回来）。这里按**当前模式**兜底：本地文件能力当前不可用时一律视为
+        「没有管理器」—— 免得被复活的对象重新开放本地读写。
+        """
+        reason = ""
+        try:
+            reason_fn = getattr(self.plugin, "local_files_degraded_reason", None)
+            reason = reason_fn() if callable(reason_fn) else ""
+        except Exception:                                             # noqa: BLE001
+            reason = ""
+        if reason:
+            return None
         return getattr(self.plugin, "_kbman", None)
+
 
     def _kb_uninit(self) -> dict:
         """知识库不可用时的统一错误体（v0.21.15）。
