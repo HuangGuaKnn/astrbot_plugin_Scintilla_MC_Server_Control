@@ -350,6 +350,11 @@ class McControlPlugin(Star):
         #: （锁对象在无事件循环时创建是安全的：Python 3.10+ 起 asyncio.Lock 不再绑定
         #:   创建时的循环，会在首次 await 时才取当前循环。）
         self._rcon_lock = asyncio.Lock()
+        #: v0.24.2（GPT 全面复核 F04）：日志监听器的**生命周期锁** ——
+        #: 「停旧对象 → 建新对象」这一整段必须互斥。LogWatcher 自己的实例内锁只保护
+        #: 单个实例，保护不了「换对象」：两次并发保存各建一个，字段只留得住一个，
+        #: 另一个失去引用却还在读日志（terminate 也停不掉它）。
+        self._evt_listener_lock = asyncio.Lock()
         #: v0.23.x：后台任务登记册 —— 统一持有 / 去重 / 记异常 / 收口。
         #: 老写法「create_task 丢出去不持引用」会让任务活过 terminate()：热重载后
         #: 事件循环还在，它们继续往会话发通知、写向量、跑流水线，变成一个握着
@@ -616,9 +621,12 @@ class McControlPlugin(Star):
                 self.logger.info("后台任务收口：已取消 %d 个在跑任务", n)
         except Exception as e:
             self.logger.warning("后台任务收口异常（已忽略）: %s", e)
-        if self._watcher:
-            await self._watcher.stop()
-            self._watcher = None
+        # v0.24.2（F04）：与 _restart_event_listener 共用同一把生命周期锁 ——
+        # 否则「卸载/重载」正撞上一次并发重启时，可能停掉旧实例、却留下刚起来的那个。
+        async with self._listener_lock():
+            if self._watcher:
+                await self._watcher.stop()
+                self._watcher = None
         if self._rcon:
             try:
                 self._rcon.retire()
@@ -1313,42 +1321,58 @@ class McControlPlugin(Star):
         except Exception as e:
             self.logger.debug("知识库向量补算调度异常（已忽略）: %s", e)
 
+    def _listener_lock(self) -> asyncio.Lock:
+        """日志监听器生命周期锁（v0.24.2 · F04）。
+
+        惰性取用：老装配路径（``__new__`` 出来的替身、降级实例）没有在 ``__init__``
+        里建锁，这里补一把，保证「停旧 + 建新」永远只有一条线程在走。
+        """
+        lk = getattr(self, "_evt_listener_lock", None)
+        if lk is None:
+            lk = asyncio.Lock()
+            self._evt_listener_lock = lk
+        return lk
+
     async def _restart_event_listener(self) -> str:
         """按当前配置重启日志监听器（WebUI 保存设置后热应用）。
 
         返回人类可读的结果说明。
+
+        v0.24.2（GPT 全面复核 F04）：整段（停旧 → 判定 → 建新）在一把插件级锁里跑 ——
+        并发保存不再各建一个监听器，只留得住一个的那种事故就此收口。
         """
-        # 先停掉旧的监听任务
-        old = getattr(self, "_watcher", None)
-        if old is not None:
+        async with self._listener_lock():
+            # 先停掉旧的监听任务
+            old = getattr(self, "_watcher", None)
+            if old is not None:
+                try:
+                    await old.stop()
+                except Exception:
+                    pass
+                self._watcher = None
+            if not self._cfg("enable_event_listener", False):
+                return "服务器事件转发已关闭"
+            if self.is_remote_mode():
+                return (
+                    "服务器事件转发未启动：当前是「异地 RCON 模式」，服务端本地日志读不到"
+                    "（需要播报请关闭该开关，并把「服务器目录」指向可读的服务端目录）"
+                )
+            server_dir = str(self._cfg("server_dir", "") or "").strip()
+            if not server_dir:
+                return "服务器事件转发未启动（未配置 server_dir）"
+            chk = self.server_dir_check(max_age=0)
+            if not chk.get("ok"):
+                return (
+                    "服务器事件转发未启动：服务端目录未通过结构校验（"
+                    f"{(chk.get('errors') or ['结构不符'])[0]}）"
+                )
             try:
-                await old.stop()
-            except Exception:
-                pass
-            self._watcher = None
-        if not self._cfg("enable_event_listener", False):
-            return "服务器事件转发已关闭"
-        if self.is_remote_mode():
-            return (
-                "服务器事件转发未启动：当前是「异地 RCON 模式」，服务端本地日志读不到"
-                "（需要播报请关闭该开关，并把「服务器目录」指向可读的服务端目录）"
-            )
-        server_dir = str(self._cfg("server_dir", "") or "").strip()
-        if not server_dir:
-            return "服务器事件转发未启动（未配置 server_dir）"
-        chk = self.server_dir_check(max_age=0)
-        if not chk.get("ok"):
-            return (
-                "服务器事件转发未启动：服务端目录未通过结构校验（"
-                f"{(chk.get('errors') or ['结构不符'])[0]}）"
-            )
-        try:
-            self._watcher = LogWatcher(server_dir, self._on_server_event)
-            await self._watcher.start()
-            return "服务器事件转发已重启并生效"
-        except Exception as e:
-            self.logger.warning("服务器事件转发重启失败: %s", e)
-            return f"服务器事件转发启动失败：{e}"
+                self._watcher = LogWatcher(server_dir, self._on_server_event)
+                await self._watcher.start()
+                return "服务器事件转发已重启并生效"
+            except Exception as e:
+                self.logger.warning("服务器事件转发重启失败: %s", e)
+                return f"服务器事件转发启动失败：{e}"
 
     async def _sync_server_context(self, *, rebuild_dictionary: bool = True) -> str:
         """按当前配置重新识别「当前服务端」：指纹 / 物品词典 / 知识库基准。
@@ -4308,6 +4332,10 @@ class McControlPlugin(Star):
 
     async def _on_server_event(self, etype: str, player: str, detail: str):
         """日志监听回调：记录最近事件 + 聊天桥接 + 按配置开关决定是否推送。"""
+        # v0.24.2（F03）防御门：异地模式下本地日志事件一律不转发、不桥接 ——
+        # 兜住「旧 watcher 还没停干净 / 有别的路径塞事件进来」的窗口。
+        if self.is_remote_mode():
+            return
         # 无论是否配置播报，都缓存最近事件供 WebUI 展示
         try:
             self._recent_events.appendleft({

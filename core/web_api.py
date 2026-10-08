@@ -168,6 +168,13 @@ class McControlWebApi:
     # ================= 工具 =================
 
     def _kb(self):
+        # v0.24.2（F03）防御门：异地 RCON 模式下本地知识库按设计不可用 ——
+        # 即便某个路径下还留着存量对象，也不许再被读/写（免得把旧服务端的知识当成当前的）。
+        try:
+            if getattr(self.plugin, "is_remote_mode", lambda: False)():
+                return None
+        except Exception:                                             # noqa: BLE001
+            pass
         kb = getattr(self.plugin, "_knowledge", None)
         if kb is None:
             return None
@@ -694,7 +701,10 @@ class McControlWebApi:
                 effects.append("RCON 连接已重置（下次调用自动重建）")
             except Exception as e:
                 effects.append(f"RCON 连接重置失败：{e}")
-        if {"enable_event_listener", "server_dir"} & changed:
+        # v0.24.2（GPT 全面复核 F03）：异地模式开关必须进这两个触发集 ——
+        # 关了它要把本地能力停掉、开了它要把词典/知识库清空，**否则界面说「已禁用」、
+        # 实际旧监听器还在播报、旧知识库还能写**（方法本身早支持，只是入口不调用）。
+        if {"enable_event_listener", "server_dir", "remote_rcon_mode"} & changed:
             try:
                 msg = await self.plugin._restart_event_listener()
                 effects.append(msg)
@@ -703,7 +713,7 @@ class McControlWebApi:
 
         # v0.21.7：换服务端 / 词典·知识库启停 → 就地重算指纹、重建词典、刷新知识库基准
         # （此前只在插件初始化时算一次，改 server_dir 后必须重载插件才更新）
-        if {"server_dir", "dictionary_enabled", "knowledge_enabled"} & changed:
+        if {"server_dir", "dictionary_enabled", "knowledge_enabled", "remote_rcon_mode"} & changed:
             try:
                 msg = await self.plugin._sync_server_context(rebuild_dictionary=True)
                 effects.append(msg)

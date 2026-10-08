@@ -37,6 +37,7 @@ AstrBot 才行」：
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import shutil
@@ -59,6 +60,23 @@ _ORIG_ATTR = "_astrbot_mc_original_reload"
 _IMPL_ATTR = "_astrbot_mc_deep_clean_impl"
 
 _IS_WINDOWS = os.name == "nt"
+
+#: v0.24.2（GPT 全面复核 F05）：重载期的**管理器级锁**。
+#: 为什么挂在 PluginManager 身上、而不是本模块的全局变量：本模块自己在 deep_clean
+#: 的清理范围内 —— 模块级变量会随重载被换掉，锁就失去意义。PluginManager 是 AstrBot
+#: 的类，不在插件目录里，锁对象跟着它活到进程结束，补丁重装后拿到的还是同一把。
+_RELOAD_LOCK_ATTR = "_astrbot_mc_reload_lock"
+#: 最近一次预清理的统计（给「主动重载」的文案用，避免它自己再清一次 → 自锁死）。
+_LAST_SUMMARY_ATTR = "_astrbot_mc_last_reload_summary"
+
+
+def _reload_lock(pm_cls):
+    """取（必要时创建）管理器级重载锁。"""
+    lk = getattr(pm_cls, _RELOAD_LOCK_ATTR, None)
+    if lk is None:
+        lk = asyncio.Lock()
+        setattr(pm_cls, _RELOAD_LOCK_ATTR, lk)
+    return lk
 
 
 def _norm(path: Any) -> str:
@@ -245,21 +263,27 @@ def install_reload_patch() -> bool:
     setattr(PluginManager, _ORIG_ATTR, current)
 
     async def reload_with_deep_clean(self, specified_plugin_name=None):
-        try:
-            impl = getattr(PluginManager, _IMPL_ATTR, None)
-            if impl is not None:
-                summary = impl(self, specified_plugin_name)
-                if summary["modules"] or summary["pycache"]:
-                    logger.info(
-                        "[热重载] 预清理完成：%d 个模块缓存、%d 个 __pycache__（目标：%s）",
-                        summary["modules"],
-                        summary["pycache"],
-                        specified_plugin_name or "全部插件",
-                    )
-        except Exception as exc:
-            logger.warning("[热重载] 深度清理失败，已回退原生流程：%s", exc)
-        original = getattr(PluginManager, _ORIG_ATTR)
-        return await original(self, specified_plugin_name)
+        # v0.24.2（F05）：**清理与装载必须在同一把锁里**。原生 reload 内部有自己的
+        # _pm_lock，但本补丁的 deep_clean 发生在它之前 —— 两次并发重载会交错：
+        # 后一次的清理可能落在前一次的装载过程中，同一次装载里混进两代模块对象。
+        # 这里只做「串行化」，不自己取 _pm_lock（那会造成自锁死）。
+        async with _reload_lock(PluginManager):
+            try:
+                impl = getattr(PluginManager, _IMPL_ATTR, None)
+                if impl is not None:
+                    summary = impl(self, specified_plugin_name)
+                    setattr(self, _LAST_SUMMARY_ATTR, summary)
+                    if summary["modules"] or summary["pycache"]:
+                        logger.info(
+                            "[热重载] 预清理完成：%d 个模块缓存、%d 个 __pycache__（目标：%s）",
+                            summary["modules"],
+                            summary["pycache"],
+                            specified_plugin_name or "全部插件",
+                        )
+            except Exception as exc:
+                logger.warning("[热重载] 深度清理失败，已回退原生流程：%s", exc)
+            original = getattr(PluginManager, _ORIG_ATTR)
+            return await original(self, specified_plugin_name)
 
     setattr(reload_with_deep_clean, _PATCH_FLAG, True)
     setattr(PluginManager, "reload", reload_with_deep_clean)
@@ -301,11 +325,23 @@ async def perform_hot_reload(pm, name: str | None = None) -> tuple[bool, str]:
     if name and not dirs:
         return False, f"未找到插件「{name}」的目录，无法重载。"
 
-    summary = deep_clean(pm, name)
-    try:
-        success, message = await pm.reload(name or None)
-    except Exception as exc:
-        return False, f"重载时抛出异常：{exc}"
+    # v0.24.2（F05）：**走同一通道，不再自己预先清一次** ——
+    # 旧写法先 deep_clean 再调 pm.reload，而 pm.reload 已经是被打了补丁的版本
+    # （它自己会清理 + 拿锁）：等于清两遍，而且第一遍还在锁外（正是 F05 的病灶）。
+    if is_patch_installed():
+        try:
+            success, message = await pm.reload(name or None)
+        except Exception as exc:
+            return False, f"重载时抛出异常：{exc}"
+        summary = getattr(pm, _LAST_SUMMARY_ATTR, None) or {"modules": 0, "pycache": 0}
+    else:
+        # 补丁没挂上（非标准环境）：退化成「锁内清理 + 重载」，语义与打补丁时一致
+        async with _reload_lock(type(pm)):
+            summary = deep_clean(pm, name)
+            try:
+                success, message = await pm.reload(name or None)
+            except Exception as exc:
+                return False, f"重载时抛出异常：{exc}"
 
     cleaned = f"清理 {summary['modules']} 个模块缓存、{summary['pycache']} 个 __pycache__"
     if success:
