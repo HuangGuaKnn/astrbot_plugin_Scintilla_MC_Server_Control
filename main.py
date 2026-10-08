@@ -4015,7 +4015,18 @@ class McControlPlugin(Star):
         lines = []
         for r in results:
             names = " / ".join(x for x in (r.get("zh"), r.get("en")) if x)
-            lines.append(f"- {r['id']}  （{names}）")
+            # v0.24.2（GPT 全面复核 F08）：命中**变体**时必须把数据值带出来 ——
+            # 旧写法只印 id，于是搜「红色羊毛」拿到的是 minecraft:wool，
+            # 模型自然生成不带数据值的 give（1.13 以前会静默给成白色）。
+            dmg = r.get("variant_damage")
+            if dmg is not None:
+                disp = r.get("variant_display") or ""
+                lines.append(
+                    f"- {r['id']}  数据值 {dmg}" + (f"（{disp}）" if disp else "")
+                    + f"  （{names}）"
+                )
+            else:
+                lines.append(f"- {r['id']}  （{names}）")
         return f"找到 {len(results)} 个匹配物品：\n" + "\n".join(lines)
 
     @filter.llm_tool(name="mc_get_recipes")

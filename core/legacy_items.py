@@ -29,6 +29,19 @@ PLAYER_NAME_RE = _re.compile(r"^[A-Za-z0-9_]{1,16}$")
 
 #: ``give`` 单次数量上限（保守：原版上限 64×36 = 2304；这里给足余量但仍设硬顶）。
 MAX_COUNT = 6400
+#: v0.24.2（GPT 全面复核 F18）：通过生成链**不等于** give 语法接受 —— 任务总量可以很大，
+#: 但**每条命令**必须落进该代解析范围。实证（真实字节码，GPT 复核材料）：
+#:   · 1.7.10  give 写死 ``at.a(ac, args[2], 1, 64)`` —— 数量范围 1..64，65 直接用法错误；
+#:   · 1.12.2  ``cm.a(args[2], 1, item.j())`` —— 上界是**物品自己的最大堆叠**
+#:             （非堆叠物为 1），钻石一类仍是 64。
+#: 注：1.12.2 的权威值是 ``getMaxStackSize``，插件侧拿不到物品注册表里的那个字段，
+#: 于是对「确定非堆叠」的家族（工具/护甲/弓/钓竿/打火石/剪刀/盾）保守收到 1 ——
+#: 方向是 fail-closed（宁可让用户拆单，不放行必然违规的条数）。
+MAX_COUNT_BY_GEN = {"1.7.10": 64, "1.12.2": 64}   # 堆叠物按 64（= 该代最大堆叠）
+_NON_STACKABLE_RE = _re.compile(
+    r"_(sword|pickaxe|axe|shovel|hoe|helmet|chestplate|leggings|boots)$"
+    r"|(^|:)(bow|flint_and_steel|shears|fishing_rod|shield)$"
+)
 
 #: NBT 串长度硬顶（防病态输入）。
 MAX_NBT_LEN = 1024
@@ -149,6 +162,22 @@ def plan_give(dictionary, player: str, item: str, count: int = 1,
     if not rid or entry is None:
         gen = generation_of(dictionary) or "未知"
         return _fail(f"词典里没有该物品（世代 {gen}）；请先 mc_search_item 确认它在本版本存在")
+
+    # v0.24.2（F18）：**单条命令**还要过该代解析范围（见 MAX_COUNT_BY_GEN 注释）
+    gen = generation_of(dictionary) or ""
+    for g, cap in MAX_COUNT_BY_GEN.items():
+        if gen.startswith(g):
+            if n > cap:
+                return _fail(
+                    f"{gen} 的 give 单条数量上限是 {cap}（服务端解析范围实证），"
+                    f"一次给 {n} 会被拒；请拆成多条，每条不超过 {cap}"
+                )
+            break
+    if gen.startswith("1.12") and _NON_STACKABLE_RE.search(rid or "") and n > 1:
+        return _fail(
+            f"{gen} 里 {rid} 是非堆叠物品（最大堆叠 1），单条数量只能为 1；"
+            f"需要 {n} 件请拆成 {n} 条命令（脚本侧会逐条记账，不会重复发放）"
+        )
 
     variants = dict(entry.get("variants") or {})
     notes: list = []

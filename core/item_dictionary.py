@@ -41,6 +41,12 @@ _LEGACY_LANG_TARGETS = ("assets/minecraft/lang/en_us.lang", "assets/minecraft/la
 #: 逐世代预扁平化数据表目录（随插件发布；也可放在缓存目录旁）。
 _LEGACY_DATA_DIR = "legacy_items"
 
+#: v0.24.2（GPT 全面复核 F09）：完整性只能由**完整来源**证明，不能由「有几个 namespace 条目」
+#: 推断 —— 旧判据是「只要有一个 minecraft: 键就跳过原版核」，某个 mod 自带一个 minecraft:
+#: 语言键（例如它自己的方块名），整张原版表就被跳过，diamond 这类基础物品彻底消失。
+#: 于是改用**来源标识**：真的从原版 jar / 逐世代 .lang 读过一轮，才算「本次已读」。
+_VANILLA_SRC_FLAG = "_vanilla_src_loaded"
+
 #: 从 ``minecraft_server.1.12.2.jar`` 这类文件名里抠版本。
 _JAR_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _RECIPE_RESULT_KEYS = ("result",)
@@ -185,18 +191,27 @@ class ItemDictionary:
         并支持 bundler 的内嵌版本 jar（见 ``_VANILLA_JAR_GLOBS``）。
         """
         target = "assets/minecraft/lang/en_us.json"
-        if any(k.startswith("minecraft:") for k in self.items):
-            # 已经有原版物品（例如某个 mod 自带 minecraft: 语言键）→ 不必再翻服务端 jar
-            self.legacy_diag = "已从 Mod 语言键拿到 minecraft: 条目，跳过原版核"
+        # v0.24.2（F09）：只认「完整来源读过」这个事实（见 _VANILLA_SRC_FLAG）。
+        if getattr(self, _VANILLA_SRC_FLAG, False):
+            self.legacy_diag = "原版表本次已从完整来源读取（不重复）"
             return True
         cands = self._vanilla_jar_candidates()
-        for jar in cands:
-            if self._load_vanilla_lang_from(jar, target):
-                self.legacy_diag = f"现代 JSON 语言表命中：{jar.name}"
-                return True
-        # B5：现代 JSON 语言文件不存在（= 1.13 以下服务端）→ 走预扁平化通道。
-        # 现代路径完全不受影响：能读到 JSON 就一定在上面 return。
-        return self._parse_legacy_vanilla(cands)
+        # 读原版表时**不许覆盖**模组自己给的显示名（模组显示名优先保留），
+        # 只补空缺 —— 否则「整合包的 Fancy Stick 覆盖」会被原版 Stick 抹掉。
+        self._vanilla_lang_mode = True
+        try:
+            for jar in cands:
+                if self._load_vanilla_lang_from(jar, target):
+                    setattr(self, _VANILLA_SRC_FLAG, True)
+                    self.legacy_diag = f"现代 JSON 语言表命中：{jar.name}"
+                    return True
+            # B5：现代 JSON 语言文件不存在（= 1.13 以下服务端）→ 走预扁平化通道。
+            ok = self._parse_legacy_vanilla(cands)
+            if ok:
+                setattr(self, _VANILLA_SRC_FLAG, True)
+            return ok
+        finally:
+            self._vanilla_lang_mode = False
 
     # ================= 预扁平化通道（1.13 以下）· B5 =================
 
@@ -380,35 +395,64 @@ class ItemDictionary:
         try:
             with zipfile.ZipFile(jar) as zf:
                 names = set(zf.namelist())
+                # v0.24.2（GPT 全面复核 F10）：**不再依赖 Forge 的 META-INF/mods.toml
+                # 推 mod_id** —— 标准 Fabric 模组只有 fabric.mod.json，老写法走到
+                # `if not mod_id: return` 就返回了，整包物品展示名都进不了词典。
+                # 现在按 jar 里**实际存在的** assets/<ns>/lang/ 与 data/<ns>/recipes/
+                # 命名空间来解析（Forge 模组同样受益，且能处理多命名空间的 jar）。
+                ns_set: set[str] = set()
+                for n in names:
+                    if n.startswith("assets/") and "/lang/" in n:
+                        ns = n[len("assets/"):].split("/lang/", 1)[0]
+                        if ns and "/" not in ns:
+                            ns_set.add(ns)
+                    elif n.startswith("data/") and "/recipes/" in n:
+                        ns = n[len("data/"):].split("/recipes/", 1)[0]
+                        if ns and "/" not in ns:
+                            ns_set.add(ns)
                 mod_id, mod_name = None, None
-                if "META-INF/mods.toml" in names:
+                if "fabric.mod.json" in names:
+                    try:
+                        fm = json.loads(zf.read("fabric.mod.json").decode("utf-8", "replace"))
+                        fid = fm.get("id")
+                        fname = fm.get("name")
+                        mod_id = str(fid) if isinstance(fid, str) and fid else None
+                        mod_name = str(fname) if isinstance(fname, str) and fname else None
+                    except Exception:                                     # noqa: BLE001
+                        pass
+                if not mod_id and "META-INF/mods.toml" in names:
                     mod_id, mod_name = self._parse_mods_toml(
                         zf.read("META-INF/mods.toml").decode("utf-8", "replace")
                     )
+                if not mod_id and not ns_set:
+                    return                      # 既无元数据、又无语言/配方 → 不是内容模组
                 if not mod_id:
-                    return
+                    mod_id = sorted(ns_set)[0]      # 兜底：用实际的资源命名空间
+                # 元数据里的 mod_id 也要扫一遍：jar 没有语言文件时，它仍然是**一个模组**
+                # （mc_list_mods 要能看到它）—— 这是老行为，不许回退。
+                ns_set.add(mod_id)
                 entry = {"id": mod_id, "name": mod_name or jar.stem}
                 if entry not in self.mods:
                     self.mods.append(entry)
-                # 本地化文件（en_us 英文名 + zh_cn 中文名）
-                for lang_name, lang_code in (
-                    ("en_us.json", "en"),
-                    ("zh_cn.json", "zh"),
-                ):
-                    lang_path = f"assets/{mod_id}/lang/{lang_name}"
-                    if lang_path in names:
-                        self._parse_lang(
-                            zf.read(lang_path).decode("utf-8", "replace"),
-                            mod_id,
-                            lang_code,
-                        )
-                # 配方
-                prefix = f"data/{mod_id}/recipes/"
-                for n in names:
-                    if n.startswith(prefix) and n.endswith(".json"):
-                        self._parse_recipe(
-                            zf.read(n).decode("utf-8", "replace"), mod_id, n
-                        )
+                # 本地化文件（en_us 英文名 + zh_cn 中文名）与配方：逐个命名空间解析
+                for ns in sorted(ns_set):
+                    for lang_name, lang_code in (
+                        ("en_us.json", "en"),
+                        ("zh_cn.json", "zh"),
+                    ):
+                        lang_path = f"assets/{ns}/lang/{lang_name}"
+                        if lang_path in names:
+                            self._parse_lang(
+                                zf.read(lang_path).decode("utf-8", "replace"),
+                                ns,
+                                lang_code,
+                            )
+                    prefix = f"data/{ns}/recipes/"
+                    for n in names:
+                        if n.startswith(prefix) and n.endswith(".json"):
+                            self._parse_recipe(
+                                zf.read(n).decode("utf-8", "replace"), ns, n
+                            )
         except Exception:
             # 单个 jar 解析失败不影响整体
             pass
@@ -457,10 +501,14 @@ class ItemDictionary:
             entry = self.items.setdefault(
                 item_id, {"en": "", "zh": "", "type": m.group(1)}
             )
+            # v0.24.2（F09）：原版表只补空缺、不覆盖模组显示名
+            keep = bool(getattr(self, "_vanilla_lang_mode", False))
             if lang == "zh":
-                entry["zh"] = str(value)
+                if value and (not entry["zh"] or not keep):
+                    entry["zh"] = str(value)
             else:
-                entry["en"] = str(value)
+                if value and (not entry["en"] or not keep):
+                    entry["en"] = str(value)
 
     def _parse_recipe(self, text: str, mod_id: str, name: str) -> None:
         try:

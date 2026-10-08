@@ -429,9 +429,17 @@ class MCWorkflow:
             if dictionary is not None:
                 try:
                     hits = dictionary.search_items(request, limit=5)
-                    dict_text = "；".join(
-                        f"{h.get('zh','') or h.get('en','')}={h.get('id','')}" for h in hits
-                    )
+                    # v0.24.2（F08）：与 mc_search_item 出口同一口径 —— 命中变体时
+                    # 必须把数据值带上，否则工程师只知道 minecraft:wool，
+                    # 「先搜准 ID 再发放」的推荐流程会静默丢颜色/材质。
+                    def _fmt_hit(h):
+                        s = f"{h.get('zh','') or h.get('en','')}={h.get('id','')}"
+                        if h.get("variant_damage") is not None:
+                            s += f" 数据值{h['variant_damage']}"
+                            if h.get("variant_display"):
+                                s += f"（{h['variant_display']}）"
+                        return s
+                    dict_text = "；".join(_fmt_hit(h) for h in hits)
                 except Exception:
                     pass
             eng = await self.agent.engineer(

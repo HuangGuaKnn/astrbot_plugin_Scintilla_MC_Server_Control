@@ -217,9 +217,17 @@ if HAS_MATRIX:
     for bad in ["Knn; stop", "Knn op @a", "a b", "K" * 17, ""]:
         p = li.plan_give(d122, bad, "diamond sword", 1)
         check("★注入防线：玩家名 %r → 拒绝" % bad, not p.ok, p.reason or p.command)
-    for bad_n, want in [(0, False), (6401, False), (6400, True), ("x", False)]:
+    # v0.24.2（GPT 全面复核 F18）：6400 只是**任务总量**上限，不等于 give 语法允许 6400 ——
+    # 单条命令还要过该代解析范围（1.12.2 上界 = 物品最大堆叠；非堆叠物为 1）。
+    # 这里用的 `diamond sword` 正是非堆叠物，所以 6400 必须被拒，且拒因要给出拆单出路。
+    for bad_n, want in [(0, False), (6401, False), (6400, False), ("x", False)]:
         p = li.plan_give(d122, "Knn", "diamond sword", bad_n)
         check("数量 %r → %s" % (bad_n, "接受" if want else "拒绝"), p.ok is want, p.command or p.reason)
+    p = li.plan_give(d122, "Knn", "diamond sword", 6400)
+    check("★6400 被拒的原因写明「单条超上限 + 拆单」（不是模糊的越界）",
+          ("拆" in p.reason) and ("上限" in p.reason), p.reason)
+    p = li.plan_give(d122, "Knn", "minecraft:diamond", 64)
+    check("★1.12.2 堆叠物（钻石）64 仍放行（只收紧真正越界的条数）", p.ok is True, p.reason)
     p = li.plan_give(d710, "Knn", "red wool", 1)
     check("★1.7.10 词典同样工作（red wool → wool + 14）",
           p.ok and p.command == "give Knn minecraft:wool 1 14", p.command or p.reason)

@@ -297,7 +297,9 @@ CUTOVERS: tuple[dict, ...] = (
         ),
     },
     {
-        "version": (1, 21),
+        # v0.24.2（GPT 全面复核 F17）：官方改名分水岭是 **1.20.5**，不是 1.21 ——
+        # 写错会导致 1.20.5 / 1.20.6 / 1.21.4 这些版本被喂错误的附魔 ID。
+        "version": (1, 20, 5),
         "surface": "enchant_id",
         "title": "附魔 ID 改名 sweeping → sweeping_edge",
         "affects": ("give", "enchant", "item"),
@@ -307,8 +309,8 @@ CUTOVERS: tuple[dict, ...] = (
         "action_after": "supported",
         "tested": True,
         "detail": (
-            "横扫之刃在 1.20.6 及以下叫 `minecraft:sweeping`，"
-            "1.21 起叫 `minecraft:sweeping_edge`。写错的那个版本会报 unknown enchantment。"
+            "横扫之刃在 1.20.4 及以下叫 `minecraft:sweeping`，"
+            "1.20.5 起叫 `minecraft:sweeping_edge`。写错的那个版本会报 unknown enchantment。"
         ),
     },
     {
@@ -415,7 +417,8 @@ def preflatten_block_reason(command: str, validated_item: bool = False) -> str:
 
 #: ``(新 ID, 旧 ID, 改名生效版本)`` —— 生效版本**之前**用旧 ID，之后用新 ID。
 ENCHANT_RENAMES: tuple[tuple[str, str, tuple[int, ...]], ...] = (
-    ("minecraft:sweeping_edge", "minecraft:sweeping", (1, 21)),
+    # v0.24.2（F17）：生效版本 = 1.20.5（官方改名）
+    ("minecraft:sweeping_edge", "minecraft:sweeping", (1, 20, 5)),
 )
 
 #: 各版本通用、从未改名的附魔（中文名 → ID），供提示词直接抄，减少 LLM 记忆负担。
@@ -450,8 +453,8 @@ def enchantment_id_for(mc: tuple[int, ...] | None, new_id: str) -> str:
 def enchantment_renames_for(mc: tuple[int, ...] | None) -> list[tuple[str, str]]:
     """返回 ``[(会被误用的写法, 本版本正确的写法)]``，供提示词展示。
 
-    例：1.20.1 → ``[("minecraft:sweeping_edge", "minecraft:sweeping")]``；
-        1.21   → ``[("minecraft:sweeping", "minecraft:sweeping_edge")]``。
+    例：1.20.4 → ``[("minecraft:sweeping_edge", "minecraft:sweeping")]``；
+        1.20.5 → ``[("minecraft:sweeping", "minecraft:sweeping_edge")]``。
     """
     if mc is None:
         return []
@@ -469,9 +472,24 @@ def enchantment_renames_for(mc: tuple[int, ...] | None) -> list[tuple[str, str]]
 _LEGACY_TEMPLATE = (
     'give <玩家> <物品ID>{Enchantments:[{id:"minecraft:<附魔ID>",lvl:<等级>}, ...]} <数量>'
 )
+#: 1.20.5 ~ 1.21.4 的附魔组件写法（带 ``levels`` 一层）
 _COMPONENTS_TEMPLATE = (
     "give <玩家> <物品ID>[enchantments={levels:{\"minecraft:<附魔ID>\":<等级>, ...}}] <数量>"
 )
+#: v0.24.2（GPT 全面复核 F17）：**1.21.5 起** ``enchantments`` / ``stored_enchantments``
+#: 的 ``levels`` 字段被**内联**，规范写法直接是 ID→等级。旧写法在 1.21.5+ 会被服务端拒绝，
+#: 而插件的「由代码决定」示例还在要求模型照抄旧结构。
+COMPONENTS_INLINE_CUTOVER = (1, 21, 5)
+_COMPONENTS_TEMPLATE_INLINE = (
+    "give <玩家> <物品ID>[enchantments={\"minecraft:<附魔ID>\":<等级>, ...}] <数量>"
+)
+
+
+def _enchant_template_for(mc: "tuple[int, ...] | None") -> str:
+    """按版本挑附魔组件模板（v0.24.2 · F17）。"""
+    if mc and tuple(mc) >= COMPONENTS_INLINE_CUTOVER:
+        return _COMPONENTS_TEMPLATE_INLINE
+    return _COMPONENTS_TEMPLATE
 #: B5（2026-10-07 两代真机 `help give` 一字不差）：
 #: 1.8~1.12.2 的官方写法 —— 数据值仍在**位置参数**上，NBT 在物品 ID 之后。
 _PREFLATTEN_TEMPLATE = (
@@ -567,7 +585,14 @@ def build_version_context(
         lines.append(
             "- ⚠️ **禁止**使用旧 NBT 写法 `<物品ID>{...}` —— 1.20.5+ 已改为物品组件。"
         )
-        lines.append(f"- 本版本正确的物品写法（照抄结构，只换 ID 与数值）：\n  {_COMPONENTS_TEMPLATE}")
+        lines.append(
+            f"- 本版本正确的物品写法（照抄结构，只换 ID 与数值）：\n  {_enchant_template_for(info.mc)}"
+        )
+        if info.mc and tuple(info.mc) >= COMPONENTS_INLINE_CUTOVER:
+            lines.append(
+                "- ⚠️ 本版本的 `enchantments` / `stored_enchantments` **不带 `levels` 一层**"
+                "（1.21.5 起内联）；写成 `{levels:{...}}` 会被拒绝。"
+            )
 
     # ---- 附魔 ID 版本化别名（本次事故的第二处根因）----
     renames = enchantment_renames_for(info.mc)
