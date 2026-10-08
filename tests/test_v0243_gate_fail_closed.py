@@ -71,7 +71,7 @@ CASES = {
 #: 文件 → （旧跳过写法的**原文**，修好之后必须看得见的 fail-closed 证据）
 #: 判据写成原文而不是关键词：关键词会撞名（`_unknown_and_skip` 里就有 `_skip`，
 #: `check()` 的打印是 `f"[{'PASS' if ok else 'FAIL'}]"` 而不是裸 `[FAIL]`）——
-#: 判据粗了会把自己人判红，这条是皮莉卡第一版实测踩过的坑。
+#: 判据粗了会把自己人判红 —— 这条是写第一版时实测踩过的坑。
 BANNED_AND_MUST = {
     "test_v0242_execution_facts.py": ("[SKIP]", "本文件零跳过"),
     "test_simple_workflow_result.py": ("不判失败", "本文件零跳过"),

@@ -339,7 +339,7 @@ def group_api() -> None:
     import re as _re
 
     term = MAIN_SRC.split("async def terminate(self):", 1)[1][:900]
-    # 剥掉注释行再找 —— 否则会被皮莉卡自己注释里写的「第一个 await」骗到
+    # 剥掉注释行再找 —— 注释里也写着「第一个 await」，不剥会被自己的注释骗到
     code = "\n".join(l for l in term.split("\n") if not l.strip().startswith("#"))
     flag_at = code.find("self._terminated = True")
     _m = _re.search(r"^\s*await ", code, _re.M)
