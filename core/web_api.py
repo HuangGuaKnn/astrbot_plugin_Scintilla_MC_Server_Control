@@ -264,7 +264,31 @@ class McControlWebApi:
             payload["presets"] = man.list_presets()
             payload["active_preset"] = man.reg.get("active")
             payload["notice"] = man.notice()
+            # v0.24.3（GPT v0.24.2 复核 N10）：**预设侧那本聚合账也要随 GET 给出去**。
+            # 此前它只出现在 `kb/presets*` 系列接口的回包里，而「重新加载知识库页」
+            # 走的是本接口 —— 于是「非活动预设写失败」只有写那一次的提示条看得见，
+            # 一刷新就彻底消失（写失败的文件照旧带回退版知识）。
+            # 口径只有一处实现：直接取管理器自己的账本（含 parts_detail 归属信息）。
+            payload["preset_save_health"] = self._preset_save_health(man)
         return json_response(payload)
+
+    @staticmethod
+    def _preset_save_health(man) -> dict:
+        """预设侧聚合落盘健康度（v0.24.3 · GPT v0.24.2 复核 N10）。
+
+        取不到就回 `{}`：告警是锦上添花，绝不能反过来把 GET /state 炸了
+        （与 `_kb_save_warning` / `_state_save_warning` 同一口径）。
+        """
+        try:
+            info = man.save_health()
+        except Exception:                                  # noqa: BLE001
+            return {}
+        if not isinstance(info, dict):
+            return {}
+        out = dict(info)
+        out.setdefault("parts", {})
+        out.setdefault("parts_detail", [])
+        return out
 
     async def set_state(self):
         kb = self._kb()

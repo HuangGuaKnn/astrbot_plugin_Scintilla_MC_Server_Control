@@ -1914,6 +1914,11 @@ class KnowledgePresetManager:
 
         所有预设写接口的 `save_ok` / `save_error`、GET 状态、诊断都读这一份 ——
         任何一处落盘失败都不该被「后面那次成功」抹掉，也不该只在某一次回包里露面。
+
+        v0.24.3（GPT v0.24.2 复核 N10）：再附一份 `parts_detail` —— **带归属**的
+        部件清单（部件键 → 类别 / 预设 ID / 预设名称）。理由：界面要能说清「是哪个
+        预设的文件没写进磁盘」，而部件键 `preset_file:<id>` 是内部编码，把翻译工作
+        丢给前端等于每个消费者各猜一遍。`parts` 原样保留（既有消费者口径不变）。
         """
         return {
             "ok": bool(self.last_save_ok),
@@ -1921,7 +1926,40 @@ class KnowledgePresetManager:
             "at": str(self.last_save_at or ""),
             "parts": {k: {"ok": o, "error": e}
                       for k, (o, e) in sorted(self._save_parts.items())},
+            "parts_detail": self._parts_detail(),
         }
+
+    def _parts_detail(self) -> list[dict]:
+        """把部件账本摊平成**带归属**的列表（v0.24.3 · GPT v0.24.2 复核 N10）。
+
+        每一项：`part`（原始键）/ `kind`（registry | preset_file）/ `ok` / `error`
+        / `preset_id` / `preset_name`。预设名从注册表现取 —— 预设改名后界面跟着变，
+        而**已删除**的预设不会留在这里（见 `remove()`：文件删掉就把那一笔账撤掉），
+        所以取不到名字时只可能是「账是旧的、预设已经不在注册表里」，如实说明即可。
+        """
+        names: dict = {}
+        try:
+            for p in (self.reg.get("presets") or []):
+                names[str(p.get("id") or "")] = str(p.get("name") or p.get("id") or "")
+        except Exception:                                  # noqa: BLE001
+            names = {}
+        out: list[dict] = []
+        for part, (ok, err) in sorted(self._save_parts.items()):
+            if part == self.SAVE_PART_REGISTRY:
+                out.append({
+                    "part": part, "kind": "registry",
+                    "ok": bool(ok), "error": str(err or ""),
+                    "preset_id": "", "preset_name": "预设注册表",
+                })
+                continue
+            pid = part.split(":", 1)[1] if ":" in part else ""
+            out.append({
+                "part": part, "kind": self.SAVE_PART_PRESET_FILE,
+                "ok": bool(ok), "error": str(err or ""),
+                "preset_id": pid,
+                "preset_name": names.get(pid) or (f"预设 {pid}" if pid else "预设文件"),
+            })
+        return out
 
     # ---------------- 预设读写 ----------------
 

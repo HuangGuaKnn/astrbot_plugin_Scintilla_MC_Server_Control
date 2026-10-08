@@ -915,6 +915,12 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     </div>
     <div class="notice" id="kb_preset_notice"></div>
   </div>
+  <!-- v0.24.3（GPT v0.24.2 复核 N10）：**持续的**落盘健康条 ——
+       非活动预设写失败这类账此前只在提示条上活 3.5 秒（setNotice 自动消失），
+       重载知识库页就没有任何通道看得见它。这里用不自动消失的 .banner 常驻，
+       由 renderKbSaveHealth() 统一维护三本账（条目 / 开关状态 / 预设聚合），
+       带归属点名到具体预设。正常时整条不显示（不打扰）。 -->
+  <div class="banner" id="kb_health"></div>
   <div class="grid g4" id="kb_stats"></div>
   <div style="height:14px"></div>
   <div class="grid g2">
@@ -1871,7 +1877,10 @@ async function loadKnowledge(){
   $("tab_kb_cnt").textContent = total;
   if(r.presets){
     KBP = { presets:r.presets, active:r.active_preset, server_fp:r.server_id||"",
-            server_content:KBP.server_content||"", notice:r.notice||null };
+            server_content:KBP.server_content||"", notice:r.notice||null,
+            // v0.24.3（N10）：预设侧聚合账随 GET /state 一起回来。拿不到就**保留上一次**的，
+            // 绝不把它清成 null ——「重建即丢聚合」正是这条缺陷的病根。
+            save_health:r.preset_save_health || KBP.save_health || null };
   }
   $("kb_fingerprint").innerHTML = kbFpBadge(st, r.server_id);
   renderPresets();
@@ -1978,7 +1987,9 @@ async function saveEntryDetail(){
 // ============ 知识库预设（v0.18.0） ============
 // 一个预设 = 一个独立知识库，可绑定某个服务端整合包指纹；服务端指纹变化时**不自动切换**，
 // 只在进入 WebUI 时弹窗提示，由用户手动决定谁服务谁。
-let KBP = { presets: [], active: null, server_fp: "", server_content: "", notice: null };
+let KBP = { presets: [], active: null, server_fp: "", server_content: "", notice: null,
+            // v0.24.3（GPT v0.24.2 复核 N10）：预设侧的**聚合**落盘账（注册表 + 每个预设文件）
+            save_health: null };
 let PICK = { action: null, src: null, dst: null, renameId: null };
 // v0.21.21：知识库整体不可用（服务端目录没配 / 目录校验没过 / 异地模式）时的锚。
 // 这个状态下后端每个接口都只回一句 error，本地快照为空 —— 而预设渲染、指纹不匹配检测
@@ -2097,9 +2108,13 @@ async function presetOp(path, body){
   if(!r || !r.ok){ setNotice(box, (r && r.error) || "操作失败", true); return r; }
   if(r.presets){
     KBP = { presets:r.presets, active:r.active, server_fp:r.server_fingerprint,
-            server_content:r.server_content||"", notice:r.notice };
+            server_content:r.server_content||"", notice:r.notice,
+            // v0.24.3（N10）：这处重建同样要接住聚合账并重绘（否则预设面板一刷新，
+            // 「哪个预设没写进磁盘」当场消失）
+            save_health:r.save_health || KBP.save_health || null };
   }
   renderPresets(); renderKbAlert();
+  renderKbSaveHealth();
   setNotice(box, r.notice_text || "✓ 完成");
   await loadKnowledge();
   checkFingerprintNotice();   // v0.21.8：换预设 / 绑定 / 新建后立刻重新检测「指纹不匹配」
@@ -2117,9 +2132,12 @@ async function presetNotice(action){
   const r = await callPost("kb/presets/notice", { action }).catch(() => ({ ok:false }));
   if(r && r.ok){
     KBP = { presets:r.presets, active:r.active, server_fp:r.server_fingerprint,
-            server_content:r.server_content||"", notice:r.notice };
+            server_content:r.server_content||"", notice:r.notice,
+            // v0.24.3（N10）：重建预设面板不许丢聚合账（见 presetOp 同一处口径）
+            save_health:r.save_health || KBP.save_health || null };
     if(action === "enable") FP_SHOWN_KEY = "";   // 重新开启提醒 → 本轮重新给一次弹窗
     renderPresets(); renderKbAlert();
+    renderKbSaveHealth();
     const box = $("kb_preset_notice");
     if(box) setNotice(box, r.notice_text || "✓");
     if(action === "enable" && r.notice && r.notice.show) showFpModal(r.notice);
@@ -2226,8 +2244,11 @@ async function checkFingerprintNotice(){
   const r = await callGet("kb/presets").catch(() => ({ ok:false }));
   if(!r || !r.ok) return;
   KBP = { presets:r.presets || [], active:r.active, server_fp:r.server_fingerprint,
-            server_content:r.server_content||"", notice:r.notice };
+            server_content:r.server_content||"", notice:r.notice,
+            // v0.24.3（N10）：同 presetOp —— 指纹检测这条路也会重建预设面板
+            save_health:r.save_health || KBP.save_health || null };
   renderPresets(); renderKbAlert();
+  renderKbSaveHealth();
   if(r.notice && r.notice.show) showFpModal(r.notice);
   return r.notice;
 }
@@ -3544,18 +3565,55 @@ function showSaveWarn(r, el){
   return w;
 }
 // v0.23.5 第四轮：写接口的告警只活在那一次响应里，刷个页面就没了 ——
-// 「上次落盘到底成没成功」必须能随时看见。后端 GET /state 现在带回
-// save_health（知识库整库）与 state_save_warning（开关状态那一份），
-// 这里在加载知识库页时过一遍：只有真有问题才说话，正常时一个字都不加。
-function renderKbSaveHealth(r){
-  const el = $("kb_notice"); if(!el) return;
-  const h = r && r.save_health;
-  if(h && h.ok === false){
-    setNotice(el, "⚠ 上次知识库落盘失败" + (h.at ? "（"+h.at+"）" : "") + "："
-              + (h.error || "未知原因") + " —— 内存里的改动重启后会丢。", true);
-    return;
+// 「上次落盘到底成没成功」必须能随时看见。
+// v0.24.3（GPT v0.24.2 复核 N10）：落盘健康度有**三本账**，且都要能长期看见：
+//   ① KB.save_health        —— 知识库条目（整库）
+//   ② KB.state_save_warning —— 知识库开关状态那一份
+//   ③ KBP.save_health       —— 预设侧聚合（注册表 + 每个预设文件，带归属）
+// 旧实现只读 ①，一读到红就 `return`（后面的账再也不看）；且唯一的出口是 setNotice
+// 那个 3.5 秒自动消失的提示条 —— 于是「非活动预设写失败」在写那一次之后彻底没有
+// 显示通道，重载页面照样看不见（写失败的文件照旧带回退版知识）。
+// 现在：三本全摊、一条不落 → 写进**不自动消失**的 #kb_health 横幅；提示条只作
+// 当场的顺带一瞥（它不承担持续性）。正常时横幅整条隐藏，不打扰。
+function healthErrLine(h, who){
+  return "⚠ " + who + "落盘失败" + (h && h.at ? "（"+h.at+"）" : "") + "："
+         + ((h && h.error) || "未知原因") + " —— 内存里的改动重启后会丢。";
+}
+// 预设侧的账要**点名到具体预设**：部件键是内部编码（preset_file:<id>），
+// 后端 save_health().parts_detail 已经把归属翻译好了（名称 / ID / 类别）。
+function presetBadParts(h){
+  const bad = ((h && h.parts_detail) || []).filter(x => x && x.ok === false);
+  if(!bad.length) return (h && h.error) || "未知原因";
+  return bad.map(x => "「" + (x.preset_name || x.preset_id || x.part) + "」"
+                      + (x.error ? "（" + x.error + "）" : "")).join("；");
+}
+function saveHealthLines(){
+  const out = [];
+  const kb = KB && KB.save_health;
+  if(kb && kb.ok === false){
+    out.push(healthErrLine(kb, "知识库条目"));
   }
-  if(r && r.state_save_warning){ setNotice(el, "⚠ " + r.state_save_warning, true); }
+  const ph = KBP && KBP.save_health;
+  if(ph && ph.ok === false){
+    out.push("⚠ 预设落盘失败" + (ph.at ? "（"+ph.at+"）" : "") + "：" + presetBadParts(ph)
+             + " —— 重启后这些预设的改动会回退。");
+  }
+  if(KB && KB.state_save_warning){ out.push("⚠ " + KB.state_save_warning); }
+  return out;
+}
+function renderKbSaveHealth(r){
+  if(r && r.save_health && KB){ KB.save_health = r.save_health; }
+  const lines = saveHealthLines();
+  const bar = $("kb_health");
+  if(bar){
+    if(lines.length){
+      bar.className = "banner show bad";
+      bar.innerHTML = `<span class="bi">⚠</span><span class="bx">`
+                    + lines.map(l => esc(l)).join("<br>") + `</span>`;
+    } else { bar.className = "banner"; bar.innerHTML = ""; }
+  }
+  if(lines.length){ setNotice($("kb_notice"), lines[0], true); }
+  return lines;
 }
 
 function collectSettings(){
