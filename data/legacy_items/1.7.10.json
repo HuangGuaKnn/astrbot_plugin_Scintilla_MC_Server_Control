@@ -1064,7 +1064,7 @@
    "display": "Button\r"
   },
   "litpumpkin": {
-   "registry": "jack_o_lantern",
+   "registry": "lit_pumpkin",
    "display": "Jack o'Lantern\r"
   },
   "oreLapis": {
@@ -1080,7 +1080,7 @@
    "display": "Note Block\r"
   },
   "stonebricksmooth": {
-   "registry": "smooth_stone",
+   "registry": "stonebrick",
    "display": "Stone Bricks\r"
   },
   "enchantmentTable": {

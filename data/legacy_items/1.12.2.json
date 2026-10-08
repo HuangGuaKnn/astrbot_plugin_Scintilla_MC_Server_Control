@@ -36,7 +36,7 @@
    "display": "Cobblestone"
   },
   "deadbush": {
-   "registry": "dead_bush",
+   "registry": "deadbush",
    "display": "Dead Bush"
   },
   "bedrock": {
@@ -264,7 +264,7 @@
    "display": "Jukebox"
   },
   "fence": {
-   "registry": "oak_fence",
+   "registry": "fence",
    "display": "Oak Fence"
   },
   "spruceFence": {
@@ -356,7 +356,7 @@
    "display": "Cobweb"
   },
   "monsterStoneEgg": {
-   "registry": "stone_monster_egg",
+   "registry": "monster_egg",
    "display": "Stone Monster Egg"
   },
   "pistonBase": {
@@ -1360,7 +1360,7 @@
    "display": "Elytra"
   },
   "totem": {
-   "registry": "totem",
+   "registry": "totem_of_undying",
    "display": "Totem of Undying"
   },
   "shulkerShell": {
@@ -1484,7 +1484,7 @@
    "display": "Pumpkin Stem"
   },
   "litpumpkin": {
-   "registry": "jack_o_lantern",
+   "registry": "lit_pumpkin",
    "display": "Jack o'Lantern"
   },
   "oreLapis": {
@@ -1500,7 +1500,7 @@
    "display": "Note Block"
   },
   "stonebricksmooth": {
-   "registry": "smooth_stone",
+   "registry": "stonebrick",
    "display": "Stone Bricks"
   },
   "enchantmentTable": {
@@ -1524,7 +1524,7 @@
    "display": "Beetroots"
   },
   "shulkerBoxSilver": {
-   "registry": "light_gray_shulker_box",
+   "registry": "silver_shulker_box",
    "display": "Light Gray Shulker Box"
   },
   "glazedTerracottaSilver": {
@@ -1616,15 +1616,17 @@
    }
   },
   "log": {
-   "domain_upper": 5,
+   "domain_upper": 3,
    "variants": {
     "0": "Oak Wood",
     "1": "Spruce Wood",
     "2": "Birch Wood",
-    "3": "Jungle Wood",
-    "4": "Acacia Wood",
-    "5": "Dark Oak Wood"
-   }
+    "3": "Jungle Wood"
+   },
+   "trimmed_values": [
+    4,
+    5
+   ]
   },
   "log2": {
    "domain_upper": 1,
