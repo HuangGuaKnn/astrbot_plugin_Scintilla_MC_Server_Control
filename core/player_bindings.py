@@ -43,18 +43,26 @@ class PlayerBindings:
         except Exception:
             self._data = {}
 
-    def _save(self) -> None:
-        with self._lock:
-            try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".tmp")
-                tmp.write_text(
-                    json.dumps(self._data, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                tmp.replace(self._path)
-            except Exception:
-                pass
+    def _save(self) -> tuple[bool, str]:
+        """落盘。返回 ``(ok, err)``。
+
+        v0.24.2（GPT 全面复核 F12）：这里原来把异常吞成 ``pass``，调用方再无条件回
+        「已绑定」—— 内存改了、磁盘没改，重启后用户看到的是**旧绑定**，而当时回执说
+        成功了。现在把结果如实返回，调用方负责回滚。
+
+        注意：调用方**必须**已持有 ``self._lock``（本方法不加锁，避免自锁死）。
+        """
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self._data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self._path)
+            return True, ""
+        except Exception as e:                                        # noqa: BLE001
+            return False, str(e)
 
     # =============== 接口 ===============
 
@@ -75,16 +83,31 @@ class PlayerBindings:
                 f"玩家名「{player_name}」不合法（MC 玩家名应为 1~16 位字母/数字/下划线）。"
             )
         with self._lock:
+            old = self._data.get(uid)
             self._data[uid] = {"player": name, "ts": time.time()}
-            self._save()
+            ok, err = self._save()
+            if not ok:
+                # 回滚：内存与磁盘保持一致（否则重启后悄悄变回旧目标）
+                if old is None:
+                    self._data.pop(uid, None)
+                else:
+                    self._data[uid] = old
+                return False, (
+                    f"绑定未生效：写盘失败（{err}）。已保持原样，重启后不会变。"
+                )
         return True, f"已绑定：{uid} → {name}"
 
     def unbind(self, user_id: str) -> tuple[bool, str]:
         uid = str(user_id or "").strip()
         with self._lock:
             if uid in self._data:
-                del self._data[uid]
-                self._save()
+                old = self._data.pop(uid)
+                ok, err = self._save()
+                if not ok:
+                    self._data[uid] = old          # 回滚：解绑没落盘就还在
+                    return False, (
+                        f"解除绑定未生效：写盘失败（{err}）。已保持原样，重启后仍在。"
+                    )
                 return True, f"已解除绑定（{uid}）。"
         return False, f"当前用户（{uid or '未知'}）没有绑定记录。"
 

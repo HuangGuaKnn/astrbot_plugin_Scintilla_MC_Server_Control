@@ -537,28 +537,14 @@ class MCWorkflow:
             )
             if not corr:
                 break
-            # 修正模板写库
-            fixed = []
-            for c in corr.get("corrections") or []:
-                topic = str(c.get("topic", "")).strip()
-                content = str(c.get("content", "")).strip()
-                if topic and content and kb is not None:
-                    try:
-                        kb.save_entry(topic, content, source="agent_corrector")
-                        if getattr(kb, "last_save_ok", True):
-                            fixed.append(topic)
-                        else:
-                            # v0.23.5 第三轮：没落盘的纠正不算「已修正」—— 否则报告
-                            # 说修好了，重启后错误条目原样复活。
-                            self.logger.warning(
-                                "纠错写库未落盘 %s: %s", topic,
-                                getattr(kb, "last_save_error", ""),
-                            )
-                    except Exception as e:
-                        self.logger.warning("纠错写库失败 %s: %s", topic, e)
+            # 修正模板写库（判据与实现见 _apply_corrections）
+            fixed = self._apply_corrections(corr, kb)
             if fixed:
+                # v0.24.2（F11）：把**完整修正正文**交回实现器 —— 只给 topic 名等于让
+                # 实现器自己再猜一遍，纠错等于没生效。
+                blocks = "\n\n".join(f"【{t}】\n{body}" for t, body in fixed)
                 kb_text = (
-                    f"{kb_text}\n\n【纠错专家已修正模板】{', '.join(fixed)}\n"
+                    f"{kb_text}\n\n【纠错专家已修正模板】\n{blocks}\n"
                     f"教训：{corr.get('lessons','')}"
                 )
             # 用修正后的模板重试实现
@@ -871,6 +857,40 @@ class MCWorkflow:
                                        f"（不会自动重发）：{e}")
                 break
         return reports
+
+    def _apply_corrections(self, corr: dict, kb) -> list:
+        """把纠错 Agent 的 corrections 写进知识库，返回**真正落盘**的 ``[(topic, 正文)]``。
+
+        v0.24.2（GPT 全面复核 F11）：提示词给的 schema 是 ``new_content``，消费方原来读
+        ``content`` —— 两边对不上，于是**修正正文永远为空**、整段被静默跳过：任务照样报
+        成功，错误模板下次继续进流水线，纠错 Agent 每轮都在白跑。
+        现在两个键都认（迁移期兼容），并且「有 topic 没正文」必须留痕 —— 静默跳过正是
+        这个洞最坏的地方。没落盘的纠正同样不算「已修正」（重启后错误条目会原样复活）。
+        """
+        fixed: list = []
+        for c in (corr or {}).get("corrections") or []:
+            topic = str(c.get("topic", "")).strip()
+            content = str(c.get("new_content") or c.get("content") or "").strip()
+            if topic and not content:
+                self.logger.warning(
+                    "纠错返回的修正正文为空（topic=%s）：拒绝当成已修正，keys=%s",
+                    topic, sorted(c),
+                )
+                continue
+            if not (topic and content and kb is not None):
+                continue
+            try:
+                kb.save_entry(topic, content, source="agent_corrector")
+                if getattr(kb, "last_save_ok", True):
+                    fixed.append((topic, content))
+                else:
+                    self.logger.warning(
+                        "纠错写库未落盘 %s: %s", topic,
+                        getattr(kb, "last_save_error", ""),
+                    )
+            except Exception as e:                                    # noqa: BLE001
+                self.logger.warning("纠错写库失败 %s: %s", topic, e)
+        return fixed
 
     @staticmethod
     def _unknown_and_skip(reports: list, commands: list, idx: int, cmd: str, reason: str) -> None:

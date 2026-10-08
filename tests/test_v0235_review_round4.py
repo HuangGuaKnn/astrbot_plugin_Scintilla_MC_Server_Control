@@ -523,8 +523,14 @@ def part_i() -> None:
         b = man.create("库2")
         os.remove(man.preset_path(b["id"]))
         r2 = man.bind(b["id"], "fp-gone")
-        check("预设文件不在（已被删）→ 不算失败（不许误报）",
-              r2.get("save_ok") is True and not r2.get("save_error"), str(r2))
+        # v0.24.2（F13）：账本按**文件**记 —— 库（上面那次真失败）的红本来就该留着，
+        # 所以这里要看的是「库2 自己有没有被误报」，而不是聚合值。
+        parts_b = man.save_health()["parts"].get(man._preset_part(b["id"])) or {"ok": True}
+        check("预设文件不在（已被删）→ 本文件不算失败（不许误报）",
+              parts_b.get("ok") is True, f"{parts_b}｜{man.save_health()}")
+        check("库2 这一笔也没往错误文案里塞东西",
+              "库2" not in str(r2.get("save_error", "")) and str(r2.get("save_error", "")).count("指纹回写失败") <= 1,
+              str(r2.get("save_error")))
 
 
 def main() -> int:

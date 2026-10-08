@@ -1613,6 +1613,15 @@ class KnowledgePresetManager:
     SAVE_PART_REGISTRY = "registry"
     SAVE_PART_PRESET_FILE = "preset_file"
 
+    def _preset_part(self, pid: str) -> str:
+        """预设文件的记账键：**按文件（预设 ID）分别记**（v0.24.2 · GPT 全面复核 F13）。
+
+        旧写法所有预设共用一个 ``preset_file`` 部件名 —— 预设 A 写失败、预设 B 写成功，
+        A 的错误当场被 B 的成功覆盖成「一切正常」，而 A 那个文件仍然带回退版知识。
+        改成按文件记账后，某个文件的红只有**它自己**下次写成功才会清掉。
+        """
+        return f"{self.SAVE_PART_PRESET_FILE}:{pid or '?'}"
+
     def __init__(self, data_dir: str, server_id: str, server_dir: str = "",
                  search_engine: str = DEFAULT_SEARCH_ENGINE,
                  semantic_enabled: bool = False,
@@ -1764,10 +1773,10 @@ class KnowledgePresetManager:
         # v0.23.5 第六轮（GPT 第五轮 P2）：这一笔也是**写预设文件**，成功就得清掉这个
         # 部件自己的红。否则一次失败之后，后面每一次成功的写入都清不掉它 —— 界面与
         # `/state` 会永远停在「保存失败」（狼来了的反面：红得没有尽头）。
-        self._note_save(self.SAVE_PART_PRESET_FILE, True)
+        self._note_save(self._preset_part(pid), True)
         return ""
 
-    def _merge_stamp_error(self, fields: dict | None, err: str) -> dict:
+    def _merge_stamp_error(self, fields: dict | None, err: str, pid: str = "") -> dict:
         """把「预设文件指纹回写失败」并进落盘健康度（v0.23.5 第四轮）。
 
         为什么不另开一个字段：界面只需要**一个**判据 ——「这次改动到底写进磁盘没有」。
@@ -1778,7 +1787,8 @@ class KnowledgePresetManager:
             return out
         # v0.23.5 第五轮：指纹回写动的也是**预设文件**，记进同一本账（而不是就地改两根
         # 公共变量）—— 这样它的失败同样熬得过「紧接着的一次注册表写成功」。
-        self._note_save(self.SAVE_PART_PRESET_FILE, False, err)
+        # v0.24.2（F13）：指纹回写动的也是**某一个**预设文件 → 按该文件记账
+        self._note_save(self._preset_part(pid), False, err)
         out["save_ok"] = bool(self.last_save_ok)
         out["save_error"] = str(self.last_save_error or "")
         return out
@@ -1886,6 +1896,14 @@ class KnowledgePresetManager:
         与调用顺序无关。
         """
         self._save_parts[part] = (bool(ok), str(err or ""))
+        self._refresh_health()
+
+    def _refresh_health(self) -> None:
+        """按当前各部件状态重算**聚合**健康度（v0.24.2 · F13 抽出来单用）。
+
+        抽出来的原因：删除预设时要把那个文件的账**整笔撤掉**（文件已经没了，它永远等不到
+        「自己下次写成功」，会把聚合永久钉在红上），撤完必须重算一次。
+        """
         bad = [(k, e) for k, (o, e) in sorted(self._save_parts.items()) if not o]
         self.last_save_ok = not bad
         self.last_save_error = "；".join(e or f"{k} 落盘失败" for _, e in bad)
@@ -1987,7 +2005,7 @@ class KnowledgePresetManager:
         err = self._stamp_fp(p["id"], self.server_id)
         fields = self._persist_registry()   # v0.23.5 第三轮：落盘结果不再丢
         # v0.23.5 第四轮：指纹回写失败同样要进健康度（否则界面只看到 save_ok=True）
-        self._merge_stamp_error(fields, err)
+        self._merge_stamp_error(fields, err, (self.active_preset() or {}).get("id", ""))
         # v0.23.5 第五轮：首次绑定是**同一次写入**里顺手做的，它的失败必须能进这次写入
         # 的响应 —— 否则 `save_entry` 的调用方只看到「条目已保存」，界面照样说成功，
         # 而指纹其实没落到预设文件里（GPT 第五轮 P2）。
@@ -2037,7 +2055,7 @@ class KnowledgePresetManager:
         # v0.23.5 第五轮：预设文件的写入结果记进**统一账本**，而不是只在本次回包里
         # 临时合一下 —— 否则紧随其后的 `_persist_registry()` 一成功，就把这次失败
         # 覆盖成「一切正常」，GET / 状态接口从此看不到（GPT 第五轮 P2）。
-        self._note_save(self.SAVE_PART_PRESET_FILE, file_ok,
+        self._note_save(self._preset_part(pid), file_ok,
                         "" if file_ok else f"预设文件写入失败：{file_err}")
         fields = self._persist_registry()
         return {**preset, **fields}
@@ -2074,8 +2092,14 @@ class KnowledgePresetManager:
             self.reg["active"] = self.reg["presets"][0]["id"]
             self.reload_active()
         # v0.23.5 第五轮：与 create() 同一口径 —— 删除失败也进统一账本
-        self._note_save(self.SAVE_PART_PRESET_FILE, not file_err,
-                        f"预设文件删除失败：{file_err}" if file_err else "")
+        if file_err:
+            self._note_save(self._preset_part(pid), False, f"预设文件删除失败：{file_err}")
+        else:
+            # v0.24.2（F13）：文件已经删掉了 —— 那一笔旧账也跟着消失。否则它永远等不到
+            # 「自己下次写成功」，聚合健康度会永久停在红上（正是第六轮要避免的
+            # 「红得没有尽头」）。
+            self._save_parts.pop(self._preset_part(pid), None)
+            self._refresh_health()
         fields = self._persist_registry()
         return {"ok": True, "removed": pid, **fields}
 
@@ -2102,7 +2126,7 @@ class KnowledgePresetManager:
         if self.kb is not None and pid == self.reg.get("active"):
             self.kb.bind(p["fingerprint"] or None)
         # v0.23.5 第四轮：预设文件指纹回写失败并进落盘健康度，原样带给界面
-        return {**p, **self._merge_stamp_error(fields, err)}
+        return {**p, **self._merge_stamp_error(fields, err, pid)}
 
     def transfer(self, src_id: str, dst_id: str, mode: str = "copy") -> dict:
         """把 src 预设的条目整体复制/移动到 dst 预设（冲突 topic 默认保留目标版本）。"""
@@ -2131,11 +2155,16 @@ class KnowledgePresetManager:
         try:
             dst_p.write_text(json.dumps(dd, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:
+            # v0.24.2（F13）：目标预设文件写失败同样要进统一账本（按该文件记账）——
+            # 只回一个 ok:False 的话，这次失败熬不过下一次别的预设写成功。
+            self._note_save(self._preset_part(dst_id), False,
+                            f"预设文件写入失败：{e}")
             return {"ok": False, "error": f"写入失败: {e}"}
         # v0.23.5 第六轮（GPT 第五轮 P2）：目标预设**写成功**同样要清掉这个部件的红。
         # 顺序有意如此：先记成功、后面「源库清空失败」再记失败 —— 一次移动里两笔写入
         # 各报各的，最后说话的是**真的失败过的那一笔**。
-        self._note_save(self.SAVE_PART_PRESET_FILE, True)
+        # v0.24.2（F13）：按**文件**记账 —— 这两笔分别是目标 / 源预设文件，各记各的
+        self._note_save(self._preset_part(dst_id), True)
         warning = ""
         if mode == "move":
             sd["entries"] = {}
@@ -2154,7 +2183,7 @@ class KnowledgePresetManager:
                 _log.warning("预设移动：源文件清空失败（%s）：%s", src_p, e)
                 # v0.23.5 第五轮：源库没清空 = 一次**真实的预设文件落盘失败**，
                 # 同样记进统一账本（GET / 状态接口才看得见，不是只在这一次回包里）。
-                self._note_save(self.SAVE_PART_PRESET_FILE, False,
+                self._note_save(self._preset_part(src_id), False,
                                 f"预设文件写入失败：{e}")
         # 刷新受影响的内存实例
         if self.reg.get("active") in (src_id, dst_id):

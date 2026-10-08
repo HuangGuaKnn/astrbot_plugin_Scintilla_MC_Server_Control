@@ -63,8 +63,12 @@ CLIENT_MARKERS = (
 # ---- 「证明这是服务端」的强特征 ------------------------------------------
 # 命中任意一个即认为「是服务端根目录」；logs/world 之外的基本都进不来这个集合，
 # 因为它们不是「服务端天然会有」的东西。
+# v0.24.2（GPT 全面复核 F14）：``logs`` / ``libraries`` 从强特征里拿掉 ——
+# 客户端 ``.minecraft`` 里**天然**就有这两个目录，把它们当「证明这是服务端」的证据，
+# 会让一个只有 logs/ saves/ options.txt 的客户端目录通过硬校验（实测 ok=true）。
+# 服务端专属证据 = server.properties / eula.txt / 启动脚本 / server.jar 这些。
 STRONG_MARKERS = (
-    "logs", "libraries", "server.properties", "eula.txt",
+    "server.properties", "eula.txt",
     "user_jvm_args.txt", "ops.json", "whitelist.json",
     "run.bat", "run.sh", "start.bat", "start.sh",
     "start_server.bat", "start_server.sh", "startserver.bat", "startserver.sh",

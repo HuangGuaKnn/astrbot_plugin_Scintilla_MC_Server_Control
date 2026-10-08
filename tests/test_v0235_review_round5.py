@@ -312,21 +312,24 @@ def part_c() -> None:
               str(r1.get("save_error")))
         h = man.save_health()
         check("失败没被紧接着的「注册表写成功」抹掉（第五轮 P2 核心）",
-              h["ok"] is False and h["parts"]["preset_file"]["ok"] is False
+              h["ok"] is False and any(v["ok"] is False for k, v in h["parts"].items() if k.startswith("preset_file"))
               and h["parts"]["registry"]["ok"] is True, str(h))
         st = man.status()
+        # v0.24.2（F13）：状态接口的口径 = 统一账本的**聚合**值（旧写法这里显示 True）
         check("状态接口读的是**聚合**口径（旧写法这里显示 True）",
-              st.get("registry_save_ok") is False
-              and st.get("save_health", {}).get("parts", {}).get("preset_file", {}).get("ok")
-              is False, str(st.get("save_health")))
+              st.get("save_health", {}).get("ok") is False,
+              str(st.get("save_health")))
         check("失败原因写明是哪一步（人话）",
               "预设文件写入失败" in str(h["error"]), str(h["error"]))
 
         man.data_dir = good_dir
         r2 = man.create("丙")
-        check("这个部件自己下次写成功 → 红被清掉（不是记死）",
-              r2.get("save_ok") is True
-              and man.save_health()["parts"]["preset_file"]["ok"] is True,
+        # v0.24.2（F13）：红是**按文件**记的 —— 丙那次写成功只清丙自己的红；
+        # 乙的文件仍然欠着（它的红要等它自己被写成功才清）。所以这里断言的是
+        # 「存在一个被写成绿的预设文件部件」＋「失败原因仍认得出是谁」，而不是聚合变绿。
+        parts2 = man.save_health()["parts"]
+        check("这个文件自己下次写成功 → 它的红被清掉（不是记死）",
+              any(v.get("ok") is True for k, v in parts2.items() if k.startswith("preset_file")),
               str(man.save_health()))
 
         man.reg_path = kd / "没有这个目录" / "registry.json"
@@ -334,14 +337,15 @@ def part_c() -> None:
         h3 = man.save_health()
         check("反方向也成立：注册表红了，不会因为预设文件写成功而变绿",
               r3.get("save_ok") is False and h3["parts"]["registry"]["ok"] is False
-              and h3["parts"]["preset_file"]["ok"] is True, str(h3))
+              and any(v.get("ok") is True for k, v in h3["parts"].items()
+                    if k.startswith("preset_file")), str(h3))
 
     create_src = fn_src(KB_SRC, "create", cls="KnowledgePresetManager")
     remove_src = fn_src(KB_SRC, "remove", cls="KnowledgePresetManager")
     persist_src = fn_src(KB_SRC, "_persist_registry", cls="KnowledgePresetManager")
     check("静态：create / remove 都走同一本账（不再就地合并、被下一次成功覆盖）",
-          create_src.count("_note_save(self.SAVE_PART_PRESET_FILE") == 1
-          and remove_src.count("_note_save(self.SAVE_PART_PRESET_FILE") == 1)
+          create_src.count("_note_save(self._preset_part(") == 1
+          and remove_src.count("_note_save(self._preset_part(") == 1)
     check("静态：注册表与预设文件记的是**不同部件**（互不覆盖）",
           "_note_save(self.SAVE_PART_REGISTRY" in persist_src
           and "SAVE_PART_PRESET_FILE = \"preset_file\"" in KB_SRC)
@@ -386,7 +390,7 @@ def part_c() -> None:
     # 移动：源库清空失败，界面不许显示成「移动成功」
     transfer_src = fn_src(KB_SRC, "transfer", cls="KnowledgePresetManager")
     check("静态：源库清空失败记进统一账本（不是只喊一句 warning）",
-          "_note_save(self.SAVE_PART_PRESET_FILE, False" in transfer_src)
+          "_note_save(self._preset_part(src_id), False" in transfer_src)
     api_src = fn_src(WEB_SRC, "transfer_preset", cls="")
     check("静态：warning 进 notice_text（界面才看得见）",
           "r.get(\"warning\")" in api_src and "notice_text" in api_src and "⚠" in api_src)

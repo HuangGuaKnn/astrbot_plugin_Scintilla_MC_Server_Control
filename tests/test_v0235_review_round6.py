@@ -99,11 +99,11 @@ async def _embed(texts):
 def part_a() -> None:
     print("========== [A] 统一落盘账本：红只该由「同部件这次写成功」清掉 ==========")
     stamp = fn_src(KB_SRC, "_stamp_fp", cls="KnowledgePresetManager")
-    check("静态：_stamp_fp 写成功也记进账本（否则红清不掉）",
-          "self._note_save(self.SAVE_PART_PRESET_FILE, True)" in stamp)
+    check("静态：_stamp_fp 写成功也记进账本（否则红清不掉；v0.24.2 F13 起按文件记账）",
+          "self._note_save(self._preset_part(pid), True)" in stamp)
     tr = fn_src(KB_SRC, "transfer", cls="KnowledgePresetManager")
-    check("静态：transfer 把内容写进目标预设后也记绿",
-          "self._note_save(self.SAVE_PART_PRESET_FILE, True)" in tr)
+    check("静态：transfer 把内容写进目标预设后也记绿（按目标文件记账）",
+          "self._note_save(self._preset_part(dst_id), True)" in tr)
 
     with tempfile.TemporaryDirectory() as td:
         man = KnowledgePresetManager(str(Path(td)), "sid")
@@ -111,33 +111,36 @@ def part_a() -> None:
         check("基准：新建预设后账本是绿的", man.save_health()["ok"] is True)
 
         # 反面对照（第五轮 C1 的口径）：别的部件写成功**不许**替预设文件洗白
-        man._note_save(man.SAVE_PART_PRESET_FILE, False, "模拟：预设文件落盘失败")
+        # v0.24.2（F13）：红按**文件**记 —— 这里就给 pid1 自己的文件记账，
+        # 于是下面每一次「某某写成功能不能洗白」问的都是同一个文件。
+        man._note_save(man._preset_part(pid1), False, "模拟：预设文件落盘失败")
         man._persist_registry()
-        check("反面对照：注册表写成功不替 preset_file 洗白",
+        check("反面对照：注册表写成功不替预设文件洗白",
               man.save_health()["ok"] is False, str(man.save_health()))
 
         # 路径 A：指纹回写成功（_stamp_fp）—— 旧写法这里不记绿，红会永远留着
-        man._note_save(man.SAVE_PART_PRESET_FILE, False, "模拟：预设文件落盘失败")
+        man._note_save(man._preset_part(pid1), False, "模拟：预设文件落盘失败")
         man.bind(pid1, "fp-alpha")
         check("A 指纹回写成功 → 红被清掉（旧写法红留到永远）",
               man.save_health()["ok"] is True, str(man.save_health()))
 
-        # 路径 B：新建预设成功
-        man._note_save(man.SAVE_PART_PRESET_FILE, False, "模拟：预设文件落盘失败")
+        # 路径 B：新建预设成功（v0.24.2 F13：红记在**乙自己**的文件上，
+        # 再由一次真的写入乙文件把红清掉 —— 正是「同部件这次写成功」的口径）
         pid2 = man.create("乙")["id"]
-        check("B 新建预设成功 → 红被清掉", man.save_health()["ok"] is True,
+        man._note_save(man._preset_part(pid2), False, "模拟：预设文件落盘失败")
+        man.transfer(pid1, pid2, "copy")
+        check("B 写乙预设文件成功 → 红被清掉", man.save_health()["ok"] is True,
               str(man.save_health()))
 
         # 路径 C：复制（写目标预设）成功
-        man._note_save(man.SAVE_PART_PRESET_FILE, False, "模拟：预设文件落盘失败")
+        man._note_save(man._preset_part(pid2), False, "模拟：预设文件落盘失败")
         man.transfer(pid1, pid2, "copy")
         check("C 复制写目标成功 → 红被清掉", man.save_health()["ok"] is True,
               str(man.save_health()))
 
         # 反向：真失败仍要留红（一次移动里「目标成功 + 源清空失败」= 红）
-        man._note_save(man.SAVE_PART_PRESET_FILE, True)
         p3 = man.create("丙")["id"]
-        man._note_save(man.SAVE_PART_PRESET_FILE, False, "模拟：源库清空失败")
+        man._note_save(man._preset_part(p3), False, "模拟：源库清空失败")
         check("反向：真失败过就必须留红（不许被后来的成功抹掉）",
               man.save_health()["ok"] is False and "源库清空失败" in man.save_health()["error"])
         assert p3
