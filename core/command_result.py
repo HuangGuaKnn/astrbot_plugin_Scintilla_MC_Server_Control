@@ -131,15 +131,27 @@ _SYNTAX_MARKERS = (
     "incorrect argument",
     "could not parse",
     "failed to parse",
-    "invalid argument",
+)
+
+#: 只在**行首**才算解析错误的短语（v0.24.2 · GPT 全面复核 F02）。
+#: 这些短语会出现在**合法成功回执的展示名里** —— 物品可以叫 "Unknown Item"：
+#: ``Gave 1 [Unknown Item] to Steve`` 曾被当成 syntax_error（"命令从未执行、可安全重发"），
+#: 而它其实已经发到货了。服务端的解析错误一定**独占行首**，所以按行首锚定。
+_SYNTAX_LINE_MARKERS = (
     "unknown item",
     "unknown enchantment",
     "unknown component",
     "unknown recipe",
     "unknown entity",
+    "invalid argument",
+    "incorrect argument",
     "malformed",
     "无法解析",
     "语法错误",
+)
+_SYNTAX_LINE_RE = re.compile(
+    r"^\s*(?:" + "|".join(re.escape(m) for m in _SYNTAX_LINE_MARKERS) + r")",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 #: 明确语法错误 —— **需要词边界**的标记。
@@ -149,9 +161,11 @@ _SYNTAX_MARKERS = (
 #: 这类**运行期**错误会被判成 ``syntax_error``（``retryable=True``）——
 #: 等于告诉上层「重写就能安全重试」，而实际上这条命令的失败原因跟语法无关。
 #: 语法错误必须是「服务端在解析阶段就拒绝了」，所以这里一律按词边界匹配。
-_SYNTAX_WORD_RE = re.compile(
-    r"(?<![a-z])expected(?![a-z])", re.IGNORECASE
-)
+#: v0.24.2（GPT 全面复核 F02）：原来按裸词匹配 ``expected``，于是**玩家名叫 Expected** 时
+#: ``Gave 1 [Diamond] to Expected`` 会被判成 syntax_error。服务端的解析错误一定是
+#: ``Expected …`` / ``Expected literal …`` 这种**行首**形态，所以改按行首锚定；
+#: 顺带 ``An unexpected error occurred`` 这类运行期错误也不会再被词尾匹配卷进来。
+_SYNTAX_WORD_RE = re.compile(r"^\s*expected\b", re.IGNORECASE | re.MULTILINE)
 
 #: 明确失败 —— **多词短语**：按子串匹配（短语足够长，没有边界歧义）。
 _PHRASE_FAILURE_MARKERS = (
@@ -537,6 +551,8 @@ def is_syntax_error_output(output: str) -> bool:
         return False
     if any(m in low for m in _SYNTAX_MARKERS):
         return True
+    if _SYNTAX_LINE_RE.search(low) is not None:
+        return True
     return _SYNTAX_WORD_RE.search(low) is not None
 
 
@@ -692,6 +708,14 @@ def classify_command_output(
 
     # ---- 3) 明确解析错误：命令从未执行，可安全重写 ----
     if is_syntax_error_output(out_s):
+        if is_anchored_success_output(command, out_s):
+            # v0.24.2（F02）：回执里**同时**有成功与解析错误文本（多行混合）→ 不能宣称
+            # “从未执行”。保守按结果未知处理：不谎报成功，也不许自动重发。
+            res.status = "unknown"
+            res.reason = ("回执里同时出现成功与解析错误文本（多行混合），"
+                          "无法确认命令是否已执行，不会自动重试")
+            res.retryable = False
+            return res
         res.status = "syntax_error"
         res.reason = "服务端明确拒绝解析（命令未执行，可安全重写后重试）"
         res.retryable = True

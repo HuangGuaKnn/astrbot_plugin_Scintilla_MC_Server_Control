@@ -554,24 +554,38 @@ def workflow_cases() -> bool:
     check("对照组：普通命令空响应后仍继续执行后续命令",
           rcon6.sent == ["say hi", "say again"], repr(rcon6.sent))
 
-    # ---- 纠错循环里出现未知：同样必须熔断 ----
+    # ---- 纠错循环里出现未知：同样必须熔断（v0.24.2 · GPT 全面复核 F01 后的口径）----
+    # 注意：**不标注阶段**的 RconError 按 core/rcon.py 的明文规定属于「最保守，
+    # 按命令可能已执行处理」（command_may_have_run 为真）—— 是本用例原来把它当
+    # 「明确失败/可重试」用了，与代码自己的教条相反（旧口径化石，已改）。
     rcon3 = FakeRcon([RconError("执行异常"), RconTimeoutError("服务器没响应")])
     agent3 = FakeAgent([["give Steve diamond 1"], ["give Steve diamond 1"]])
     wf3 = build(rcon3, agent3, {"agent_max_implement_rounds": 1, "agent_max_correct_rounds": 2})
     text3, ok3 = asyncio.run(wf3._run_complex("给钻石", "Steve", "umo"))
-    check("明确失败 → 允许按既有流程重试（本级仍发出 2 次）", len(rcon3.sent) == 2, repr(rcon3.sent))
-    check("纠错循环中遇到结果未知 → 立即熔断，不再重发", len(rcon3.sent) == 2, repr(rcon3.sent))
-    check("纠错循环中遇到结果未知 → 不再调用实现器", agent3.implement_calls == 2, str(agent3.implement_calls))
+    check("阶段未标注的 RconError → 按「可能已执行」熔断，**本级只发一次**",
+          len(rcon3.sent) == 1, repr(rcon3.sent))
+    check("纠错循环中遇到结果未知 → 立即熔断，不再重发", len(rcon3.sent) == 1, repr(rcon3.sent))
+    check("纠错循环中遇到结果未知 → 不再调用实现器", agent3.implement_calls == 1, str(agent3.implement_calls))
     check("纠错循环中遇到结果未知 → 返回暂停文案", "暂停" in text3, text3)
     check("纠错循环中遇到结果未知 → 工作流返回失败", ok3 is False)
 
-    # ---- 明确失败不能被误当成「未知」而熔断 ----
-    rcon4 = FakeRcon([RconError("boom"), RconError("boom")])
+    # ---- 对照组①：**建连阶段**失败 = 命令根本没发出去 → 才允许按普通失败重试 ----
+    # （v0.24.2：判据来自 RconError 的阶段标注，不靠异常文本猜）
+    rcon4 = FakeRcon([RconError("连不上", phase=RconError.PHASE_CONNECT),
+                      RconError("连不上", phase=RconError.PHASE_CONNECT)])
     agent4 = FakeAgent([["say hi"], ["say hi"]])
     wf4 = build(rcon4, agent4, {"agent_max_implement_rounds": 2, "agent_max_correct_rounds": 0})
     text4, ok4 = asyncio.run(wf4._run_complex("测试", "Steve", "umo"))
-    check("明确失败不会被误熔断（仍按普通失败重试到底）",
+    check("建连阶段失败不会被误熔断（仍按普通失败重试到底）",
           agent4.implement_calls == 2 and "暂停" not in text4 and ok4 is False, text4)
+
+    # ---- 对照组②：服务器**明确失败回执**（不是异常）→ 同样允许重试 ----
+    rcon5 = FakeRcon(["Player not found", "Player not found"])
+    agent5 = FakeAgent([["say hi"], ["say hi"]])
+    wf5 = build(rcon5, agent5, {"agent_max_implement_rounds": 2, "agent_max_correct_rounds": 0})
+    text5, ok5 = asyncio.run(wf5._run_complex("测试", "Steve", "umo"))
+    check("明确失败回执不会被误熔断（按普通失败重试到底）",
+          agent5.implement_calls == 2 and "暂停" not in text5 and ok5 is False, text5)
     return True
 
 

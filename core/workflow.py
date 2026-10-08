@@ -37,7 +37,7 @@ from .command_result import (
     is_non_idempotent_command,
     looks_like_complex_task,
 )
-from .rcon import RconTimeoutError
+from .rcon import RconError, RconTimeoutError
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, preflatten_block_reason
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
@@ -843,22 +843,53 @@ class MCWorkflow:
                 # 命令可能已经在服务器上生效了，剩下的命令一条都不许再发，
                 # 更不许上层把它当普通失败去重试 —— give / summon / effect / item
                 # 这类非幂等命令重发就是重复副作用。
-                reports.append({
-                    "command": cmd, "ok": False, "unknown": True, "status": "unknown",
-                    "output": f"结果未知（未收到响应）: {e}",
-                })
-                for rest in commands[idx + 1:]:
-                    rc = str(rest.get("command", "")).strip().lstrip("/")
+                self._unknown_and_skip(reports, commands, idx, cmd,
+                                       f"结果未知（未收到响应）: {e}")
+                break
+            except RconError as e:
+                # v0.24.2（GPT 全面复核 F01）：RconError 混着两种**相反**语义，必须按阶段分。
+                # 判据不靠异常文本猜，用 core/rcon.py 构造时标注的阶段（与单工具 _exec_checked 同源）。
+                # 注意 command_may_have_run 是 **property**（不是方法）——皮莉卡的回归用例当场咬过这一口。
+                if not e.command_may_have_run:
+                    # 建连 / 认证阶段失败 = 命令根本没发出去 → 判 failed 安全，后续照旧
                     reports.append({
-                        "command": rc or "(空)", "ok": False, "status": "skipped",
-                        "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
+                        "command": cmd, "ok": False, "status": "failed",
+                        "output": f"未建立连接 / 未发送，命令未执行：{e}",
                     })
+                    continue
+                self._unknown_and_skip(reports, commands, idx, cmd,
+                                       f"RCON 通信异常（阶段：{getattr(e, 'phase', 'unknown')}），"
+                                       f"命令可能已执行，结果未知（不会自动重发）：{e}")
                 break
             except Exception as e:
-                reports.append({
-                    "command": cmd, "ok": False, "status": "failed", "output": str(e)[:300],
-                })
+                # v0.24.2（F01）：这里原来判 failed ✗ —— 而 failed 在 _halt_on_uncertain 里
+                # 是「确定没生效、重发安全」的那一档，等于把通信中断/内部异常变成了自动重发。
+                # 本地异常同样**无法证明命令没发出去**，一律按结果未知熔断（保守方向）。
+                # 注意与 main.py:_exec_checked 的口径一致：判不了就 unknown，绝不 failed。
+                self._unknown_and_skip(reports, commands, idx, cmd,
+                                       f"执行时出现内部异常，无法确认命令是否已送达"
+                                       f"（不会自动重发）：{e}")
+                break
         return reports
+
+    @staticmethod
+    def _unknown_and_skip(reports: list, commands: list, idx: int, cmd: str, reason: str) -> None:
+        """结果未知的统一收尾：本条记 ``unknown``，**其余命令一律记为未发送**。
+
+        v0.24.2（GPT 全面复核 F01）：超时 / 通信异常 / 内部异常三条路共用它，
+        口径只有一句 —— 「是否生效不确定，就不许继续发、也不许自动重试」。
+        此前超时走这条、其余异常却判 ``failed``（= 确定没生效 → 可重发），自相矛盾。
+        """
+        reports.append({
+            "command": cmd, "ok": False, "unknown": True, "status": "unknown",
+            "output": reason[:300],
+        })
+        for rest in commands[idx + 1:]:
+            rc = str(rest.get("command", "")).strip().lstrip("/")
+            reports.append({
+                "command": rc or "(空)", "ok": False, "status": "skipped",
+                "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
+            })
 
     @staticmethod
     def _command_target(cmd: str) -> str:
@@ -1010,7 +1041,12 @@ class MCWorkflow:
         命令再发一次。对未被 ``NON_IDEMPOTENT_COMMANDS`` 覆盖的模组命令，这就是重复副作用。
 
         现在的口径只有一句话：**「是否生效」不确定，就不许自动重试。**
-        ``failed`` / ``syntax_error`` 不拦 —— 它们意味着「确定没生效」，重发安全。
+
+        ``failed`` / ``syntax_error`` 不拦 —— 但**前提是这一档真的代表「确定没生效」**：
+        * 传输层：只有建连 / 认证阶段失败才算（``RconError.command_may_have_run()`` 为假）；
+          发送 / 读取 / 协议阶段与一切内部异常，执行循环一律记 ``unknown``（v0.24.2 · F01）。
+        * 文本层：``syntax_error`` 必须是**行首锚定**的解析错误（v0.24.2 · F02）；
+          成功与错误文本同时出现的混合回执按 ``unknown`` 处理。
 
         注意 ``CommandResult.accepted`` 与这里**无关**：``accepted`` 管的是
         「同批次后续命令要不要继续发」，它不构成任何自动重试的依据。
