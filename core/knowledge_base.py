@@ -2185,6 +2185,13 @@ class KnowledgePresetManager:
                 # 同样记进统一账本（GET / 状态接口才看得见，不是只在这一次回包里）。
                 self._note_save(self._preset_part(src_id), False,
                                 f"预设文件写入失败：{e}")
+            else:
+                # v0.24.3（GPT v0.24.2 复核 N09）：源预设**写成功**必须清掉这个部件的红。
+                # 旧实现只有上面那条「失败记账」，成功路径一声不吭 —— 于是源预设
+                # 早先任何一次写失败留下的红会**永远挂着**（后面的成功熬不过它，
+                # 因为账本里根本没有「恢复」这一笔）。移动涉及两个文件，两笔各记各的，
+                # 这里补的正是源文件这一笔的成功面。
+                self._note_save(self._preset_part(src_id), True)
         # 刷新受影响的内存实例
         if self.reg.get("active") in (src_id, dst_id):
             self.reload_active()

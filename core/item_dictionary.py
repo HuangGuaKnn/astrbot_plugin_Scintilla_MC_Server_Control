@@ -96,8 +96,42 @@ class ItemDictionary:
     # ================= 构建 =================
 
     def build(self) -> dict:
-        """扫描 mods 目录构建词典。返回统计信息。"""
+        """扫描 mods 目录构建词典。返回统计信息。
+
+        v0.24.3（GPT v0.24.2 复核 N06）：**构建搬到全新对象上算完，再原子换入本对象**。
+
+        旧实现直接在本对象上 ``self.items = {}`` 然后逐步填，两个真雷：
+
+        1. **重扫丢原版表**：来源标志 ``_vanilla_src_loaded`` 不在重置之列，而
+           ``mc_rescan_dictionary`` 恰恰是在**同一个** ``self._dictionary`` 上二次
+           ``build()`` —— 第二次构建时 ``_parse_vanilla_lang()`` 一看标志还是 True
+           就直接返回，原版 ``minecraft:`` 语言表整体缺席、词典凭空掉一大截，
+           而日志还在报「本次已从完整来源读取（不重复）」（把人往反方向带）。
+        2. **半成品外泄**：中途抛错时本对象只剩半张词典，而 ``_save_cache()`` /
+           检索工具随时可能读到它。
+
+        现在：算在子对象上（新对象天然状态干净，上面两个雷同时消掉），
+        失败 = 本对象**保持上一次的完整结果**；成功 = ``_adopt()`` 就地换入。
+        """
+        fresh = ItemDictionary(
+            str(self.server_dir), str(self.cache_path) if self.cache_path else None
+        )
+        fresh.mc_hint = self.mc_hint          # 版本提示是**构建输入**，必须先带过去
+        stats = fresh._build_once()
+        self._adopt(fresh)
+        return stats
+
+    def _build_once(self) -> dict:
+        """在**干净状态**上跑一次完整构建（只应由 build() 调用）。
+
+        这里把「每次构建都必须重置」的东西一次点全 —— 旧的 build() 只重置了
+        前三项，漏掉的正是 N06 的病根。
+        """
         self.mods, self.items, self.recipes = [], {}, {}
+        self.legacy_generation = ""
+        self.legacy_variants, self.legacy_bridge = {}, {}
+        self.legacy_diag = ""
+        setattr(self, _VANILLA_SRC_FLAG, False)
         mods_dir = self.server_dir / "mods"
         jar_files: list[Path] = []
         if mods_dir.exists():
@@ -118,6 +152,24 @@ class ItemDictionary:
             "legacy": self.legacy_generation or "-",
             "legacy_diag": self.legacy_diag or "-",
         }
+
+    def _adopt(self, fresh: "ItemDictionary") -> None:
+        """把子对象算好的结果**就地**换入本对象（v0.24.3 · N06）。
+
+        就地（而不是 ``self.items = fresh.items``）的原因：``items`` / ``recipes``
+        的**容器身份保持不变** —— 任何早先拿到 ``dic.items`` 引用的调用方，
+        在这次 update 之后看到的是**新**词典，而不是抱着一本旧账。
+        """
+        self.mods[:] = fresh.mods
+        self.items.clear()
+        self.items.update(fresh.items)
+        self.recipes.clear()
+        self.recipes.update(fresh.recipes)
+        self.legacy_generation = fresh.legacy_generation
+        self.legacy_variants = fresh.legacy_variants
+        self.legacy_bridge = fresh.legacy_bridge
+        self.legacy_diag = fresh.legacy_diag
+        setattr(self, _VANILLA_SRC_FLAG, bool(getattr(fresh, _VANILLA_SRC_FLAG, False)))
 
     def _vanilla_jar_candidates(self) -> list[Path]:
         """按「先准后广」收集候选服务端 jar：去重、限量、坏目录不牵连。"""

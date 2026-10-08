@@ -25,23 +25,22 @@ from dataclasses import dataclass, field
 #: （名字里带空格 / 引号 / 命令分隔符一律拒绝 —— 这层是**注入防线**。）
 import re as _re
 
+from .legacy_stack_table import MAX_STACK_DEFAULT, max_stack_size
+
 PLAYER_NAME_RE = _re.compile(r"^[A-Za-z0-9_]{1,16}$")
 
-#: ``give`` 单次数量上限（保守：原版上限 64×36 = 2304；这里给足余量但仍设硬顶）。
+#: **一次任务总量**上限（保守：原版上限 64×36 = 2304；这里给足余量但仍设硬顶）。
+#: v0.24.3（GPT 复核 N08）：这跟「**每条命令**的解析上界」是两件事，别拿来互相顶 ——
+#: 单条上界见 ``legacy_stack_table.max_stack_size()``。
 MAX_COUNT = 6400
-#: v0.24.2（GPT 全面复核 F18）：通过生成链**不等于** give 语法接受 —— 任务总量可以很大，
-#: 但**每条命令**必须落进该代解析范围。实证（真实字节码，GPT 复核材料）：
-#:   · 1.7.10  give 写死 ``at.a(ac, args[2], 1, 64)`` —— 数量范围 1..64，65 直接用法错误；
+#: 每条命令的数量上界（该代 give 能接受的 count）。实证（真实字节码，GPT 复核材料）：
+#:   · 1.7.10  give 写死 ``at.a(ac, args[2], 1, 64)`` —— 与物品**无关**，固定 1..64，
+#:             所以那一代给钻石剑 2 件是解析层合法的（照旧放行，不要收紧）；
 #:   · 1.12.2  ``cm.a(args[2], 1, item.j())`` —— 上界是**物品自己的最大堆叠**
 #:             （非堆叠物为 1），钻石一类仍是 64。
-#: 注：1.12.2 的权威值是 ``getMaxStackSize``，插件侧拿不到物品注册表里的那个字段，
-#: 于是对「确定非堆叠」的家族（工具/护甲/弓/钓竿/打火石/剪刀/盾）保守收到 1 ——
-#: 方向是 fail-closed（宁可让用户拆单，不放行必然违规的条数）。
-MAX_COUNT_BY_GEN = {"1.7.10": 64, "1.12.2": 64}   # 堆叠物按 64（= 该代最大堆叠）
-_NON_STACKABLE_RE = _re.compile(
-    r"_(sword|pickaxe|axe|shovel|hoe|helmet|chestplate|leggings|boots)$"
-    r"|(^|:)(bow|flint_and_steel|shears|fishing_rod|shield)$"
-)
+#: v0.24.3 起 1.12.2 走逐名表 + 家族铁律（v0.24.2 那个「只认工具/护甲」的正则
+#: 把蛋糕、床、药水、桶、珍珠、成书…整批漏过去了，见 N08）。
+MAX_COUNT_BY_GEN = {"1.7.10": 64, "1.12.2": 64}   # 每代解析上界的「上限的」参考值
 
 #: NBT 串长度硬顶（防病态输入）。
 MAX_NBT_LEN = 1024
@@ -142,7 +141,8 @@ def plan_give(dictionary, player: str, item: str, count: int = 1,
 
     判据链（全部有真机实证）：
     1. 玩家名合语法（注入防线）；
-    2. 数量 1~MAX_COUNT；
+    2. 数量 1~MAX_COUNT（**一次任务总量**），再单独过该代**每条命令**的解析上界：
+       1.7.10 固定 1..64；1.12.2 取物品自己的最大堆叠（见 ``legacy_stack_table``）；
     3. 物品能在词典里解析成**注册名**（不是 1.13+ 扁平名）；
     4. 变体族：数据值必须**在域表里确有展示名**（``variants`` 命中）——
        域外值服务端不报错但会静默回落 / 崩客户端，因此一律拒绝；
@@ -163,24 +163,34 @@ def plan_give(dictionary, player: str, item: str, count: int = 1,
         gen = generation_of(dictionary) or "未知"
         return _fail(f"词典里没有该物品（世代 {gen}）；请先 mc_search_item 确认它在本版本存在")
 
-    # v0.24.2（F18）：**单条命令**还要过该代解析范围（见 MAX_COUNT_BY_GEN 注释）
+    # v0.24.2（F18）/ v0.24.3（N08）：**单条命令**要过「该代解析上界 ∩ 该物品真实堆叠」。
+    # 判据在 legacy_stack_table（逐名表 + 家族铁律 + 成文兜底），这里只负责措辞与拆单提示。
     gen = generation_of(dictionary) or ""
-    for g, cap in MAX_COUNT_BY_GEN.items():
-        if gen.startswith(g):
-            if n > cap:
-                return _fail(
-                    f"{gen} 的 give 单条数量上限是 {cap}（服务端解析范围实证），"
-                    f"一次给 {n} 会被拒；请拆成多条，每条不超过 {cap}"
-                )
-            break
-    if gen.startswith("1.12") and _NON_STACKABLE_RE.search(rid or "") and n > 1:
-        return _fail(
-            f"{gen} 里 {rid} 是非堆叠物品（最大堆叠 1），单条数量只能为 1；"
-            f"需要 {n} 件请拆成 {n} 条命令（脚本侧会逐条记账，不会重复发放）"
+    cap, verified = max_stack_size(gen, rid or "")
+    if n > cap:
+        if cap == 1:
+            return _fail(
+                f"{gen} 里 {rid} 是非堆叠物品（最大堆叠 1）：单条数量上限 1，"
+                f"一条命令只能给 1 件；需要 {n} 件请拆成 {n} 条命令"
+                "（脚本侧会逐条记账，不会重复发放）"
+            )
+        why = (
+            f"{gen} 里 {rid} 的单条数量上限是 {cap}（服务端解析范围实证）"
+            if verified else
+            f"{gen} 里单条数量上限按原版默认 {cap} 取（{rid} 的真实堆叠未验证）"
         )
+        return _fail(f"{why}，一次给 {n} 会被拒；请拆成多条，每条不超过 {cap}")
+    # 兜底假设要**说出口**：模组物品的上限本机没有实证（见 legacy_stack_table 的取舍说明），
+    # 用户有权知道这一条是按 64 兜的 —— 服务端真拒了也能立刻定位原因。
+    assumed_note = (
+        f"单条数量上界按原版默认 {MAX_STACK_DEFAULT} 处理（{rid} 是模组物品，"
+        "真实堆叠未验证；服务端若拒请把数量改小）"
+    ) if (not verified and n > 1) else ""
 
     variants = dict(entry.get("variants") or {})
     notes: list = []
+    if assumed_note:
+        notes.append(assumed_note)     # v0.24.3（N08）：兜底假设必须留痕
     if variants:
         # ---- 变体族：必须落到域表里有展示名的数据值上 ----
         if damage is None:
