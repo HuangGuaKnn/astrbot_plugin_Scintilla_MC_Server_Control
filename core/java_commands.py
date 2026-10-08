@@ -144,7 +144,11 @@ def effective_level(command: str) -> tuple[str, int, bool]:
     try:
         inner = unwrap_command(line)
     except CommandParseError:
-        return "execute", COMMAND_LEVELS["execute"], True
+        # 兜底名用**真实的头部命令名**，别一律报 "execute" —— 那会让人以为插件把自己的
+        # 命令改写了（例如 `return run` 空壳被报成「命令「execute」…」，v0.24.2 修）。
+        _tokens = tokenize_command(line)
+        _head = strip_namespace(_tokens[0]).lower() if _tokens else ""
+        return _head or "execute", DEFAULT_LEVEL, True
     name = base_name(inner)
     if name == "execute":
         return "execute", COMMAND_LEVELS["execute"], False
@@ -301,7 +305,7 @@ def _skip_execute_clauses(tokens: list[str], idx: int) -> str | None:
 
 
 def unwrap_command(line: str) -> str:
-    """剥掉 ``execute … run`` 包装，返回最内层真实命令文本。
+    """剥掉 ``execute … run`` / ``return run`` 包装，返回最内层真实命令文本。
 
     v0.22.3：**不再「找第一个 run」**，而是按 execute 语法逐个消费子命令 ——
     只有出现在合法分界位置的 ``run`` 才算执行边界。于是
@@ -319,17 +323,37 @@ def unwrap_command(line: str) -> str:
     depth = 0
     while text:
         tokens = tokenize_command(text)
-        if not tokens or _peek(tokens, 0) != "execute":
-            return text
-        depth += 1
-        if depth > MAX_EXECUTE_DEPTH:
-            raise CommandParseError(
-                f"execute 嵌套超过安全上限 {MAX_EXECUTE_DEPTH} 层，无法安全判定"
-            )
-        inner = _skip_execute_clauses(tokens, 1)
-        if inner is None:
-            return "execute"
-        text = inner
+        head = _peek(tokens, 0)
+        if head == "execute":
+            depth += 1
+            if depth > MAX_EXECUTE_DEPTH:
+                raise CommandParseError(
+                    f"execute 嵌套超过安全上限 {MAX_EXECUTE_DEPTH} 层，无法安全判定"
+                )
+            inner = _skip_execute_clauses(tokens, 1)
+            if inner is None:
+                return "execute"
+            text = inner
+            continue
+        # v0.24.2（GPT 全面复核 R01）：`return run <命令>` 也是**会真正执行内层命令**的包装，
+        # 而且它绕过的是整个闸门 —— 顶层名字是 `return`（2 级、不在危险清单里）时，
+        # 解包、危险词、等级三道关会全部擦身而过，内层 `stop` / `op` 就以 RCON 权限跑掉了。
+        # 这里把它并进同一个递归包装解析器：内层命令照样受等级 / 危险 / 嵌套深度约束，
+        # 而且 `execute … run return run …` 这种混合嵌套也一并覆盖。
+        if head == "return":
+            if _peek(tokens, 1) != "run":
+                return text          # `return <值>` / `return fail …`：没有内层命令可执行
+            inner = tokens[2:]
+            if not inner:
+                raise CommandParseError("return run 之后没有可执行的命令")
+            depth += 1
+            if depth > MAX_EXECUTE_DEPTH:
+                raise CommandParseError(
+                    f"包装嵌套超过安全上限 {MAX_EXECUTE_DEPTH} 层，无法安全判定"
+                )
+            text = " ".join(inner)
+            continue
+        return text
     return text
 
 
