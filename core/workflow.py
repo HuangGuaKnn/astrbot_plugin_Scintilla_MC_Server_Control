@@ -753,6 +753,8 @@ class MCWorkflow:
             if not cmd:
                 reports.append({
                     "command": "(空)", "ok": False, "status": "failed", "output": "命令为空",
+                    # v0.24.3（N01）：本地校验就判定「没发出去」→ 重试安全
+                    "retry_safe": True,
                 })
                 continue
             # 目标玩家存在性校验：give/item replace 等针对实体的命令
@@ -761,6 +763,8 @@ class MCWorkflow:
                 if target.lower() not in online_low:
                     reports.append({
                         "command": cmd, "ok": False, "status": "failed",
+                        # v0.24.3（N01）：本地校验就判定「命令根本没发出去」→ 重试安全
+                        "retry_safe": True,
                         "output": f"目标玩家「{target}」不在线或不存在（当前在线：{', '.join(online_players) or '无'}）。请使用真实游戏名。",
                     })
                     continue
@@ -818,13 +822,19 @@ class MCWorkflow:
                     break
                 ok = res.status == "success"
                 status = res.status
+                # v0.24.3（GPT v0.24.2 复核 N01）：**结构化重试许可**，判定只认证据、不认状态字面：
+                #   · 分类器给出的「确定没生效」（命令不存在 / 解析阶段被拒 / 动手前被拒）；
+                #   · 幂等命令拿到空响应（重发无副作用）—— 非幂等那条已在上面熔断 break。
+                retry_safe = bool(getattr(res, "confirmed_not_run", False))
                 if status == "unknown":
                     # 非幂等命令已在上面熔断返回；能走到这里说明本条重发无副作用，
                     # 按普通失败口径上报（原因文本仍如实写明「无法确认送达」）。
                     status = "failed"
+                    retry_safe = True
                 reports.append({
                     "command": cmd, "ok": ok, "unknown": False,
                     "status": status,
+                    "retry_safe": retry_safe,
                     "output": (out_s or res.reason)[:300],
                 })
                 if ok and fb and player:
@@ -848,6 +858,8 @@ class MCWorkflow:
                     # 建连 / 认证阶段失败 = 命令根本没发出去 → 判 failed 安全，后续照旧
                     reports.append({
                         "command": cmd, "ok": False, "status": "failed",
+                        # v0.24.3（N01）：**结构化证据** —— 一个字节都没发出去，重试安全
+                        "retry_safe": True,
                         "output": f"未建立连接 / 未发送，命令未执行：{e}",
                     })
                     continue
@@ -1061,7 +1073,7 @@ class MCWorkflow:
         )
 
     def _halt_on_uncertain(self, exec_reports: list[dict]) -> tuple[str, bool] | None:
-        """本轮出现「结果不确定」的命令 → 返回 ``(暂停回执, False)``；否则返回 ``None``。
+        """本轮出现「结果不确定 / 无法证明没生效」的命令 → 返回 ``(暂停回执, False)``。
 
         v0.22.8（核验 P1）：**判据只有这一处** —— 实现器循环与纠错循环共用它。
         此前两处各写一段「结果未知就熔断」，而 ``inferred_success`` 两边都没管到：
@@ -1070,24 +1082,29 @@ class MCWorkflow:
 
         现在的口径只有一句话：**「是否生效」不确定，就不许自动重试。**
 
-        ``failed`` / ``syntax_error`` 不拦 —— 但**前提是这一档真的代表「确定没生效」**：
-        * 传输层：只有建连 / 认证阶段失败才算（``RconError.command_may_have_run()`` 为假）；
-          发送 / 读取 / 协议阶段与一切内部异常，执行循环一律记 ``unknown``（v0.24.2 · F01）。
-        * 文本层：``syntax_error`` 必须是**行首锚定**的解析错误（v0.24.2 · F02）；
-          成功与错误文本同时出现的混合回执按 ``unknown`` 处理。
+        v0.24.3（GPT v0.24.2 复核 N01）：**重试许可改看结构化证据，不再看 ``status`` 字面。**
+        ``failed`` / ``syntax_error`` 曾经被当成「确定没生效、重发安全」的同义词，可这两个
+        字面里还混着「文本分类猜出来的失败」—— 自定义物品名叫 ``Unknown command…`` 的
+        **成功回执**就落在这里，工作流照常进下一轮重发（离线实证：同一条命令发了两次）。
+        现在只有三类**证据**能放行（见 ``_retry_safe_report``）：``retry_safe=True``
+        （建连失败 / 解析拒绝 / 命令不存在 / 动手前被拒）、本地校验未发送、
+        命令已成功。缺字段一律当「不确定」—— fail-closed，与 ``_status_of`` 同源。
 
         注意 ``CommandResult.accepted`` 与这里**无关**：``accepted`` 管的是
         「同批次后续命令要不要继续发」，它不构成任何自动重试的依据。
         """
-        uncertain = [r for r in exec_reports if self._status_of(r) in UNCERTAIN_STATUSES]
+        uncertain = [r for r in exec_reports if not self._retry_safe_report(r)]
         if not uncertain:
             return None
         kinds = {self._status_of(r) for r in uncertain}
         if "unknown" in kinds:
             lead = "工作流已暂停：有命令执行结果未知（可能已生效、也可能没有）。"
-        else:
+        elif kinds & {"inferred_success", "dispatched_unconfirmed"}:
             lead = ("工作流已暂停：有命令已下发，但服务器没有返回可识别的成功反馈"
                     "（结果未确认）。")
+        else:
+            lead = ("工作流已暂停：有命令被判失败，但**没有证据**能证明它没有生效"
+                    "（文本分类出的失败 ≠ 确定没执行）。")
         return (
             lead
             + "为避免重复副作用，本次不会自动重试、也不交给纠错 Agent 重发；"
@@ -1095,6 +1112,29 @@ class MCWorkflow:
             + self._fmt_results(exec_reports),
             False,
         )
+
+    @staticmethod
+    def _retry_safe_report(r: dict) -> bool:
+        """这条执行报告是否提供**自动重试安全**的结构化证据（v0.24.3 · N01）。
+
+        判据只有三条，都不依赖 ``status`` 与 ``ok`` 的自由组合：
+
+        * ``success`` —— 已经成功，没有要重试的东西；
+        * ``skipped`` —— 因前一条熔断 / 改道而**根本没发送**，本就没有副作用；
+        * ``retry_safe=True`` —— 由**证据**给出的重试许可（见 ``_exec_commands`` 的
+          各条写入点：建连失败 / 解析拒绝 / 命令不存在 / 本地校验未发送 / 幂等命令空响应）。
+
+        其余（含缺字段、未知状态、以及一切「文本分类说是失败」）一律 False。
+        这条 fail-closed 与 ``_status_of`` 的「缺字段 → unknown」同源：
+        **宁可停手问人，也不默认成功、更不默认「没生效」。**
+        """
+        status = MCWorkflow._status_of(r)
+        if status == "success":
+            return True
+        if status == "skipped":
+            return True
+        return bool(r.get("retry_safe"))
+
 
     @staticmethod
     def _fmt_results(reports: list[dict]) -> str:

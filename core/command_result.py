@@ -123,6 +123,30 @@ _UNKNOWN_COMMAND_MARKERS = (
     "unknown command. type",
 )
 
+#: v0.24.3（GPT v0.24.2 复核 N01）：判据由**整段子串扫描**改成**行首锚定**。
+#: 物品名可以就叫 ``Unknown command. Type "/help" for help.`` ——
+#: ``Gave 1 [Unknown command. Type "/help" for help.] to Steve`` 是**真成功**，
+#: 整段扫描却把它命中成错误证据，判 ``failed``（下游再把 failed 当「确定没生效」重发）。
+#: 服务端的这条提示一定独占一行行首，所以按行锚定。
+_UNKNOWN_COMMAND_LINE_RE = re.compile(
+    r'^\s*unknown command\b[^\n]*\bhelp\b', re.IGNORECASE | re.MULTILINE)
+
+#: v0.24.3（N01）：服务端**在动手之前**就拒绝的短语 —— 命中等价于
+#: 「这条命令没有产生任何副作用」，是唯一够格发「自动重试许可」的一类失败文本。
+#: 相对的是**运行期**错误词（error / failed to / operation aborted / 中文「失败」…）：
+#: 那些只说明「结果不是成功」，推不出「没执行」→ 一律不给许可（宁可停手问人）。
+_NOT_RUN_FAILURE_MARKERS = (
+    "no entity was found",
+    "no player was found",
+    "no players were found",
+    "player not found",
+    "entity not found",
+    "permission denied",
+    "not permitted",
+    "you do not have",
+    "does not exist",
+)
+
 #: 明确的解析/语法错误 —— 命令**从未执行**，因此可安全重写重试。
 _SYNTAX_MARKERS = (
     "unknown or incomplete command",
@@ -346,6 +370,12 @@ class CommandResult:
     output: str = ""
     reason: str = ""
     retryable: bool = False
+    #: v0.24.3（GPT v0.24.2 复核 N01）：**结构化**的「确定没生效」证据。
+    #: 只有它为真时自动重试才是安全的 —— 工作流 ``_halt_on_uncertain`` 只认它、
+    #: 本地校验未发送、幂等命令空响应这三种**证据**，**不再按 ``status`` 字面放行**：
+    #: ``failed`` 里既有「命令不存在」也有「文本分类猜出来的失败」，
+    #: 把两者混成一个字面，正是重复副作用的入口。
+    confirmed_not_run: bool = False
     boundary_confirmed: bool | None = None
     response_received: bool = False
     attempt: int = 1
@@ -534,14 +564,18 @@ def _low(output: str) -> str:
 
 
 def is_unknown_command_output(output: str) -> bool:
-    """``Unknown command. Type "/help" for help.`` —— 命令本身不存在。"""
-    low = _low(output)
-    if not low:
+    """``Unknown command. Type "/help" for help.`` —— 命令本身不存在。
+
+    v0.24.3（GPT v0.24.2 复核 N01）：判据从**整段子串扫描**改为**行首锚定**。
+    整段扫描会把合法成功回执里的**显示名**当错误证据（物品可以就叫
+    ``Unknown command. Type "/help" for help.``），把真成功判成 ``failed`` ——
+    而 ``failed`` 在旧契约里是「确定没生效、重发安全」那一档，于是同一条命令发两次。
+    服务端的这条提示一定独占一行行首，故按行锚定；成功与错误同现的多行混合回执
+    交给 ``classify_command_output`` 归 ``unknown``（既不谎报成功，也不许自动重发）。
+    """
+    if not output:
         return False
-    if any(m in low for m in _UNKNOWN_COMMAND_MARKERS):
-        return True
-    # 兜底形态：以 unknown command 开头且提到 help
-    return low.startswith("unknown command") and "help" in low
+    return _UNKNOWN_COMMAND_LINE_RE.search(output) is not None
 
 
 def is_syntax_error_output(output: str) -> bool:
@@ -570,6 +604,19 @@ def is_explicit_failure_output(output: str) -> bool:
     if any(m in low for m in _CJK_FAILURE_MARKERS):
         return True
     return _FAILURE_WORD_RE.search(low) is not None
+
+
+def is_not_run_failure_output(output: str) -> bool:
+    """这条「明确失败」是否属于**服务端动手前就拒绝**（= 确定没有副作用）。
+
+    v0.24.3（N01）：只有它会让 ``CommandResult.confirmed_not_run=True``。
+    运行期错误词（error / operation aborted / 中文「失败」…）返回 False ——
+    它们只说明结果不是成功，推不出「没执行」，因此不给自动重试许可。
+    """
+    low = _low(output)
+    if not low:
+        return False
+    return any(m in low for m in _NOT_RUN_FAILURE_MARKERS)
 
 
 def is_no_recipient_output(command: str, output: str) -> bool:
@@ -643,7 +690,8 @@ def classify_command_output(
        —— 非幂等命令的空响应永远是 ``unknown``：``dispatched_unconfirmed`` 会让
        ``accepted=True`` 从而**不熔断**后续命令，那会削弱 v0.22.4 建立的重复副作用
        保护（``give`` 空响应 → 后续命令照发 = 可能重复发物品）。
-    2. ``Unknown command`` → ``failed``（命令不存在，重试徒劳）
+    2. ``Unknown command``（**行首锚定**，v0.24.3 · N01）→ ``failed``
+       （命令不存在，重试徒劳）；与成功证据同现的多行混合回执 → ``unknown``
     3. 明确解析错误 → ``syntax_error``（命令从未执行，可安全重写）
     4. **「没有接收者」不算失败**（v0.23.7 · N2）：消息投递类命令 + 通配选择器
        打到空服 → ``success`` + ``no_recipient=True``。空服广播在 ≥1.16.5 回
@@ -700,10 +748,19 @@ def classify_command_output(
         return res
 
     # ---- 2) 命令不存在（必须先于其它 unknown/syntax） ----
+    # v0.24.3（N01）：与成功证据**同现**的多行回执不许判 failed ——
+    # failed 在下游是「确定没生效、重发安全」，而这条回执里已经有成功文本了。
     if is_unknown_command_output(out_s):
+        if is_anchored_success_output(command, out_s):
+            res.status = "unknown"
+            res.reason = ("回执里同时出现成功与「命令不存在」文本（多行混合），"
+                          "无法确认命令是否已执行，不会自动重试")
+            res.retryable = False
+            return res
         res.status = "failed"
         res.reason = "该命令在此服务端不存在（模组未安装 / 版本不支持 / 命名空间错误）"
         res.retryable = False
+        res.confirmed_not_run = True      # 命令不存在 = 结构化的「没执行」证据（N01）
         return res
 
     # ---- 3) 明确解析错误：命令从未执行，可安全重写 ----
@@ -719,6 +776,7 @@ def classify_command_output(
         res.status = "syntax_error"
         res.reason = "服务端明确拒绝解析（命令未执行，可安全重写后重试）"
         res.retryable = True
+        res.confirmed_not_run = True      # 解析阶段就被拒 = 结构化的「没执行」（N01）
         return res
 
     # ---- 3.5) 「没有接收者」不是失败（v0.23.7 · N2） ----
@@ -741,6 +799,9 @@ def classify_command_output(
         res.status = "failed"
         res.reason = "服务端明确拒绝执行"
         res.retryable = False
+        # v0.24.3（N01）：只有「动手前就拒绝」的短语才算确定没生效；
+        # 运行期错误词一律不给重试许可（下游据此**停手问人**，而不是自动重发）。
+        res.confirmed_not_run = is_not_run_failure_output(out_s)
         return res
 
     # ---- 6) 边界未确认：不得宣称完整成功（必须早于「返回成功」） ----

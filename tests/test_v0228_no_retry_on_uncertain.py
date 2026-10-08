@@ -152,10 +152,22 @@ def group_unit() -> None:
     wf.plugin = StubPlugin(StubRcon())
     wf.logger = logging.getLogger("test.v0228.unit")
 
-    for st, ok in (("success", True), ("failed", False),
-                   ("syntax_error", False), ("skipped", False)):
+    # v0.24.3（GPT v0.24.2 复核 N01）：**契约变更** —— ``status`` 字面不再构成重试许可。
+    # 旧契约把 ``failed`` / ``syntax_error`` 当成「确定没生效、重发安全」的同义词，
+    # 可这两个字面里还混着「文本分类猜出来的失败」：自定义物品名就叫 Unknown command… 的
+    # **成功回执**也落在 failed 上 → 工作流照常进下一轮，同一条命令被发两次。
+    # 现在放行必须靠**结构化证据**（``retry_safe=True``），缺字段一律停手问人。
+    for st, ok in (("success", True), ("skipped", False)):
         r = wf._halt_on_uncertain([{"command": "x", "ok": ok, "status": st}])
-        check(f"{st} → 不熔断（确定没生效的重试安全）", r is None, str(r))
+        check(f"{st} → 不熔断（已成功 / 根本没发送）", r is None, str(r))
+
+    for st in ("failed", "syntax_error"):
+        r = wf._halt_on_uncertain([{"command": "x", "ok": False, "status": st}])
+        check(f"★{st} 无结构化证据 → 熔断（字面 ≠ 确定没生效）",
+              bool(r) and r[1] is False, str(r))
+        r2 = wf._halt_on_uncertain([{"command": "x", "ok": False, "status": st,
+                                     "retry_safe": True}])
+        check(f"{st} + retry_safe=True（分类器给出的证据）→ 不熔断", r2 is None, str(r2))
 
     for st in ("unknown", "inferred_success", "dispatched_unconfirmed"):
         r = wf._halt_on_uncertain([{"command": "x", "ok": False, "status": st}])
