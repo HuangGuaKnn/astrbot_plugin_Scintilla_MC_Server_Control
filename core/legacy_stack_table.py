@@ -85,8 +85,8 @@ MAX_STACK_1_NAMES = frozenset({
     "enchanted_book", "writable_book", "elytra", "saddle", "totem_of_undying",
     # —— 载具 / 药水 / 潜影箱裸名 ——
     "boat", "minecart", "potion", "shulker_box",
-    # —— 地图（1.13 起空地图改为 64；1.12.2 仍是 1 → 列入真机复核清单）——
-    "map", "filled_map",
+    # —— 工具/特殊物（1.12.2 ctor d(1)，复核 N08 修正；map/filled_map 继承默认 64）——
+    "carrot_on_a_stick", "knowledge_book",
     # —— 装液体的桶（空桶 ``bucket`` 是 16，装液体的一律 1）——
     "water_bucket", "lava_bucket", "milk_bucket",
 })
@@ -135,17 +135,21 @@ def max_stack_size(generation: str, registry_name: str) -> "tuple[int, bool]":
     if not gen.startswith("1.12"):
         # 其它世代：没有该代 give 解析范围的实证 → 不装懂（默认值 + verified=False）。
         return (MAX_STACK_DEFAULT, False)
-    if bare in MAX_STACK_1_NAMES:
-        return (1, True)
-    if bare in MAX_STACK_16_NAMES:
-        return (16, True)
+    # N15：原版具名表仅对原版物品（裸名或 minecraft: 命名空间）生效；
+    # 模组同名物品（如 thermalfoundation:cake、bucket）不得借用原版具名限制！
+    is_vanilla = _is_vanilla(registry_name)
+    if is_vanilla:
+        if bare in MAX_STACK_1_NAMES:
+            return (1, True)
+        if bare in MAX_STACK_16_NAMES:
+            return (16, True)
     if NON_STACKABLE_FAMILY_RE.search(bare) or FORCE_ONE_FAMILY_RE.search(bare):
         return (1, True)
     # 具名表 + 家族铁律都没命中 →
     #   · ``minecraft:``（或裸名）：原版的非 64 物品**只可能是**上面那几类，
     #     所以没命中就说明它确实是 64 —— 这是**确证**；
-    #   · 其它命名空间 = 模组物品：本机没有它的 ``getMaxStackSize`` 实证 → 兜底。
-    return (MAX_STACK_DEFAULT, _is_vanilla(registry_name))
+    #   · 其它命名空间 = 模组物品：本机没有它的 ``getMaxStackSize`` 实证 → 兜底默认 64。
+    return (MAX_STACK_DEFAULT, is_vanilla)
 
 
 def _is_vanilla(name: str) -> bool:

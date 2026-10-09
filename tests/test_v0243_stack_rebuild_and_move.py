@@ -134,11 +134,13 @@ def n08_cases() -> None:
            "minecraft:splash_potion", "minecraft:minecart", "minecraft:chest_minecart",
            "minecraft:boat", "minecraft:acacia_boat", "minecraft:iron_horse_armor",
            "minecraft:white_shulker_box", "minecraft:record_13", "minecraft:saddle",
-           "minecraft:diamond_sword", "minecraft:shield"]
+           "minecraft:diamond_sword", "minecraft:shield",
+           # N08 修正项：
+           "minecraft:carrot_on_a_stick", "minecraft:knowledge_book"]
     six = ["minecraft:bucket", "minecraft:written_book", "minecraft:armor_stand",
            "minecraft:snowball", "minecraft:egg", "minecraft:ender_pearl",
            "minecraft:sign", "minecraft:banner"]
-    s12 = Stub("1.12.2", one + six + ["minecraft:diamond", "thermalfoundation:ingot"])
+    s12 = Stub("1.12.2", one + six + ["minecraft:diamond", "minecraft:map", "minecraft:filled_map", "thermalfoundation:ingot", "thermalfoundation:diamond_sword"])
     for n in one:
         check(f"1.12.2 上限 1：{n.split(':')[1]} 给 2 件被拒",
               not LG.plan_give(s12, "Steve", n, count=2).ok)
@@ -158,6 +160,14 @@ def n08_cases() -> None:
     check("★原版 64 物品**不带**兜底备注（那是确证）",
           not any("未验证" in x for x in p64.notes), str(p64.notes))
 
+    # N08 修正项：空地图与成图在 1.12.2 继承默认 64 堆叠
+    pmap64 = LG.plan_give(s12, "Steve", "minecraft:map", count=64)
+    pmap65 = LG.plan_give(s12, "Steve", "minecraft:map", count=65)
+    check("★1.12.2 map：64 放行 / 65 被拒", pmap64.ok and (not pmap65.ok))
+    pfill64 = LG.plan_give(s12, "Steve", "minecraft:filled_map", count=64)
+    pfill65 = LG.plan_give(s12, "Steve", "minecraft:filled_map", count=65)
+    check("★1.12.2 filled_map：64 放行 / 65 被拒", pfill64.ok and (not pfill65.ok))
+
     m64 = LG.plan_give(s12, "Steve", "thermalfoundation:ingot", count=64)
     m65 = LG.plan_give(s12, "Steve", "thermalfoundation:ingot", count=65)
     check("模组物品：按原版默认 64 兜（64 放行 / 65 被拒）",
@@ -168,6 +178,138 @@ def n08_cases() -> None:
     s710 = Stub("1.7.10", ["minecraft:diamond", "minecraft:diamond_sword"])
     check("★1.7.10：钻石剑给 2 件**仍放行**（该代解析上界与物品无关，是正确的）",
           LG.plan_give(s710, "Steve", "minecraft:diamond_sword", count=2).ok)
+
+    # N15：bad max 校验与模组同名物品防串借
+    s12_bad = Stub("1.12.2", ["minecraft:diamond"])
+    s12_bad.legacy_item_registry = {"diamond": {"id": 264, "max": 999}}
+    check("★N15：registry.max 越界（999）被拒绝借用，回退至原版确证 64（64放行/65被拒）",
+          LG.plan_give(s12_bad, "Steve", "minecraft:diamond", count=64).ok
+          and not LG.plan_give(s12_bad, "Steve", "minecraft:diamond", count=65).ok)
+
+    # N15 深度校验：严格类型判断 type is int，拒绝浮点、数值字符串、无穷大溢出
+    for bad_max, label in [
+        (1.9, "浮点数 1.9"),
+        (16.9, "浮点数 16.9"),
+        ("1", "字符串 '1'"),
+        ("64", "字符串 '64'"),
+        (float("inf"), "正无穷 inf"),
+        (float("-inf"), "负无穷 -inf"),
+        (float("nan"), "非数字 nan"),
+        (True, "布尔 True"),
+        (False, "布尔 False"),
+    ]:
+        s12_bad.legacy_item_registry = {"diamond": {"id": 264, "max": bad_max}}
+        p_bad = LG.plan_give(s12_bad, "Steve", "minecraft:diamond", count=64)
+        check(f"★N15：registry.max 异常类型 [{label}] 严格回退且不崩溃",
+              p_bad.ok and not LG.plan_give(s12_bad, "Steve", "minecraft:diamond", count=65).ok)
+
+    s12_mod_cake = Stub("1.12.2", ["thermalfoundation:cake", "thermalfoundation:bucket"])
+    s12_mod_cake.legacy_item_registry = {
+        "cake": {"id": 354, "max": 1},
+        "bucket": {"id": 325, "max": 16},
+    }
+    p_mcake2 = LG.plan_give(s12_mod_cake, "Steve", "thermalfoundation:cake", count=2)
+    check("★N15：模组同名 cake 不借用原版注册表或具名表的 max=1 限制（count=2 放行）",
+          p_mcake2.ok, p_mcake2.reason)
+    check("★N15：模组同名 cake 包含未验证提示",
+          any("未验证" in x for x in p_mcake2.notes), str(p_mcake2.notes))
+    p_mbucket17 = LG.plan_give(s12_mod_cake, "Steve", "thermalfoundation:bucket", count=17)
+    check("★N15：模组同名 bucket 不借用原版 16 限制（count=17 放行）",
+          p_mbucket17.ok, p_mbucket17.reason)
+
+    # 模组堆叠规则规格对齐：具名原版表不继承、武器/工具家族规则按既定语义继承
+    p_msword = LG.plan_give(s12, "Steve", "thermalfoundation:diamond_sword", count=2)
+    check("★规则对齐：模组武器（_sword）继承武器通用家族限制（count=2 被拒）",
+          not p_msword.ok and "单条数量上限 1" in p_msword.reason)
+    check("★规则对齐：模组武器单条给 1 放行",
+          LG.plan_give(s12, "Steve", "thermalfoundation:diamond_sword", count=1).ok)
+
+    # N16：显式命名空间输入防串命（ID 与人话分支）
+    s12_ns = Stub("1.12.2", ["moda:stone"])
+    check("★N16：显式 a:stone 绝不借子串匹配命中 moda:stone",
+          LG.resolve_entry(s12_ns, "a:stone")[0] is None)
+    check("★N16：显式 moda:stone 精确命中自身",
+          LG.resolve_entry(s12_ns, "moda:stone")[0] == "moda:stone")
+
+    # N16 深度校验：真实词典下带冒号人话输入（含空格）绝不模糊命中
+    real_dict = ID.ItemDictionary("")
+    real_dict.items = {"moda:stone": {"en": "a:stone nice", "zh": "", "type": "item"}}
+    check("★N16：带冒号人话输入 'a:stone nice' 绝不跨 namespace 命中 moda:stone",
+          LG.resolve_entry(real_dict, "a:stone nice")[0] is None)
+
+    # N14 深度校验：真实 ItemDictionary 嵌套快照与搜索结果深拷贝隔离
+    d_nest = ID.ItemDictionary("")
+    d_nest.items = {"minecraft:wool": {"en": "Wool", "zh": "", "type": "item", "variants": {"0": "White"}}}
+    snap = d_nest.get_items_snapshot()
+    snap["minecraft:wool"]["variants"]["0"] = "MUTATED_SNAP"
+    snap["minecraft:wool"]["variants"]["99"] = "INJECTED"
+    check("★N14：get_items_snapshot 深拷贝隔离（修改快照嵌套 variants 不污染原词典）",
+          d_nest.items["minecraft:wool"]["variants"] == {"0": "White"})
+
+    s_rows = d_nest.search_items("wool")
+    s_rows[0]["variants"]["0"] = "MUTATED_SEARCH"
+    s_rows[0]["variants"]["99"] = "INJECTED"
+    check("★N14：search_items 深拷贝隔离（修改搜索返回行嵌套 variants 不污染原词典）",
+          d_nest.items["minecraft:wool"]["variants"] == {"0": "White"})
+
+    # N14 深度校验：generation bundle 单代自洽
+    d_gen = ID.ItemDictionary("")
+    d_gen.legacy_generation = "1.12.2"
+    d_gen.items = {"minecraft:aa": {"en": "AA Item", "zh": "", "type": "item"}}
+    d_gen.legacy_item_registry = {"aa": {"id": 1, "max": 1}}
+    b_snap = d_gen.get_generation_bundle()
+    # 模拟外界在请求中途发生 _adopt 切换至新代（max=64）
+    d_gen.legacy_item_registry = {"aa": {"id": 1, "max": 64}}
+    p_bundle = LG.plan_give(b_snap, "Steve", "minecraft:aa", count=2)
+    check("★N14：单代 generation bundle 自洽保护（不受外界中途切换代次/registry 影响）",
+          not p_bundle.ok and "单条数量上限 1" in p_bundle.reason)
+
+    # N14 延伸与工程改进（GPT v0.24.3 建议收敛）：
+    # 1. _get_lock 并发初始化与 __setstate__ 补锁无竞态
+    import threading
+    bare_dict = object.__new__(ID.ItemDictionary)
+    locks_collected = []
+    def _fetch_lock():
+        locks_collected.append(bare_dict._get_lock())
+    threads = [threading.Thread(target=_fetch_lock) for _ in range(20)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    check("★技术债1：裸对象并发 _get_lock() 线程安全无竞态（20线程取得同个锁）",
+          len(set(id(l) for l in locks_collected)) == 1 and hasattr(bare_dict, "_lock"))
+    bare_state = object.__new__(ID.ItemDictionary)
+    bare_state.__setstate__({"items": {}, "mods": []})
+    check("★技术债1：__setstate__ 反序列化入口自动补齐 _lock",
+          hasattr(bare_state, "_lock") and hasattr(bare_state._lock, "__enter__"))
+
+    # 2. get_mods_snapshot 深拷贝隔离
+    d_mods_test = ID.ItemDictionary("")
+    d_mods_test.mods = [{"id": "mod_test", "name": "Test Mod"}]
+    m_snap = d_mods_test.get_mods_snapshot()
+    m_snap[0]["name"] = "MUTATED"
+    m_snap.append({"id": "injected", "name": "Injected"})
+    check("★技术债2：get_mods_snapshot 深拷贝隔离（修改返回列表不污染原词典 mods）",
+          d_mods_test.mods == [{"id": "mod_test", "name": "Test Mod"}])
+
+    # 3. get_generation_bundle 按代次缓存与换代失效
+    d_cache_test = ID.ItemDictionary("")
+    d_cache_test.legacy_generation = "1.12.2"
+    d_cache_test.items = {f"mod:item_{i}": {"en": f"Item {i}", "zh": "", "type": "item"} for i in range(1000)}
+    import time
+    t0 = time.perf_counter()
+    b_first = d_cache_test.get_generation_bundle()
+    t_first = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    b_second = d_cache_test.get_generation_bundle()
+    t_second = time.perf_counter() - t0
+    check("★技术债3：同一代次内 get_generation_bundle 命中缓存（开销极低）",
+          b_second["generation_id"] == b_first["generation_id"] and len(b_second["items"]) == 1000 and t_second < 0.005)
+    # 模拟 _adopt 换代
+    d_fresh = ID.ItemDictionary("")
+    d_fresh.items = {"mod:item_fresh": {"en": "Fresh", "zh": "", "type": "item"}}
+    d_cache_test._adopt(d_fresh)
+    b_third = d_cache_test.get_generation_bundle()
+    check("★技术债3：_adopt 换代后代次自增且 bundle 缓存自动换新",
+          b_third["generation_id"] == b_first["generation_id"] + 1 and "mod:item_fresh" in b_third["items"])
     check("1.7.10：64 放行 / 65 被拒",
           LG.plan_give(s710, "Steve", "minecraft:diamond", count=64).ok
           and not LG.plan_give(s710, "Steve", "minecraft:diamond", count=65).ok)

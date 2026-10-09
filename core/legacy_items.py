@@ -19,12 +19,14 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 #: 1.13 以前玩家名上限 16 字符；同世代的合法字符集为 ``[A-Za-z0-9_]``。
 #: （名字里带空格 / 引号 / 命令分隔符一律拒绝 —— 这层是**注入防线**。）
 import re as _re
 
+from .item_dictionary import search_items_in_snapshot
 from .legacy_stack_table import MAX_STACK_DEFAULT, max_stack_size
 
 PLAYER_NAME_RE = _re.compile(r"^[A-Za-z0-9_]{1,16}$")
@@ -68,11 +70,54 @@ def _fail(reason: str) -> LegacyGivePlan:
 
 def is_preflatten(dictionary) -> bool:
     """词典是否已装载某个预扁平化世代（B5 通道是否可用）。"""
+    if isinstance(dictionary, dict) and "legacy_generation" in dictionary:
+        return bool(dictionary.get("legacy_generation", ""))
     return bool(getattr(dictionary, "legacy_generation", ""))
 
 
 def generation_of(dictionary) -> str:
+    if isinstance(dictionary, dict) and "legacy_generation" in dictionary:
+        return str(dictionary.get("legacy_generation", "") or "")
     return str(getattr(dictionary, "legacy_generation", "") or "")
+
+
+def capture_generation_bundle(dictionary) -> dict:
+    """原子捕获词典在当前时刻的不可变代次上下文包（N14）。
+
+    保证 items、registry、variants、generation 在单次解析与规划中完全自洽，
+    杜绝跨代拼凑与公开容器二次更新撕裂。
+    """
+    if isinstance(dictionary, dict) and "items" in dictionary and "generation_id" in dictionary:
+        return dictionary
+
+    getter = getattr(dictionary, "get_generation_bundle", None)
+    if callable(getter):
+        try:
+            bundle = getter()
+            if isinstance(bundle, dict) and "items" in bundle:
+                return bundle
+        except Exception:
+            pass
+
+    snap_getter = getattr(dictionary, "get_items_snapshot", None)
+    if callable(snap_getter):
+        try:
+            items = snap_getter()
+        except Exception:
+            items = {}
+    elif isinstance(dictionary, dict) and "items" not in dictionary and any(isinstance(v, dict) for v in dictionary.values()):
+        items = copy.deepcopy(dictionary)
+    else:
+        items = copy.deepcopy(getattr(dictionary, "items", {}) or {})
+
+    return {
+        "generation_id": getattr(dictionary, "_generation_id", 0),
+        "legacy_generation": str(getattr(dictionary, "legacy_generation", "") or ""),
+        "items": items,
+        "legacy_item_registry": copy.deepcopy(getattr(dictionary, "legacy_item_registry", {}) or {}),
+        "legacy_variants": copy.deepcopy(getattr(dictionary, "legacy_variants", {}) or {}),
+        "legacy_bridge": copy.deepcopy(getattr(dictionary, "legacy_bridge", {}) or {}),
+    }
 
 
 #: 「ID 型输入」：纯 ASCII 标识符（``water`` / ``minecraft:water`` / ``red_wool``）。
@@ -87,11 +132,25 @@ def _norm_name(value) -> str:
 
 
 def _strong_hit(raw: str, row: dict) -> bool:
-    """这条搜索命中是不是**强命中**（名字真的等于用户输入，而不是前缀 / 子串蹭上来的）。"""
-    want = _norm_name(str(raw).split(":")[-1])
-    names = {_norm_name(str(row.get("id") or "").split(":")[-1]),
-             _norm_name(row.get("en")), _norm_name(row.get("zh")),
-             _norm_name(row.get("variant_display"))}
+    """这条搜索命中是不是**强命中**。
+
+    v0.24.3（N16）：
+    - 若 raw 显式包含 `:`（显式命名空间输入，如 `a:stone`、`minecraft:stone`）：
+      必须要求规范化后的**全 ID 相等**（`candidate_id == raw`），绝不允许跨 namespace
+      借后缀强命中，也不允许借展示名模糊认领；
+    - 仅当 raw 不含 `:`（裸名称/人话输入）时，才允许比对后缀或变体展示名。
+    """
+    raw_s = str(raw or "").strip().lower()
+    row_id = str(row.get("id") or "").strip().lower()
+    if ":" in raw_s:
+        return _norm_name(raw_s) == _norm_name(row_id)
+    want = _norm_name(raw_s)
+    names = {
+        _norm_name(row_id.split(":")[-1]),
+        _norm_name(row.get("en")),
+        _norm_name(row.get("zh")),
+        _norm_name(row.get("variant_display")),
+    }
     return bool(want) and want in {n for n in names if n}
 
 
@@ -108,25 +167,32 @@ def resolve_entry(dictionary, item: str):
     raw = str(item or "").strip()
     if not raw:
         return (None, None, None, None)
-    items = getattr(dictionary, "items", {}) or {}
-    # ① 直接命中 ID（带或不带命名空间）
-    for cand in (raw.lower(), "minecraft:" + raw.lower().lstrip("minecraft:")):
+    bundle = capture_generation_bundle(dictionary)
+    items = bundle.get("items") or {}
+
+    # ① 直接命中 ID（显式前缀判断切除，避免 lstrip 集合误删字符）
+    raw_l = raw.lower()
+    if ":" in raw_l:
+        cands = (raw_l,)
+    else:
+        cands = ("minecraft:" + raw_l, raw_l)
+    for cand in cands:
         if cand in items:
             return (cand, items[cand], None, None)
-    # ② 词典搜索（B5 已支持变体展示名并带回数据值）
+    # ② 词典搜索（在同代快照上纯函数搜索，杜绝二次访问公开字典导致的跨代混读，N14）
     try:
-        rows = dictionary.search_items(raw, limit=15)
+        rows = search_items_in_snapshot(items, raw, limit=15)
     except Exception:  # noqa: BLE001
         rows = []
     if not rows:
         return (None, None, None, None)
-    if _ID_LIKE_RE.match(raw.lower()):
-        # ID 型输入：宁可不发，也不换成别的物品（见 _ID_LIKE_RE 的注释）。
+    # N16：显式带冒号命名空间输入或 ID 型输入，必须过强命中，严禁模糊降级
+    if ":" in raw or _ID_LIKE_RE.match(raw.lower()):
         row = next((r for r in rows if _strong_hit(raw, r)), None)
         if row is None:
             return (None, None, None, None)
     else:
-        row = rows[0]     # 展示名 / 中文名这种「人话」输入，继续走模糊匹配
+        row = rows[0]     # 展示名 / 中文名这种「人话」输入（不含冒号），继续走模糊匹配
     rid = row.get("id")
     return (rid, items.get(rid) or row, row.get("variant_damage"), row.get("variant_display"))
 
@@ -188,15 +254,36 @@ def plan_give(dictionary, player: str, item: str, count: int = 1,
     if not (1 <= n <= MAX_COUNT):
         return _fail(f"数量越界（1~{MAX_COUNT}）")
 
-    rid, entry, hit_dmg, hit_disp = resolve_entry(dictionary, item)
+    bundle = capture_generation_bundle(dictionary)
+    rid, entry, hit_dmg, hit_disp = resolve_entry(bundle, item)
     if not rid or entry is None:
-        gen = generation_of(dictionary) or "未知"
+        gen = generation_of(bundle) or "未知"
         return _fail(f"词典里没有该物品（世代 {gen}）；请先 mc_search_item 确认它在本版本存在")
 
-    # v0.24.2（F18）/ v0.24.3（N08）：**单条命令**要过「该代解析上界 ∩ 该物品真实堆叠」。
-    # 判据在 legacy_stack_table（逐名表 + 家族铁律 + 成文兜底），这里只负责措辞与拆单提示。
-    gen = generation_of(dictionary) or ""
-    cap, verified = max_stack_size(gen, rid or "")
+    # v0.24.2（F18）/ v0.24.3（N08 / N14 / N15）：**单条命令**要过「该代解析上界 ∩ 该物品真实堆叠」。
+    # 基于同一个 generation bundle 快照计算（N14），保证 items 和 legacy_item_registry 同代；
+    # 优先从该代真实 Item 注册表快照读取 max（N08 实证直连，仅限原版物品）；缺失或非快照代再走 legacy_stack_table。
+    gen = generation_of(bundle) or ""
+    cap = None
+    verified = False
+    if str(gen).strip().startswith("1.7"):
+        cap, verified = (64, True)  # 1.7.10 give 解析器固定 1..64 与物品无关
+    else:
+        # N15：原版 Item 注册表仅对原版物品有效；模组 ID 绝不借用原版注册表条目
+        is_vanilla_item = ":" not in (rid or "") or (rid or "").startswith("minecraft:")
+        if is_vanilla_item:
+            reg = bundle.get("legacy_item_registry") or {}
+            bare = rid.split(":", 1)[1] if ":" in (rid or "") else (rid or "")
+            reg_ent = reg.get(bare) or reg.get(rid)
+            if isinstance(reg_ent, dict) and "max" in reg_ent:
+                raw_max = reg_ent.get("max")
+                # N15：严格整数校验（type 必须是 int 且非 bool），杜绝浮点、字符串及 inf 溢出
+                if type(raw_max) is int:
+                    if 1 <= raw_max <= 64:
+                        cap = raw_max
+                        verified = True
+    if cap is None:
+        cap, verified = max_stack_size(gen, rid or "")
     if n > cap:
         if cap == 1:
             return _fail(

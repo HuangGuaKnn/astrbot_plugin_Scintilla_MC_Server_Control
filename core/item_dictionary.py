@@ -23,9 +23,11 @@ Fabric 启动器把原版核留在 ``.fabric/server/<版本>-server.jar``。此�
 """
 from __future__ import annotations
 
+import copy
 import io
 import json
 import re
+import threading
 import zipfile
 from pathlib import Path
 
@@ -80,7 +82,18 @@ _VANILLA_JAR_CANDIDATE_CAP = 16
 class ItemDictionary:
     """Mod 物品词典：构建、缓存、检索、配方查询。"""
 
+    _INIT_LOCK = threading.Lock()
+
     def __init__(self, server_dir: str, cache_path: str | None = None):
+        self._lock = threading.RLock()
+        self._generation_id: int = 0
+        self._cached_bundle: dict | None = None
+        self._cached_bundle_gid: int = -1
+        self._cached_bundle_items_id: int | None = None
+        self._cached_bundle_reg_id: int | None = None
+        self._cached_bundle_var_id: int | None = None
+        self._cached_bundle_bridge_id: int | None = None
+        self._cached_bundle_gen: str = ""
         self.server_dir = Path(server_dir)
         self.cache_path = Path(cache_path) if cache_path else None
         self.mods: list[dict] = []          # [{"id": ..., "name": ...}]
@@ -170,26 +183,49 @@ class ItemDictionary:
             "legacy_registry_dropped": len(self.legacy_registry_dropped),
         }
 
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        if "_lock" not in self.__dict__ or not hasattr(getattr(self, "_lock", None), "__enter__"):
+            self._lock = threading.RLock()
+        if "_cached_bundle" not in self.__dict__:
+            self._cached_bundle = None
+            self._cached_bundle_gid = -1
+
+    def _get_lock(self) -> threading.RLock:
+        lock = getattr(self, "_lock", None)
+        if lock is None or not hasattr(lock, "__enter__"):
+            with ItemDictionary._INIT_LOCK:
+                lock = getattr(self, "_lock", None)
+                if lock is None or not hasattr(lock, "__enter__"):
+                    lock = threading.RLock()
+                    self._lock = lock
+        return lock
+
     def _adopt(self, fresh: "ItemDictionary") -> None:
-        """把子对象算好的结果**就地**换入本对象（v0.24.3 · N06）。
+        """把子对象算好的结果**就地**换入本对象（v0.24.3 · N06 / N14）。
 
         就地（而不是 ``self.items = fresh.items``）的原因：``items`` / ``recipes``
         的**容器身份保持不变** —— 任何早先拿到 ``dic.items`` 引用的调用方，
         在这次 update 之后看到的是**新**词典，而不是抱着一本旧账。
+        使用 _lock 确保清空和写入的原子可见性，避免迭代读并发产生 RuntimeError（N14）。
         """
-        self.mods[:] = fresh.mods
-        self.items.clear()
-        self.items.update(fresh.items)
-        self.recipes.clear()
-        self.recipes.update(fresh.recipes)
-        self.legacy_generation = fresh.legacy_generation
-        self.legacy_variants = fresh.legacy_variants
-        self.legacy_bridge = fresh.legacy_bridge
-        self.legacy_diag = fresh.legacy_diag
-        self.legacy_item_registry = fresh.legacy_item_registry
-        self.legacy_registry_diag = fresh.legacy_registry_diag
-        self.legacy_registry_dropped = list(fresh.legacy_registry_dropped)
-        setattr(self, _VANILLA_SRC_FLAG, bool(getattr(fresh, _VANILLA_SRC_FLAG, False)))
+        with self._get_lock():
+            self.mods[:] = fresh.mods
+            self.items.clear()
+            self.items.update(fresh.items)
+            self.recipes.clear()
+            self.recipes.update(fresh.recipes)
+            self.legacy_generation = fresh.legacy_generation
+            self.legacy_variants = fresh.legacy_variants
+            self.legacy_bridge = fresh.legacy_bridge
+            self.legacy_diag = fresh.legacy_diag
+            self.legacy_item_registry = fresh.legacy_item_registry
+            self.legacy_registry_diag = fresh.legacy_registry_diag
+            self.legacy_registry_dropped = list(fresh.legacy_registry_dropped)
+            setattr(self, _VANILLA_SRC_FLAG, bool(getattr(fresh, _VANILLA_SRC_FLAG, False)))
+            self._generation_id = getattr(self, "_generation_id", 0) + 1
+            self._cached_bundle = None
+            self._cached_bundle_gid = -1
 
     def _vanilla_jar_candidates(self) -> list[Path]:
         """按「先准后广」收集候选服务端 jar：去重、限量、坏目录不牵连。"""
@@ -832,9 +868,13 @@ class ItemDictionary:
             return False
         try:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            self.mods = data.get("mods", [])
-            self.items = data.get("items", {})
-            self.recipes = data.get("recipes", {})
+            with self._get_lock():
+                self.mods = data.get("mods", [])
+                self.items = data.get("items", {})
+                self.recipes = data.get("recipes", {})
+                self._generation_id = getattr(self, "_generation_id", 0) + 1
+                self._cached_bundle = None
+                self._cached_bundle_gid = -1
             return True
         except Exception:
             return False
@@ -859,52 +899,120 @@ class ItemDictionary:
 
     # ================= 检索 =================
 
+    def get_items_snapshot(self) -> dict[str, dict]:
+        """获取当前词典条目的原子深拷贝快照（同一代次，无跨代混读风险与嵌套泄漏风险，N14）。"""
+        with self._get_lock():
+            return copy.deepcopy(self.items)
+
+    def get_mods_snapshot(self) -> list[dict]:
+        """获取当前已装载 Mod 列表的原子深拷贝快照（同一代次，无并发遍历修改风险）。"""
+        with self._get_lock():
+            return copy.deepcopy(self.mods)
+
+    def get_generation_bundle(self) -> dict:
+        """在单个锁临界区内一次性捕获不可变代次上下文包（N14）。
+
+        优化（v0.24.3 技术债收敛）：
+        按代次（_generation_id）缓存不可变 bundle，避免 50,000 条词典每次 151ms 的全量 deepcopy。
+        在代次一致且容器对象身份未被突变时直接复用缓存。
+        """
+        with self._get_lock():
+            gid = getattr(self, "_generation_id", 0)
+            cached_gid = getattr(self, "_cached_bundle_gid", None)
+            cached_bundle = getattr(self, "_cached_bundle", None)
+            gen = str(getattr(self, "legacy_generation", "") or "")
+
+            if (
+                cached_bundle is not None
+                and cached_gid == gid
+                and getattr(self, "_cached_bundle_gen", None) == gen
+                and getattr(self, "_cached_bundle_items_id", None) == id(self.items)
+                and getattr(self, "_cached_bundle_reg_id", None) == id(getattr(self, "legacy_item_registry", None))
+                and getattr(self, "_cached_bundle_var_id", None) == id(getattr(self, "legacy_variants", None))
+                and getattr(self, "_cached_bundle_bridge_id", None) == id(getattr(self, "legacy_bridge", None))
+            ):
+                return dict(cached_bundle)
+
+            bundle = {
+                "generation_id": gid,
+                "legacy_generation": gen,
+                "items": copy.deepcopy(self.items),
+                "legacy_item_registry": copy.deepcopy(getattr(self, "legacy_item_registry", {}) or {}),
+                "legacy_variants": copy.deepcopy(getattr(self, "legacy_variants", {}) or {}),
+                "legacy_bridge": copy.deepcopy(getattr(self, "legacy_bridge", {}) or {}),
+            }
+            self._cached_bundle_gid = gid
+            self._cached_bundle = bundle
+            self._cached_bundle_gen = gen
+            self._cached_bundle_items_id = id(self.items)
+            self._cached_bundle_reg_id = id(getattr(self, "legacy_item_registry", None))
+            self._cached_bundle_var_id = id(getattr(self, "legacy_variants", None))
+            self._cached_bundle_bridge_id = id(getattr(self, "legacy_bridge", None))
+            return dict(bundle)
+
     def search_items(self, keyword: str, limit: int = 15) -> list[dict]:
         """按中英文名/ID 片段模糊搜索物品，返回 [{id, en, zh, type}]。"""
-        kw = keyword.strip().lower()
-        if not kw:
-            return []
-        # 支持空格变体：iron ingot → iron_ingot / ironingot
-        variants = {kw, kw.replace(" ", "_"), kw.replace(" ", "")}
-        exact: list[tuple] = []
-        prefix: list[tuple] = []
-        contains: list[tuple] = []
-        for item_id, entry in self.items.items():
-            en = (entry.get("en") or "").lower()
-            zh = entry.get("zh") or ""
-            id_l = item_id.lower()
-            # B5：预扁平化变体族 —— 展示名（如 Red Wool）也要能命中，并带回**数据值**
-            vmap = {str(k): (v or "") for k, v in (entry.get("variants") or {}).items()}
-            vlow = {k: v.lower() for k, v in vmap.items()}
-            hit_exact = next((int(k) for k, v in vlow.items() if v in variants), None)
-            hit_pre = next((int(k) for k, v in vlow.items()
-                            if any(v.startswith(x) for x in variants)), None)
-            hit_sub = next((int(k) for k, v in vlow.items()
-                            if any(x in v for x in variants)), None)
-            if id_l in variants or en in variants or zh in variants or hit_exact is not None:
-                exact.append((item_id, hit_exact))
-            elif any(id_l.startswith(v) or en.startswith(v) or zh.startswith(v)
-                     for v in variants) or hit_pre is not None:
-                prefix.append((item_id, hit_pre))
-            elif any(v in id_l or v in en or v in zh for v in variants) or hit_sub is not None:
-                contains.append((item_id, hit_sub))
-        ranked = exact + prefix + contains
-        out: list[dict] = []
-        for i, dmg in ranked[:limit]:
-            row = {"id": i, **self.items[i]}
-            if dmg is not None:
-                row["variant_damage"] = dmg
-                row["variant_display"] = (self.items[i].get("variants") or {}).get(str(dmg))
-            out.append(row)
-        return out
+        with self._get_lock():
+            return search_items_in_snapshot(self.items, keyword, limit=limit)
 
     def get_recipes(self, item: str, direction: str = "forward") -> list[dict]:
         """配方查询。forward=该物品怎么造；reverse=该物品能用来造什么。"""
-        if direction == "reverse":
-            out = []
-            for output, recipes in self.recipes.items():
-                for r in recipes:
-                    if item in r["inputs"]:
-                        out.append(r)
-            return out
-        return self.recipes.get(item, [])
+        with self._get_lock():
+            if direction == "reverse":
+                out = []
+                for output, recipes in self.recipes.items():
+                    for r in recipes:
+                        if item in r.get("inputs", []):
+                            out.append(copy.deepcopy(r))
+                return out
+            return [copy.deepcopy(r) for r in self.recipes.get(item, [])]
+
+
+def search_items_in_snapshot(items_snapshot: dict, keyword: str, limit: int = 15) -> list[dict]:
+    """按中英文名/ID 片段在给定 items 快照中模糊搜索物品，返回 [{id, en, zh, type}]。
+
+    纯函数，不依赖外部可变状态；返回的行及其嵌套结构（如 variants）全部深拷贝，
+    彻底隔绝写穿与外部污染（N14）。
+    """
+    kw = keyword.strip().lower()
+    if not kw:
+        return []
+    # 支持空格变体：iron ingot → iron_ingot / ironingot
+    variants = {kw, kw.replace(" ", "_"), kw.replace(" ", "")}
+    exact: list[tuple] = []
+    prefix: list[tuple] = []
+    contains: list[tuple] = []
+    for item_id, entry in items_snapshot.items():
+        if not isinstance(entry, dict):
+            continue
+        en = (entry.get("en") or "").lower()
+        zh = entry.get("zh") or ""
+        id_l = item_id.lower()
+        # B5：预扁平化变体族 —— 展示名（如 Red Wool）也要能命中，并带回**数据值**
+        vmap = {str(k): (v or "") for k, v in (entry.get("variants") or {}).items()}
+        vlow = {k: v.lower() for k, v in vmap.items()}
+        hit_exact = next((int(k) for k, v in vlow.items() if v in variants), None)
+        hit_pre = next((int(k) for k, v in vlow.items()
+                        if any(v.startswith(x) for x in variants)), None)
+        hit_sub = next((int(k) for k, v in vlow.items()
+                        if any(x in v for x in variants)), None)
+        if id_l in variants or en in variants or zh in variants or hit_exact is not None:
+            exact.append((item_id, hit_exact))
+        elif any(id_l.startswith(v) or en.startswith(v) or zh.startswith(v)
+                 for v in variants) or hit_pre is not None:
+            prefix.append((item_id, hit_pre))
+        elif any(v in id_l or v in en or v in zh for v in variants) or hit_sub is not None:
+            contains.append((item_id, hit_sub))
+    ranked = exact + prefix + contains
+    out: list[dict] = []
+    for i, dmg in ranked[:limit]:
+        raw_entry = items_snapshot.get(i)
+        if not raw_entry or not isinstance(raw_entry, dict):
+            continue
+        # 深拷贝以杜绝嵌套对象（如 variants）被外部修改写穿（N14）
+        row = {"id": i, **copy.deepcopy(raw_entry)}
+        if dmg is not None:
+            row["variant_damage"] = dmg
+            row["variant_display"] = (raw_entry.get("variants") or {}).get(str(dmg))
+        out.append(row)
+    return out

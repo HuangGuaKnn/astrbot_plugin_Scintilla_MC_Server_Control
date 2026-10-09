@@ -41,9 +41,9 @@ PATTERNS = (
 #: 自己与「判据声明处」必然含这些串，跳过。
 SKIP_FILES = {"test_v0240_no_local_paths.py", "test_v0237_changelog_hygiene.py"}
 SKIP_DIRS = {".git", "__pycache__", "node_modules", "_archive_2026-10-05"}
-#: `data/` 下只有**运行缓存**才豁免；`data/legacy_items/` 是**随包发布的运行资产**，
-#: 必须一起受本守卫约束（GPT 复核 F16：此前整目录跳过，等于给发布 JSON 开了后门）。
-DATA_SCAN_DIRS = {"legacy_items"}
+#: `data/` 下只有**运行缓存**才豁免；`data/legacy_items/` 与 `data/legacy_registry/` 是**随包发布的运行资产**，
+#: 必须一起受本守卫约束（GPT 复核 F16 / N12：此前整目录跳过，等于给发布 JSON 开了后门）。
+DATA_SCAN_DIRS = {"legacy_items", "legacy_registry"}
 SCAN_EXT = {".py", ".json", ".yaml", ".yml", ".md", ".html", ".sql"}
 
 PASS, FAIL = [], []

@@ -4185,7 +4185,10 @@ class McControlPlugin(Star):
             return _gate
         if not self._dictionary:
             return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
-        mods = self._dictionary.mods
+        if hasattr(self._dictionary, "get_mods_snapshot"):
+            mods = self._dictionary.get_mods_snapshot()
+        else:
+            mods = getattr(self._dictionary, "mods", [])
         if not mods:
             return "服务器当前未安装任何 Mod（纯原版）。"
         lines = [f"- {m['id']} ({m['name']})" for m in mods]
