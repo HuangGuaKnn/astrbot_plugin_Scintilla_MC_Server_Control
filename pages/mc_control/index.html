@@ -390,9 +390,9 @@ summary:hover{text-decoration:underline}
    留下 130px 的空位；显示态使用脚本测得的真实内容高度来做卷帘过渡。 */
 #remote_mode_pending{max-height:0}
 #remote_mode_pending.is-visible{max-height:var(--rmt-open-height,130px)}
-#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;margin-top:0!important;
-  transition:max-height .4s var(--motion-ease),opacity .24s ease,transform .4s var(--motion-ease),margin-top .4s var(--motion-ease),visibility 0s linear .4s}
-#row_allow_unknown.is-visible{max-height:260px;opacity:1;visibility:visible;transform:none;margin-top:14px!important;transition-delay:0s}
+#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;margin-top:0!important;padding:0 2px;
+  transition:max-height .4s var(--motion-ease),padding-top .4s var(--motion-ease),padding-bottom .4s var(--motion-ease),opacity .4s ease,transform .4s var(--motion-ease),margin-top .4s var(--motion-ease),visibility 0s linear .4s}
+#row_allow_unknown.is-visible{max-height:var(--unknown-open-height,260px);opacity:1;visibility:visible;transform:none;margin-top:14px!important;padding:11px 2px;transition-delay:0s}
 .select-pop{position:relative;isolation:isolate}
 .select-pop::after{content:"⌄";position:absolute;right:15px;top:18px;z-index:4;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-50%);transition:transform .28s var(--motion-ease),color .2s ease}
 .select-pop.is-open{z-index:30}
@@ -2949,6 +2949,17 @@ async function refreshVersionCaps(){
 // ============ 命令工具 白名单 / 黑名单（v0.20.0） ============
 // 视觉上是两张模式卡（单选 + 圆点），真实取值仍走隐藏的 select#cfg_danger_policy，
 // 与 CFG_FIELDS / collectSettings 的既有链路完全一致，不新增配置键。
+function measureUnknownCommandRow(row){
+  if(!row || row.style.display === "none") return;
+  const wasVisible = row.classList.contains("is-visible");
+  const prevMax = row.style.maxHeight;
+  row.classList.add("is-visible");
+  row.style.maxHeight = "none";
+  const natural = Math.max(1, Math.ceil(row.getBoundingClientRect().height || row.scrollHeight || 1));
+  if(prevMax) row.style.maxHeight = prevMax; else row.style.removeProperty("max-height");
+  if(!wasVisible) row.classList.remove("is-visible");
+  row.style.setProperty("--unknown-open-height", natural + "px");
+}
 function setUnknownCommandRowVisible(row, visible){
   if(!row) return;
   const firstRender = row.dataset.unknownRowReady !== "1";
@@ -2961,6 +2972,7 @@ function setUnknownCommandRowVisible(row, visible){
     // 首次按白名单初始化时直接留在 display:none；用户切回白名单时再走完整收起动画。
     if(firstRender){ row.style.display = "none"; row.classList.remove("is-visible"); return; }
     row.style.display = "flex";
+    measureUnknownCommandRow(row);
     row.classList.remove("is-visible");
     row.__unknownRowHideTimer = setTimeout(()=>{
       if(row.__unknownRowToken !== token || row.classList.contains("is-visible")) return;
@@ -2970,6 +2982,7 @@ function setUnknownCommandRowVisible(row, visible){
     return;
   }
   row.style.display = "flex";
+  measureUnknownCommandRow(row);
   if(row.classList.contains("is-visible")) return;
   row.classList.remove("is-visible");
   requestAnimationFrame(()=>{
