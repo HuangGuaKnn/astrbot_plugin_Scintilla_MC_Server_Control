@@ -51,9 +51,9 @@ ITEM_SYNTAX_COMPONENTS = "components"
 #: 版本未知且未手动声明 —— 不得生成任何带数据的命令
 ITEM_SYNTAX_UNKNOWN = "unknown"
 
-#: 插件官方支持的最低 Minecraft 版本（主人 2026-10-14 裁决守门铁律）
+#: 插件官方支持的最低 Minecraft 版本（维护边界）
 #: 1.7.10 向下的远古版本不在官方支持范围内；若在此类服务端上运行，按 1.7.10
-#: 最低支持规则（预扁平化家族名 + 数据值）尽力回落生成，官方不承诺兼容性且不接收反馈。
+#: 最低支持规则（预扁平化家族名 + 数据值）尽力回落生成，不承诺可用性。
 MIN_SUPPORTED_MC_VERSION = (1, 7, 10)
 
 #: 预扁平化分水岭（v0.23.2）：1.13 重写了命令图（give/execute/effect/difficulty/data）
@@ -635,7 +635,7 @@ def describe_capabilities(
         if info.mc is not None and tuple(info.mc) < MIN_SUPPORTED_MC_VERSION:
             support_note = (
                 f"低于官方支持下限（{version_text(MIN_SUPPORTED_MC_VERSION)}）："
-                "按 1.7.10 规则尽力回落生成，不保证兼容性且不提供售后支持"
+                "按 1.7.10 规则尽力回落生成，不保证兼容性"
             )
         else:
             support_note = (
