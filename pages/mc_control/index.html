@@ -380,6 +380,9 @@ summary:hover{text-decoration:underline}
 #sv_status.is-loading,#sv_players.is-loading{opacity:.52}
 .status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
 @keyframes status-error-shake{0%,100%{transform:translateX(0) rotate(0)}18%{transform:translateX(-6px) rotate(-1.2deg)}36%{transform:translateX(6px) rotate(1.2deg)}54%{transform:translateX(-4px) rotate(-.7deg)}72%{transform:translateX(3px) rotate(.5deg)}88%{transform:translateX(-1px) rotate(0)}}
+#wf_refresh.refreshing{color:var(--cyan);border-color:rgba(101,201,255,.48);pointer-events:none}
+#wf_refresh.refreshing::after{content:"";display:inline-block;width:10px;height:10px;margin-left:6px;vertical-align:-1px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:wf-refresh-spin .7s linear infinite}
+@keyframes wf-refresh-spin{to{transform:rotate(360deg)}}
 .rmt-collapsible{display:block;overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
   margin-top:0!important;transition:max-height .42s var(--motion-ease),opacity .24s ease,transform .42s var(--motion-ease),margin-top .42s var(--motion-ease),visibility 0s linear .42s}
 .rmt-collapsible.is-visible{max-height:520px;opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
@@ -1055,7 +1058,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   </div>
   <div style="height:14px"></div>
   <div class="card">
-      <h3><span class="dot" style="background:var(--amber)"></span>最近任务日志 <span class="right"><button type="button" onclick="loadWorkflow()">刷新</button></span></h3>
+      <h3><span class="dot" style="background:var(--amber)"></span>最近任务日志 <span class="right"><button type="button" id="wf_refresh">刷新</button></span></h3>
     <div id="wf_logs"><span class="muted">加载中…</span></div>
   </div>
 </div>
@@ -2431,9 +2434,23 @@ document.addEventListener("click", e => {
 const WF_BADGE = {done:["ok","✓ 完成"],failed:["bad","✗ 失败"],running:["warn","… 执行中"],error:["bad","! 异常"]};
 const WF_AGENT = [["分类器","classifier"],["模板判断","judge"],["模板工程师","engineer"],["实现器","implementer"],["纠错器","corrector"]];
 async function loadWorkflow(silent){
+  if(loadWorkflow._pending) return;
+  const refresh = $("wf_refresh"), refreshLabel = refresh ? refresh.textContent : "刷新";
+  const startedAt = Date.now();
+  const restoreRefresh = ()=>{
+    loadWorkflow._pending = false;
+    if(refresh){ refresh.disabled = false; refresh.classList.remove("refreshing"); refresh.textContent = refreshLabel; }
+  };
+  loadWorkflow._pending = true;
+  if(!silent && refresh){ refresh.disabled = true; refresh.classList.add("refreshing"); refresh.textContent = "刷新中"; }
   const r = await callGet("workflow/status").catch(()=>({ok:false}));
+  if(!silent){
+    const remain = Math.max(0, 280 - (Date.now() - startedAt));
+    if(remain) await new Promise(resolve=>setTimeout(resolve, remain));
+  }
   if(!r || !r.ok){
-    if(!silent) $("wf_logs").innerHTML = `<span class="badge bad status-error-badge">工作流状态获取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    if(!silent) $("wf_logs").innerHTML = `<span role="status" class="badge bad status-error-badge">工作流状态获取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    restoreRefresh();
     return;
   }
   WF = r;
@@ -2479,6 +2496,7 @@ async function loadWorkflow(silent){
       ${l.detail?`<div class="detail">${esc(l.detail)}</div>`:""}
     </div>`;
   }).join("") : `<div class="empty">暂无任务记录</div>`;
+  restoreRefresh();
 }
 
 
@@ -4450,6 +4468,8 @@ async function resetColors(){
 function bind(){
   $("sv_refresh").onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
+  const wfRefresh = $("wf_refresh");
+  if(wfRefresh) wfRefresh.onclick = ()=>loadWorkflow();
   let bcMode = "chat";
   document.querySelectorAll(".bc-mode").forEach(b=>b.addEventListener("click", ()=>{
     bcMode = b.dataset.mode;
