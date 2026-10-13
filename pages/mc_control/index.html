@@ -2844,7 +2844,12 @@ function renderAdvSummary(){
   const to = ($("cfg_rcon_timeout") || {}).value || "";
   const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
   const needsVersion = !!(rmt && rmt.checked && !String(ver).trim());
-  if(adv) adv.classList.toggle("adv-rcon-warn", needsVersion);
+  // 警告出现时立即占住摘要空间；警告消失时延后到文案退场 / 入场完成后再恢复尾部提示。
+  if(adv && adv.__advRconHintRestoreTimer){
+    clearTimeout(adv.__advRconHintRestoreTimer);
+    adv.__advRconHintRestoreTimer = null;
+  }
+  if(needsVersion && adv) adv.classList.add("adv-rcon-warn");
   renderRconVersionWarning(needsVersion);
   if(needsVersion){
     // 异地模式读不到服务端文件 → 版本只能手填；漏填的后果要点名（「会被拒」），
@@ -2854,6 +2859,17 @@ function renderAdvSummary(){
   }
   renderAdvSummaryText(el, `当前：超时 ${to || "默认 5"}s · `
     + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）"), false);
+  if(adv && adv.classList.contains("adv-rcon-warn")){
+    // input + change 可能连续触发；每次都重新计时，确保摘要退场完成前尾部提示不参与布局。
+    adv.__advRconHintRestoreTimer = setTimeout(()=>{
+      const liveRmt = $("cfg_remote_rcon_mode");
+      const liveVer = ($("cfg_server_version") || {}).value || "";
+      if(!(liveRmt && liveRmt.checked && !String(liveVer).trim())){
+        adv.classList.remove("adv-rcon-warn");
+      }
+      adv.__advRconHintRestoreTimer = null;
+    }, 520);
+  }
 }
 function openAdvRcon(focusId){
   const d = $("adv_rcon");
