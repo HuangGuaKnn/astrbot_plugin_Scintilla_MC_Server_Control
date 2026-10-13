@@ -450,6 +450,22 @@ details.adv-fold .hint{margin-top:9px;line-height:1.7}
 details.adv-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);font-weight:500}
 details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
+/* 进阶设置摘要切换时做一次短暂退场 / 入场，避免黄色警告像瞬移一样改字。 */
+details.adv-fold .adv-sum{display:inline-block;transform-origin:right center;
+  transition:color .22s ease,border-color .22s ease,background-color .22s ease,opacity .22s ease,transform .3s var(--motion-ease)}
+details.adv-fold .adv-sum.adv-sum-switching{opacity:0;transform:translateY(-4px) scale(.96);pointer-events:none}
+details.adv-fold .adv-sum.adv-sum-entering{opacity:0;transform:translateY(4px) scale(.96)}
+/* 异地模式漏填版本时，字段标题、感叹号和输入框一起进入警告态。 */
+#cfg_server_version_label{display:flex;align-items:center;gap:5px;transition:color .24s ease}
+#cfg_server_version_label .rmt-version-mark{display:inline-flex;align-items:center;justify-content:center;
+  width:0;height:16px;overflow:hidden;opacity:0;transform:translateX(-5px) scale(.72);border-radius:5px;
+  color:var(--on-accent);background:var(--warn);font-size:10px;font-weight:800;line-height:1;
+  transition:width .28s var(--motion-ease),opacity .2s ease,transform .3s var(--motion-ease)}
+#cfg_server_version_label.rmt-version-warn{color:var(--warn)}
+#cfg_server_version_label.rmt-version-warn .rmt-version-mark{width:16px;opacity:1;transform:none}
+#cfg_server_version{transition:border-color .24s ease,background-color .24s ease,box-shadow .24s ease}
+#cfg_server_version.rmt-version-warn{border-color:rgba(233,170,69,.62);background:rgba(233,170,69,.06);
+  box-shadow:0 0 0 3px rgba(233,170,69,.08)}
 /* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
 /* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
 #sd_box input{color:var(--text);-webkit-text-fill-color:var(--text);
@@ -1198,7 +1214,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <label class="f" style="margin-top:16px">服务端版本与物品语法</label>
         <div class="frow" style="margin-top:2px">
           <div style="flex:1">
-            <label class="f" style="margin-top:0">服务端版本 server_version_override</label>
+            <label class="f" id="cfg_server_version_label" style="margin-top:0">服务端版本 server_version_override<span class="rmt-version-mark" aria-hidden="true" title="异地模式：服务端版本未填（附魔 / NBT 会被拒）">!</span></label>
             <input type="text" id="cfg_server_version" placeholder="留空 = 自动探测，例：1.20.1">
           </div>
           <div style="flex:1;max-width:250px">
@@ -2776,6 +2792,44 @@ const S_DEFAULTS = {
 // 这种「必须补的事」要在 summary 上就看得见，不能靠用户自己想起来展开。
 // 反过来说，承载安全警示的状态行（#ver_caps_line / #rcon_runtime_line）与
 // 「重建 RCON 连接」按钮**不进折叠区** —— 收起等于把警示藏掉。
+function renderRconVersionWarning(needsVersion){
+  const label = $("cfg_server_version_label");
+  const field = $("cfg_server_version");
+  if(label){
+    label.classList.toggle("rmt-version-warn", !!needsVersion);
+    const mark = label.querySelector(".rmt-version-mark");
+    if(mark) mark.setAttribute("aria-hidden", needsVersion ? "false" : "true");
+  }
+  if(field) field.classList.toggle("rmt-version-warn", !!needsVersion);
+}
+function renderAdvSummaryText(el, text, warn){
+  if(!el) return;
+  const nextClass = warn ? "adv-sum warn" : "adv-sum";
+  if(el.textContent === text && el.className === nextClass) return;
+  el.__advSummaryTarget = {text, warn};
+  if(!el.dataset.advSummaryReady){
+    el.className = nextClass;
+    el.textContent = text;
+    el.dataset.advSummaryReady = "1";
+    return;
+  }
+  if(el.__advSummarySwapTimer) clearTimeout(el.__advSummarySwapTimer);
+  el.classList.remove("adv-sum-entering");
+  el.classList.add("adv-sum-switching");
+  el.__advSummarySwapTimer = setTimeout(()=>{
+    const target = el.__advSummaryTarget;
+    if(!target) return;
+    el.className = (target.warn ? "adv-sum warn" : "adv-sum") + " adv-sum-entering";
+    el.textContent = target.text;
+    requestAnimationFrame(()=>{
+      if(el.__advSummaryTarget && el.__advSummaryTarget.text === target.text
+         && el.__advSummaryTarget.warn === target.warn){
+        el.classList.remove("adv-sum-entering");
+      }
+    });
+    el.__advSummarySwapTimer = null;
+  }, 120);
+}
 function renderAdvSummary(){
   const el = $("adv_rcon_sum");
   if(!el) return;
@@ -2783,16 +2837,16 @@ function renderAdvSummary(){
   const ver = ($("cfg_server_version") || {}).value || "";
   const to = ($("cfg_rcon_timeout") || {}).value || "";
   const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
-  if(rmt && rmt.checked && !String(ver).trim()){
+  const needsVersion = !!(rmt && rmt.checked && !String(ver).trim());
+  renderRconVersionWarning(needsVersion);
+  if(needsVersion){
     // 异地模式读不到服务端文件 → 版本只能手填；漏填的后果要点名（「会被拒」），
     // 但别写成保存的前置条件：留空照样能保存（v0.23.9 统一口径）。
-    el.className = "adv-sum warn";
-    el.textContent = "⚠ 异地模式：服务端版本未填（附魔 / NBT 会被拒）";
+    renderAdvSummaryText(el, "⚠ 异地模式：服务端版本未填（附魔 / NBT 会被拒）", true);
     return;
   }
-  el.className = "adv-sum";
-  el.textContent = `当前：超时 ${to || "默认 5"}s · `
-    + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）");
+  renderAdvSummaryText(el, `当前：超时 ${to || "默认 5"}s · `
+    + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）"), false);
 }
 function openAdvRcon(focusId){
   const d = $("adv_rcon");
