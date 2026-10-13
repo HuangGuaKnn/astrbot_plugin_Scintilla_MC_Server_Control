@@ -385,21 +385,21 @@ summary:hover{text-decoration:underline}
 .rmt-collapsible.is-visible{max-height:520px;opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
 #remote_mode_pending{max-height:130px}
 .select-pop{position:relative;isolation:isolate}
-.select-pop::after{content:"⌄";position:absolute;right:13px;top:50%;z-index:2;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-58%);transition:transform .26s var(--motion-ease),color .2s ease}
-.select-pop:focus-within::after{transform:translateY(-42%) rotate(180deg);color:var(--cyan)}
-#card_terminal .select-pop select{appearance:none;-webkit-appearance:none;padding-right:38px;border-color:rgba(243,187,82,.35);background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%);transition:transform .26s var(--motion-ease),border-color .24s ease,box-shadow .24s ease,background .24s ease}
-#card_terminal .select-pop select:focus{transform:translateY(-1px);border-color:var(--cyan);background:linear-gradient(110deg,rgba(101,201,255,.1),var(--panel2) 64%);box-shadow:0 0 0 4px rgba(101,201,255,.09),0 10px 24px rgba(0,0,0,.12)}
-#card_terminal .select-pop select:active{transform:translateY(0) scale(.995)}
-/* 新版 Chromium 支持可样式化的原生 picker 时，让真正的选项层也做淡入 / Q 弹；
-   老版浏览器忽略这段，继续使用上面的原生下拉与控件本体过渡。 */
-@supports (appearance:base-select){
-  #card_terminal .select-pop select{appearance:base-select;-webkit-appearance:base-select}
-  #card_terminal .select-pop select::picker-icon{display:none}
-  #card_terminal .select-pop select::picker(select){opacity:0;transform:scale(.97) translateY(-6px);transform-origin:top;
-    transition:opacity .18s ease,transform .26s var(--motion-ease),display .26s allow-discrete}
-  #card_terminal .select-pop select:open::picker(select){opacity:1;transform:none}
-  @starting-style{#card_terminal .select-pop select:open::picker(select){opacity:0;transform:scale(.97) translateY(-6px)}}
-}
+.select-pop::after{content:"⌄";position:absolute;right:15px;top:18px;z-index:4;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-50%);transition:transform .28s var(--motion-ease),color .2s ease}
+.select-pop.is-open{z-index:30}
+.select-pop.is-open::after{transform:translateY(-50%) rotate(180deg);color:var(--cyan)}
+.select-pop .select-native{position:absolute!important;inset:0;width:100%!important;height:100%!important;opacity:0;pointer-events:none;z-index:-1}
+.select-trigger{display:block;width:100%;min-height:38px;padding:9px 38px 9px 12px;text-align:left;font-size:12.5px;line-height:1.45;color:var(--text);border:1px solid rgba(243,187,82,.35);border-radius:10px;background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%);cursor:pointer;transition:transform .26s var(--motion-ease),border-color .24s ease,box-shadow .24s ease,background .24s ease}
+.select-trigger:hover{border-color:var(--cyan)}
+.select-trigger:focus-visible{transform:translateY(-1px);border-color:var(--cyan);background:linear-gradient(110deg,rgba(101,201,255,.1),var(--panel2) 64%);box-shadow:0 0 0 4px rgba(101,201,255,.09),0 10px 24px rgba(0,0,0,.12)}
+.select-trigger:active{transform:translateY(0) scale(.995)}
+.select-menu{position:absolute;left:0;right:0;top:calc(100% + 7px);z-index:3;max-height:0;overflow:hidden;padding:0 8px;opacity:0;pointer-events:none;transform:translateY(-8px) scaleY(.86);transform-origin:top;background:var(--panel);border:1px solid transparent;border-radius:12px;box-shadow:0 16px 36px rgba(0,0,0,.24);transition:max-height .34s var(--motion-ease),padding .34s var(--motion-ease),opacity .2s ease,transform .34s var(--motion-ease),border-color .24s ease}
+.select-pop.is-open .select-menu{max-height:180px;padding:8px;opacity:1;pointer-events:auto;transform:none;border-color:var(--border2)}
+.select-option{display:block;width:100%;padding:8px 10px;border:0;border-radius:8px;text-align:left;color:var(--dim);font-size:11.5px;line-height:1.45;background:transparent;cursor:pointer;opacity:0;transform:translateY(-7px);transition:color .16s ease,background .16s ease,opacity .24s ease,transform .3s var(--motion-ease)}
+.select-pop.is-open .select-option{opacity:1;transform:none}
+.select-pop.is-open .select-option:nth-child(2){transition-delay:.035s}.select-pop.is-open .select-option:nth-child(3){transition-delay:.07s}
+.select-option:hover,.select-option:focus-visible{color:var(--text);background:rgba(101,201,255,.1);outline:none}
+.select-option[aria-selected="true"]{color:var(--cyan);background:rgba(101,201,255,.08);font-weight:700}
 @media(max-width:720px){.topbar{padding:10px 14px}.tabs{padding:0 10px;top:51px}.brand-sub{display:none}main{padding:14px}.savebar{top:90px}.savebar .notice{margin-left:0!important;flex:1 1 100%}}
 
 /* ===== 设置页：分区标题 & 开关网格 ===== */
@@ -1273,11 +1273,13 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     </div>
     <label class="f">权限前置提醒 · 触发时机 permission_hint_mode</label>
     <div class="select-pop" id="perm_hint_mode_select">
-      <select id="cfg_perm_hint_mode">
+      <select class="select-native" id="cfg_perm_hint_mode" aria-hidden="true" tabindex="-1">
         <option value="always">always —— 每次对话都注入（旧行为）</option>
         <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
         <option value="off">off —— 从不注入，只在被拦时告知</option>
       </select>
+      <button type="button" class="select-trigger" id="cfg_perm_hint_mode_trigger" aria-haspopup="listbox" aria-expanded="false">on_demand —— 仅涉及 MC 时注入（默认，推荐）</button>
+      <div class="select-menu" id="cfg_perm_hint_mode_menu" role="listbox" aria-label="权限前置提醒触发时机"></div>
     </div>
     <div class="hint" style="margin-top:2px">
       非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里
@@ -2848,6 +2850,67 @@ function bindPolicyUI(){
   syncPolicyUI();
 }
 // ============ 拦截即终局 · 闸门强化（v0.21.0） ============
+function initPermissionModePicker(){
+  const wrap = $("perm_hint_mode_select"), native = $("cfg_perm_hint_mode");
+  const trigger = $("cfg_perm_hint_mode_trigger"), menu = $("cfg_perm_hint_mode_menu");
+  if(!wrap || !native || !trigger || !menu || wrap.dataset.bound === "1") return;
+  menu.innerHTML = Array.from(native.options).map(opt=>
+    `<button type="button" class="select-option" role="option" data-value="${esc(opt.value)}" aria-selected="false">${esc(opt.textContent)}</button>`
+  ).join("");
+  const options = ()=>Array.from(menu.querySelectorAll(".select-option"));
+  const sync = ()=>{
+    const selected = native.options[native.selectedIndex] || native.options[0];
+    if(selected) trigger.textContent = selected.textContent;
+    options().forEach(opt=>opt.setAttribute("aria-selected", opt.dataset.value === native.value ? "true" : "false"));
+  };
+  const setOpen = open=>{
+    const next = !!open;
+    wrap.classList.toggle("is-open", next);
+    trigger.setAttribute("aria-expanded", next ? "true" : "false");
+    if(next){
+      const active = options().find(opt=>opt.dataset.value === native.value);
+      if(active) active.focus({preventScroll:true});
+    }
+  };
+  const setValue = value=>{
+    if(!Array.from(native.options).some(opt=>opt.value === value)) return;
+    native.value = value;
+    native.dispatchEvent(new Event("change", {bubbles:true}));
+    sync();
+  };
+  trigger.addEventListener("click", ()=>setOpen(trigger.getAttribute("aria-expanded") !== "true"));
+  trigger.addEventListener("keydown", e=>{
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); setOpen(trigger.getAttribute("aria-expanded") !== "true"); return; }
+    if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      setOpen(true);
+      const list = options(), idx = list.findIndex(opt=>opt.dataset.value === native.value);
+      const next = list[Math.max(0, Math.min(list.length-1, idx + (e.key === "ArrowDown" ? 1 : -1)))];
+      if(next) next.focus({preventScroll:true});
+    }
+  });
+  menu.addEventListener("click", e=>{
+    const opt = e.target.closest(".select-option");
+    if(!opt) return;
+    setValue(opt.dataset.value);
+    setOpen(false);
+    trigger.focus({preventScroll:true});
+  });
+  menu.addEventListener("keydown", e=>{
+    const list = options(), current = document.activeElement, idx = list.indexOf(current);
+    if(e.key === "Escape"){ e.preventDefault(); setOpen(false); trigger.focus({preventScroll:true}); return; }
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); if(current) setValue(current.dataset.value); setOpen(false); trigger.focus({preventScroll:true}); return; }
+    if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      const next = list[Math.max(0, Math.min(list.length-1, idx + (e.key === "ArrowDown" ? 1 : -1)))];
+      if(next) next.focus({preventScroll:true});
+    }
+  });
+  native.addEventListener("change", sync);
+  document.addEventListener("click", e=>{ if(!wrap.contains(e.target)) setOpen(false); });
+  wrap.dataset.bound = "1";
+  sync();
+}
 function syncTerminalUI(){
   const now = $("terminal_now");
   const mode = $("cfg_perm_hint_mode"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
@@ -2859,6 +2922,9 @@ function syncTerminalUI(){
   if(latch && latch.checked) on.push("会话闩锁 " + (parseInt((ttl&&ttl.value)||"300",10)||300) + "s");
   now.textContent = on.length ? ("当前生效：" + on.join(" + ")) : "当前生效：仅事后拦截";
   now.style.color = on.length ? "var(--amber)" : "var(--muted, #888)";
+  initPermissionModePicker();
+  const trigger = $("cfg_perm_hint_mode_trigger");
+  if(trigger && document.activeElement !== trigger) trigger.textContent = mode.options[mode.selectedIndex]?.textContent || "";
 }
 function bindTerminalUI(){
   ["cfg_perm_hint_mode","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
