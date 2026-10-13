@@ -384,6 +384,9 @@ summary:hover{text-decoration:underline}
   margin-top:0!important;transition:max-height .42s var(--motion-ease),opacity .24s ease,transform .42s var(--motion-ease),margin-top .42s var(--motion-ease),visibility 0s linear .42s}
 .rmt-collapsible.is-visible{max-height:520px;opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
 #remote_mode_pending{max-height:130px}
+#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
+  transition:max-height .4s var(--motion-ease),opacity .24s ease,transform .4s var(--motion-ease),visibility 0s linear .4s}
+#row_allow_unknown.is-visible{max-height:260px;opacity:1;visibility:visible;transform:none;transition-delay:0s}
 .select-pop{position:relative;isolation:isolate}
 .select-pop::after{content:"⌄";position:absolute;right:15px;top:18px;z-index:4;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-50%);transition:transform .28s var(--motion-ease),color .2s ease}
 .select-pop.is-open{z-index:30}
@@ -1251,7 +1254,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
     </div>
     <!-- v0.23.5：未知命令闸门。只在黑名单策略下生效，因此跟着策略显隐（见 syncPolicyUI） -->
-    <div class="sw-row" id="row_allow_unknown" style="margin-top:14px">
+    <div class="sw-row" id="row_allow_unknown" aria-hidden="true" style="margin-top:14px">
       <div class="sw-t"><b>允许未知命令</b>
         <span>不在已知命令表里的模组 / 整合包自定义命令。<b>默认关闭 = 一律拒绝</b>：
           这类命令无法判定权限等级，危险命令清单也认不出它们 ——
@@ -2824,6 +2827,15 @@ async function refreshVersionCaps(){
 // ============ 命令工具 白名单 / 黑名单（v0.20.0） ============
 // 视觉上是两张模式卡（单选 + 圆点），真实取值仍走隐藏的 select#cfg_danger_policy，
 // 与 CFG_FIELDS / collectSettings 的既有链路完全一致，不新增配置键。
+function setUnknownCommandRowVisible(row, visible){
+  if(!row) return;
+  row.style.display = visible ? "flex" : "none";
+  row.setAttribute("aria-hidden", visible ? "false" : "true");
+  if(!visible){ row.classList.remove("is-visible"); return; }
+  if(row.classList.contains("is-visible")) return;
+  row.classList.remove("is-visible");
+  requestAnimationFrame(()=>{ if(row.style.display !== "none") row.classList.add("is-visible"); });
+}
 function syncPolicyUI(){
   const sel = $("cfg_danger_policy");
   if(!sel) return;
@@ -2836,7 +2848,10 @@ function syncPolicyUI(){
   });
   // v0.23.5：未知命令闸门只在黑名单下生效 → 白名单时整行隐藏，免得摆个没用的开关
   const rowAU = $("row_allow_unknown");
-  if(rowAU) rowAU.style.display = (v === "blacklist") ? "" : "none";
+  if(rowAU){
+    rowAU.style.display = (v === "blacklist") ? "flex" : "none";
+    setUnknownCommandRowVisible(rowAU, v === "blacklist");
+  }
   const now = $("policy_now");
   if(now){
     now.textContent = "当前生效：" + (v === "whitelist" ? "白名单" : "黑名单");
@@ -2855,18 +2870,38 @@ function bindPolicyUI(){
   syncPolicyUI();
 }
 // ============ 拦截即终局 · 闸门强化（v0.21.0） ============
-function initPermissionModePicker(){
-  const wrap = $("perm_hint_mode_select"), native = $("cfg_perm_hint_mode");
-  const trigger = $("cfg_perm_hint_mode_trigger"), menu = $("cfg_perm_hint_mode_menu");
-  if(!wrap || !native || !trigger || !menu || wrap.dataset.bound === "1") return;
-  menu.innerHTML = Array.from(native.options).map(opt=>
-    `<button type="button" class="select-option" role="option" data-value="${esc(opt.value)}" aria-selected="false">${esc(opt.textContent)}</button>`
-  ).join("");
+function setupAnimatedSelect(wrap, native){
+  if(!wrap || !native || wrap.dataset.bound === "1") return;
+  let trigger = wrap.querySelector(".select-trigger");
+  let menu = wrap.querySelector(".select-menu");
+  if(!trigger){
+    trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "select-trigger";
+    wrap.appendChild(trigger);
+  }
+  if(!menu){
+    menu = document.createElement("div");
+    menu.className = "select-menu";
+    menu.setAttribute("role", "listbox");
+    wrap.appendChild(menu);
+  }
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  if(!menu.id) menu.id = `${native.id}_menu`;
+  trigger.setAttribute("aria-controls", menu.id);
   const options = ()=>Array.from(menu.querySelectorAll(".select-option"));
   const sync = ()=>{
     const selected = native.options[native.selectedIndex] || native.options[0];
     if(selected) trigger.textContent = selected.textContent;
     options().forEach(opt=>opt.setAttribute("aria-selected", opt.dataset.value === native.value ? "true" : "false"));
+  };
+  const renderOptions = ()=>{
+    const current = native.value;
+    menu.innerHTML = Array.from(native.options).map(opt=>
+      `<button type="button" class="select-option" role="option" data-value="${esc(opt.value)}" aria-selected="${opt.value === current ? "true" : "false"}">${esc(opt.textContent)}</button>`
+    ).join("");
+    sync();
   };
   const setOpen = open=>{
     const next = !!open;
@@ -2912,9 +2947,40 @@ function initPermissionModePicker(){
     }
   });
   native.addEventListener("change", sync);
+  if(window.MutationObserver){
+    const mo = new MutationObserver(renderOptions);
+    mo.observe(native, {childList:true});
+    wrap.__selectObserver = mo;
+  }
   document.addEventListener("click", e=>{ if(!wrap.contains(e.target)) setOpen(false); });
+  wrap.__selectSync = sync;
   wrap.dataset.bound = "1";
-  sync();
+  renderOptions();
+}
+function initAnimatedSelects(){
+  document.querySelectorAll("select").forEach(native=>{
+    if(native.hidden || native.style.display === "none" || native.closest(".select-pop") || native.id === "cfg_danger_policy") return;
+    const parent = native.parentElement;
+    if(!parent) return;
+    const cs = getComputedStyle(native);
+    const wrap = document.createElement("div");
+    wrap.className = "select-pop select-pop-generic";
+    wrap.style.flex = cs.flex;
+    wrap.style.maxWidth = cs.maxWidth;
+    wrap.style.minWidth = cs.minWidth;
+    wrap.style.alignSelf = cs.alignSelf;
+    wrap.style.gridColumn = cs.gridColumn;
+    parent.insertBefore(wrap, native);
+    wrap.appendChild(native);
+    native.classList.add("select-native");
+    native.setAttribute("aria-hidden", "true");
+    native.tabIndex = -1;
+    setupAnimatedSelect(wrap, native);
+  });
+}
+function initPermissionModePicker(){
+  const wrap = $("perm_hint_mode_select"), native = $("cfg_perm_hint_mode");
+  setupAnimatedSelect(wrap, native);
 }
 function syncTerminalUI(){
   const now = $("terminal_now");
@@ -4495,6 +4561,8 @@ function bind(){
   bindColors();
   bindPrompts();
   bindTargets();
+  // 统一把可见原生下拉升级成同一套卷帘控件；底层 select 仍保留用于配置读取 / 写回。
+  initAnimatedSelects();
 }
 
 // ============ 主题切换（v0.21.13 / v0.23.4）============
