@@ -504,6 +504,9 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 /* 标签落在标题行右上角：那一行右侧本来就是空的，不会盖住输入框与提示 */
 .rmt-off-soft>.rmt-tag{position:absolute;top:0;right:0;left:auto;transform:translateY(-50%)}
 .rmt-off-soft #sd_hint{color:var(--warn)}
+/* 目录标记框向外扩展，给输入框与说明留白，并保留原始宽度和对齐。 */
+#sd_box.rmt-off-soft::after{inset:-8px -12px}
+@media(max-width:640px){#sd_box.rmt-off-soft::after{inset:-8px -10px}}
 /* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
