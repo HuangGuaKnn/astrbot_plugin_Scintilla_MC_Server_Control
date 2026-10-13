@@ -374,6 +374,35 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 details{font-size:12.5px}
 summary{color:var(--cyan);cursor:pointer;font-weight:600;padding:4px 0;user-select:none}
 summary:hover{text-decoration:underline}
+#sv_status{min-height:118px}
+#sv_players{min-height:118px;align-content:flex-start}
+#sv_status,#sv_players{position:relative;transition:opacity .24s ease}
+#sv_status.is-loading,#sv_players.is-loading{opacity:.52}
+#sv_status.is-loading::after,#sv_players.is-loading::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;border-radius:99px;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent);background-size:42% 100%;background-repeat:no-repeat;animation:query-scan 1.2s ease-in-out infinite;pointer-events:none}
+@keyframes query-scan{0%{background-position:-45% 0}100%{background-position:145% 0}}
+.status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
+@keyframes status-error-shake{0%,100%{transform:translateX(0) rotate(0)}18%{transform:translateX(-6px) rotate(-1.2deg)}36%{transform:translateX(6px) rotate(1.2deg)}54%{transform:translateX(-4px) rotate(-.7deg)}72%{transform:translateX(3px) rotate(.5deg)}88%{transform:translateX(-1px) rotate(0)}}
+.rmt-collapsible{display:block;overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
+  margin-top:0!important;transition:max-height .42s var(--motion-ease),opacity .24s ease,transform .42s var(--motion-ease),margin-top .42s var(--motion-ease),visibility 0s linear .42s}
+.rmt-collapsible.is-visible{max-height:520px;opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
+#remote_mode_pending{max-height:130px}
+.select-pop{position:relative;isolation:isolate}
+.select-pop::after{content:"⌄";position:absolute;right:13px;top:50%;z-index:2;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-58%);transition:transform .26s var(--motion-ease),color .2s ease}
+.select-pop:focus-within::after{transform:translateY(-42%) rotate(180deg);color:var(--cyan)}
+#card_terminal .select-pop select{appearance:none;-webkit-appearance:none;padding-right:38px;border-color:rgba(243,187,82,.35);background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%);transition:transform .26s var(--motion-ease),border-color .24s ease,box-shadow .24s ease,background .24s ease}
+#card_terminal .select-pop select:focus{transform:translateY(-1px);border-color:var(--cyan);background:linear-gradient(110deg,rgba(101,201,255,.1),var(--panel2) 64%);box-shadow:0 0 0 4px rgba(101,201,255,.09),0 10px 24px rgba(0,0,0,.12)}
+#card_terminal .select-pop select:active{transform:translateY(0) scale(.995)}
+/* 新版 Chromium 支持可样式化的原生 picker 时，让真正的选项层也做淡入 / Q 弹；
+   老版浏览器忽略这段，继续使用上面的原生下拉与控件本体过渡。 */
+@supports (appearance:base-select){
+  #card_terminal .select-pop select{appearance:base-select;-webkit-appearance:base-select}
+  #card_terminal .select-pop select::picker-icon{display:none}
+  #card_terminal .select-pop select::picker(select){opacity:0;transform:scale(.97) translateY(-6px);transform-origin:top;
+    transition:opacity .18s ease,transform .26s var(--motion-ease),display .26s allow-discrete}
+  #card_terminal .select-pop select:open::picker(select){opacity:1;transform:none}
+  @starting-style{#card_terminal .select-pop select:open::picker(select){opacity:0;transform:scale(.97) translateY(-6px)}}
+}
 @media(max-width:720px){.topbar{padding:10px 14px}.tabs{padding:0 10px;top:51px}.brand-sub{display:none}main{padding:14px}.savebar{top:90px}.savebar .notice{margin-left:0!important;flex:1 1 100%}}
 
 /* ===== 设置页：分区标题 & 开关网格 ===== */
@@ -845,7 +874,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div class="grid g2">
     <div class="card">
       <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
-      <div id="sv_status"><span class="muted">加载中…</span></div>
+      <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
       <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
       <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
     </div>
@@ -1096,7 +1125,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <div class="sw-t"><b>异地 RCON 模式</b><span>AstrBot 与服务端不在同一台机器 · 只映射了 RCON 端口</span></div>
         <label class="sw"><input type="checkbox" id="cfg_remote_rcon_mode"><span class="sl"></span></label>
       </div>
-      <div class="hint" id="remote_mode_hint" style="display:none;margin-top:2px">
+      <div class="hint rmt-collapsible" id="remote_mode_hint" aria-hidden="true" aria-live="polite" style="margin-top:2px">
         <span id="rmt_hint_tag">已开启：</span><b>服务器目录可以留空</b>，插件只走 RCON 下发指令。作为交换，
         <b>物品词典 / 知识库 / 聊天桥接 / 服务器事件播报 / 版本探测 / 进程指标</b>
         这些依赖服务端本地文件的能力会按设计禁用 —— 下方对应区块会被<b>标记为不可用并写明原因</b>，
@@ -1105,7 +1134,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         插件不会猜一个版本硬编）：附魔 / NBT / 物品组件类请求会被拒绝。要用这类功能，请在此手填：
         <span class="jump" onclick="openAdvRcon('cfg_server_version')">展开「进阶设置」填写 →</span>
       </div>
-      <div class="hint" id="remote_mode_pending" style="display:none;margin-top:2px;color:var(--warn)"></div>
+      <div class="hint rmt-collapsible" id="remote_mode_pending" aria-hidden="true" aria-live="polite" style="margin-top:2px;color:var(--warn)"></div>
       <div id="sd_box" style="margin-top:12px">
         <label class="f" style="margin-top:0">服务器目录 server_dir</label>
         <input type="text" id="cfg_server_dir" placeholder="C:\...\Server">
@@ -1246,11 +1275,13 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       改个参数、换个工具接着硬试。
     </div>
     <label class="f">权限前置提醒 · 触发时机 permission_hint_mode</label>
-    <select id="cfg_perm_hint_mode">
-      <option value="always">always —— 每次对话都注入（旧行为）</option>
-      <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
-      <option value="off">off —— 从不注入，只在被拦时告知</option>
-    </select>
+    <div class="select-pop" id="perm_hint_mode_select">
+      <select id="cfg_perm_hint_mode">
+        <option value="always">always —— 每次对话都注入（旧行为）</option>
+        <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
+        <option value="off">off —— 从不注入，只在被拦时告知</option>
+      </select>
+    </div>
     <div class="hint" style="margin-top:2px">
       非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里
       （不动系统提示词，避免影响缓存命中）。<b>on_demand</b> 只在两种情况注入：
@@ -1844,38 +1875,54 @@ function testRconInto(elId){
 
 // ============ 服务器页 ============
 async function loadServer(){
-  $("sv_status").innerHTML = `<span class="muted">正在查询…</span>`;
-  $("sv_players").innerHTML = "";
-  const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
-  // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
-  // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
-  renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
-  if(!r.ok){
-    $("sv_status").innerHTML = `<span class="badge bad">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
-    $("sv_players").innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
-    $("sv_online_tag").innerHTML = "";
-    return;
+  if(loadServer._pending) return;
+  const status = $("sv_status"), players = $("sv_players"), refresh = $("sv_refresh");
+  loadServer._pending = true;
+  status.classList.add("is-loading");
+  players.classList.add("is-loading");
+  status.setAttribute("aria-busy", "true");
+  players.setAttribute("aria-busy", "true");
+  if(refresh) refresh.disabled = true;
+  try{
+    // 保留上一份内容，查询期间只降低明度并显示扫描线，避免成功 / 失败两种高度切换造成页面跳动。
+    const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
+    // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
+    // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
+    renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
+    if(!r.ok){
+      status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+      players.innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
+      $("sv_online_tag").innerHTML = "";
+      return;
+    }
+    const list = r.list||{};
+    status.innerHTML = `
+      <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
+      <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
+      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+    // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
+    // 等于「版本未知」这条最重要的提示根本没到用户眼前。
+    if(r.version_hint){
+      $("sv_ver_caps").insertAdjacentHTML("beforeend",
+        `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
+    }
+    // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
+    if(RMT.on) status.insertAdjacentHTML("beforeend",
+      `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
+      + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
+    $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
+    const pls = list.players||[];
+    players.innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
+    // 事件流
+    loadServerEvents();
+  }finally{
+    loadServer._pending = false;
+    status.classList.remove("is-loading");
+    players.classList.remove("is-loading");
+    status.removeAttribute("aria-busy");
+    players.removeAttribute("aria-busy");
+    if(refresh) refresh.disabled = false;
   }
-  const list = r.list||{};
-  $("sv_status").innerHTML = `
-    <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
-    <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
-    <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
-  // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
-  // 等于「版本未知」这条最重要的提示根本没到用户眼前。
-  if(r.version_hint){
-    $("sv_ver_caps").insertAdjacentHTML("beforeend",
-      `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
-  }
-  // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
-  if(RMT.on) $("sv_status").insertAdjacentHTML("beforeend",
-    `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
-    + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
-  $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
-  const pls = list.players||[];
-  $("sv_players").innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
-  // 事件流
-  loadServerEvents();
 }
 async function loadServerEvents(){
   const r = await callGet("events").catch(()=>({ok:false}));
@@ -3844,6 +3891,17 @@ function rmtClear(el, mode){
                      : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge"));
   if(chip) chip.remove();
 }
+function setRmtMessageVisible(el, visible){
+  if(!el) return;
+  const already = el.classList.contains("is-visible");
+  el.style.display = visible ? "block" : "none";
+  el.setAttribute("aria-hidden", visible ? "false" : "true");
+  if(!visible){ el.classList.remove("is-visible"); return; }
+  if(already){ el.classList.add("is-visible"); return; }
+  // 先显示折叠盒，再在下一帧展开，让 max-height / opacity / 位移过渡真正生效。
+  el.classList.remove("is-visible");
+  requestAnimationFrame(()=>{ if(el.style.display !== "none") el.classList.add("is-visible"); });
+}
 function syncRemoteModeUI(){
   const sw = $("cfg_remote_rcon_mode");
   if(!sw) return;
@@ -3879,7 +3937,7 @@ function syncRemoteModeUI(){
     if(on) rmtMark(row, "该工具不可用", RMT_ROW_WHY, "row"); else rmtClear(row, "row");
   }
   const hint = $("remote_mode_hint");
-  if(hint) hint.style.display = on ? "block" : "none";
+  setRmtMessageVisible(hint, on);
   // 开关被拨到「关」却没保存时，这行说明照旧留着（它讲的是后端实况）——
   // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得用户对着关掉的开关读「已开启」。
   const hTag = $("rmt_hint_tag");
@@ -3887,7 +3945,7 @@ function syncRemoteModeUI(){
   // ④ 「开关动了但没保存」必须当场说清 —— 否则用户会以为封禁坏了 / 以为已经生效了
   const pendEl = $("remote_mode_pending");
   if(pendEl){
-    pendEl.style.display = pending ? "block" : "none";
+    setRmtMessageVisible(pendEl, pending);
     if(pending){
       pendEl.innerHTML = draft
         ? "⚠ 开关已勾选，但<b>还没有保存</b> —— 本地文件类能力现在仍按原样可用；"
