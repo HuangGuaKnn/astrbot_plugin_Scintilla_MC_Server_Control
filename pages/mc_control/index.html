@@ -378,9 +378,6 @@ summary:hover{text-decoration:underline}
 #sv_players{min-height:118px;align-content:flex-start}
 #sv_status,#sv_players{position:relative;transition:opacity .24s ease}
 #sv_status.is-loading,#sv_players.is-loading{opacity:.52}
-#sv_status.is-loading::after,#sv_players.is-loading::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;border-radius:99px;
-  background:linear-gradient(90deg,transparent,var(--cyan),transparent);background-size:42% 100%;background-repeat:no-repeat;animation:query-scan 1.2s ease-in-out infinite;pointer-events:none}
-@keyframes query-scan{0%{background-position:-45% 0}100%{background-position:145% 0}}
 .status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
 @keyframes status-error-shake{0%,100%{transform:translateX(0) rotate(0)}18%{transform:translateX(-6px) rotate(-1.2deg)}36%{transform:translateX(6px) rotate(1.2deg)}54%{transform:translateX(-4px) rotate(-.7deg)}72%{transform:translateX(3px) rotate(.5deg)}88%{transform:translateX(-1px) rotate(0)}}
 .rmt-collapsible{display:block;overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
@@ -1884,7 +1881,7 @@ async function loadServer(){
   players.setAttribute("aria-busy", "true");
   if(refresh) refresh.disabled = true;
   try{
-    // 保留上一份内容，查询期间只降低明度并显示扫描线，避免成功 / 失败两种高度切换造成页面跳动。
+    // 保留上一份内容，查询期间只降低明度，避免成功 / 失败两种高度切换造成页面跳动。
     const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
     // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
     // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
