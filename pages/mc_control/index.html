@@ -444,8 +444,13 @@ details.adv-fold>summary{font-size:11px;font-weight:600;list-style:none;display:
 details.adv-fold>summary::-webkit-details-marker{display:none}
 details.adv-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
 details.adv-fold[open]>summary::before{content:"▾"}
-details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
+details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";display:inline-block;max-width:240px;overflow:hidden;white-space:nowrap;font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85;transition:max-width .24s var(--motion-ease),margin-left .2s ease,opacity .2s ease}
 details.adv-fold[open]>summary::after{content:"（点标题收起）"}
+/* 黄色的「版本未填」警告需要独占摘要空间，收起这句辅助提示，避免被挤到下一行。
+   警告态不能沿用辅助文案的 max-width 过渡：过渡中的残余宽度会把摘要徽标
+   挤到下一行，产生一次非线性的高度跳变。进入警告态时直接释放该 flex 项；
+   离开警告态仍沿用普通态的渐入效果。 */
+details.adv-fold.adv-rcon-warn>summary::after{max-width:0;margin-left:0;opacity:0;visibility:hidden;pointer-events:none;transition:none}
 details.adv-fold .hint{margin-top:9px;line-height:1.7}
 details.adv-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);font-weight:500}
@@ -2833,11 +2838,13 @@ function renderAdvSummaryText(el, text, warn){
 function renderAdvSummary(){
   const el = $("adv_rcon_sum");
   if(!el) return;
+  const adv = $("adv_rcon");
   const rmt = $("cfg_remote_rcon_mode");
   const ver = ($("cfg_server_version") || {}).value || "";
   const to = ($("cfg_rcon_timeout") || {}).value || "";
   const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
   const needsVersion = !!(rmt && rmt.checked && !String(ver).trim());
+  if(adv) adv.classList.toggle("adv-rcon-warn", needsVersion);
   renderRconVersionWarning(needsVersion);
   if(needsVersion){
     // 异地模式读不到服务端文件 → 版本只能手填；漏填的后果要点名（「会被拒」），
