@@ -722,6 +722,51 @@ details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.4
 select option,select optgroup{background-color:var(--panel2);color:var(--text)}
 select option:checked,select option:hover{background-color:var(--panel3);color:var(--text)}
 
+/* ===== v0.24.3 · 视觉与动效微调 =====
+   只给现有组件补充状态反馈与层次，不改变页面数据流或控件语义。 */
+:root{--motion-ease:cubic-bezier(.2,.75,.2,1)}
+body{position:relative;isolation:isolate;overflow-x:clip}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.42;
+  background-image:linear-gradient(rgba(101,201,255,.018) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(101,201,255,.018) 1px,transparent 1px),
+    radial-gradient(520px 260px at 12% 12%,rgba(101,201,255,.08),transparent 70%),
+    radial-gradient(460px 240px at 88% 72%,rgba(243,187,82,.055),transparent 72%);
+  background-size:36px 36px,36px 36px,auto,auto;
+  animation:ambient-drift 26s ease-in-out infinite alternate}
+:root[data-theme="light"] body::before{opacity:.24}
+.scroll-progress{position:fixed;left:0;top:0;z-index:100;width:0;height:3px;pointer-events:none;
+  background:linear-gradient(90deg,var(--cyan),var(--violet) 55%,var(--amber));
+  box-shadow:0 0 14px rgba(101,201,255,.7);transform-origin:left;transition:width .12s linear}
+.hero-live{display:flex;align-items:center;gap:7px;margin-bottom:11px;color:var(--dim);font-size:10px;letter-spacing:.05em}
+.hero-live-dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--amber);box-shadow:0 0 0 4px rgba(243,187,82,.12);animation:live-pulse 2s ease-in-out infinite}
+.hero-live-dot.ok{background:var(--ok);box-shadow:0 0 0 4px rgba(89,217,154,.12),0 0 14px rgba(89,217,154,.52)}
+.hero-live-dot.bad{background:var(--bad);box-shadow:0 0 0 4px rgba(255,128,99,.12),0 0 12px rgba(255,128,99,.42)}
+.hero-live-dot.pending{animation-duration:1.15s}
+.hero-live-time{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums}
+.overview-hero::before{content:"";position:absolute;inset:-45% 34% auto -12%;height:180%;
+  background:linear-gradient(108deg,transparent 36%,rgba(255,255,255,.075) 48%,transparent 60%);
+  transform:translateX(-55%) rotate(8deg);pointer-events:none;animation:hero-sheen 12s var(--motion-ease) infinite}
+.overview-hero>*{position:relative;z-index:1}
+.page.active>.overview-hero,.page.active>.section-lead,.page.active>.card,.page.active>.grid>.card,.page.active>.grid>.stat{
+  animation:surface-in .46s var(--motion-ease) both}
+.page.active>.section-lead{animation-delay:.04s}
+.page.active>.overview-hero{animation-delay:.02s}
+.page.active>.grid>*:nth-child(2){animation-delay:.06s}
+.page.active>.grid>*:nth-child(3){animation-delay:.1s}
+.page.active>.grid>*:nth-child(4){animation-delay:.14s}
+@media(hover:hover){
+  .card,.stat{transition:transform .2s var(--motion-ease),border-color .2s ease,box-shadow .2s ease}
+  .card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--cyan) 28%,var(--border));box-shadow:0 14px 34px rgba(0,0,0,.13)}
+  .stat:hover{transform:translateY(-3px);box-shadow:0 14px 30px rgba(0,0,0,.16)}
+  .hero-pills span{transition:transform .18s ease,background .18s ease,border-color .18s ease}
+  .hero-pills span:hover{transform:translateY(-2px);border-color:var(--cyan);background:rgba(101,201,255,.1)}
+}
+@keyframes surface-in{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes live-pulse{0%,100%{transform:scale(1);opacity:.78}50%{transform:scale(1.22);opacity:1}}
+@keyframes hero-sheen{0%,58%{transform:translateX(-55%) rotate(8deg);opacity:0}70%{opacity:.8}88%,100%{transform:translateX(210%) rotate(8deg);opacity:0}}
+@keyframes ambient-drift{from{background-position:0 0,0 0,0 0,0 0}to{background-position:18px 12px,-14px 9px,22px -10px,-18px 14px}}
+@media(prefers-reduced-motion:reduce){body::before,.overview-hero::before,.hero-live-dot{animation:none}.page.active>.overview-hero,.page.active>.section-lead,.page.active>.card,.page.active>.grid>.card,.page.active>.grid>.stat{animation:none}.scroll-progress{transition:none}}
+
 </style>
 </head>
 <body>
@@ -732,7 +777,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <div>
       <div style="display:flex;align-items:center;gap:8px">
         <span class="brand-name">Minecraft Server 智控台</span>
-        <span class="ver" id="ver">v0.23.3</span>
+        <span class="ver" id="ver">v0.24.3</span>
       </div>
       <div class="brand-sub">RCON 控制 · 知识库 · 多Agent 工作流 · 提示词 · 事件播报</div>
     </div>
@@ -744,6 +789,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <button class="winbtn" id="winbtn" style="display:none" onclick="openStandalone()">⧉ 新窗口打开</button>
   </div>
 </div>
+
+<div class="scroll-progress" id="scroll_progress" aria-hidden="true"></div>
 
 <!-- ===== Tab 导航 ===== -->
 <nav class="tabs" id="tabs">
@@ -766,6 +813,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <p>从 RCON 状态、在线玩家到知识库与 Agent 工作流，重要信息集中在这里。先看运行状态，再决定下一步动作。</p>
     </div>
     <div class="hero-side">
+      <div class="hero-live" role="status" aria-live="polite"><span class="hero-live-dot pending" id="hero_live_dot"></span><span id="hero_live_text">正在建立连接</span><span class="hero-live-time" id="hero_live_time">--:--</span></div>
       <div class="hero-side-label">今日控制面</div>
       <div class="hero-side-title">实时运行 · 清晰可控</div>
       <div class="hero-side-copy">用事件流追踪服务器变化，用知识库和工作流减少重复操作。</div>
@@ -1522,6 +1570,18 @@ let WF = null;       // 工作流快照
 const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// 顶部细进度条只反映当前页面滚动位置，不参与任何业务请求。
+function syncScrollProgress(){
+  const bar = $("scroll_progress");
+  if(!bar) return;
+  const root = document.documentElement;
+  const max = Math.max(0, root.scrollHeight - root.clientHeight);
+  bar.style.width = (max ? Math.min(100, Math.max(0, window.scrollY / max * 100)) : 0) + "%";
+}
+window.addEventListener("scroll", syncScrollProgress, {passive:true});
+window.addEventListener("resize", syncScrollProgress);
+syncScrollProgress();
+
 // ============ API 层（bridge 优先，直连降级） ============
 async function directApi(path, method, body){
   const opt = { method, credentials: "include", headers: {} };
@@ -1601,11 +1661,20 @@ function setNotice(el, txt, isErr){
   clearTimeout(el._t);
   el._t = setTimeout(()=>{ el.className="notice"; }, 3500);
 }
-function connDot(ok, txt){ $("conn_dot").className = "p " + (ok?"on":"off"); $("conn_txt").textContent = txt; }
+function connDot(ok, txt){
+  $("conn_dot").className = "p " + (ok === null ? "" : (ok ? "on" : "off"));
+  $("conn_txt").textContent = txt;
+  const dot = $("hero_live_dot"), text = $("hero_live_text"), time = $("hero_live_time");
+  if(dot) dot.className = "hero-live-dot " + (ok === null ? "pending" : (ok ? "ok" : "bad"));
+  if(text) text.textContent = ok === null ? "正在建立连接" : (ok ? "控制台已连接" : "连接失败 · 请检查配置");
+  if(time && ok !== null) time.textContent = new Date().toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit"});
+}
 function modeTag(){ $("mode_tag").innerHTML = "模式 <b>"+(mode==="bridge"?"桥接":"直连")+"</b>"; }
 
 // ============ Tab 切换 ============
 function switchTab(name){
+  if(!document.getElementById("page_" + name)) return;
+  if(window.scrollY > 0) window.scrollTo({top:0, behavior:"auto"});
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.page===name));
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.id==="page_"+name));
   if(name==="overview") loadOverview();
