@@ -385,8 +385,11 @@ summary:hover{text-decoration:underline}
 @keyframes wf-refresh-spin{to{transform:rotate(360deg)}}
 .rmt-collapsible{display:block;overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
   margin-top:0!important;transition:max-height .42s var(--motion-ease),opacity .24s ease,transform .42s var(--motion-ease),margin-top .42s var(--motion-ease),visibility 0s linear .42s}
-.rmt-collapsible.is-visible{max-height:520px;opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
-#remote_mode_pending{max-height:130px}
+.rmt-collapsible.is-visible{max-height:var(--rmt-open-height,520px);opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
+/* 待保存提示是独立的短消息：隐藏态也必须保持 max-height:0，避免关闭时
+   留下 130px 的空位；显示态使用脚本测得的真实内容高度来做卷帘过渡。 */
+#remote_mode_pending{max-height:0}
+#remote_mode_pending.is-visible{max-height:var(--rmt-open-height,130px)}
 #row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
   transition:max-height .4s var(--motion-ease),opacity .24s ease,transform .4s var(--motion-ease),visibility 0s linear .4s}
 #row_allow_unknown.is-visible{max-height:260px;opacity:1;visibility:visible;transform:none;transition-delay:0s}
@@ -4095,6 +4098,8 @@ function setRmtMessageVisible(el, visible){
     // 关闭时保留盒子，让 max-height / opacity / 位移过渡完整播放；动画结束
     // 再隐藏，避免下一次打开时留下不可见的布局占位。
     if(!already){ el.style.display = "none"; return; }
+    // 用当前真实高度作为反向动画的起点，不让固定上限把内容瞬间压回去。
+    el.style.setProperty("--rmt-open-height", Math.max(1, el.scrollHeight) + "px");
     el.classList.remove("is-visible");
     el.__rmtHideTimer = setTimeout(()=>{
       if(!el.classList.contains("is-visible")) el.style.display = "none";
@@ -4103,10 +4108,21 @@ function setRmtMessageVisible(el, visible){
     return;
   }
   el.style.display = "block";
+  // 先读取内容实际占用的高度，再让 .is-visible 使用这个值；短提示不会
+  // 因为从 0 过渡到 520px 而在首帧突然把下面的输入框推开。
+  const measureRmtHeight = ()=>{
+    if(el.style.display !== "none"){
+      el.style.setProperty("--rmt-open-height", Math.max(1, el.scrollHeight) + "px");
+    }
+  };
+  measureRmtHeight();
   if(already){ el.classList.add("is-visible"); return; }
   // 先显示折叠盒，再在下一帧展开，让 max-height / opacity / 位移过渡真正生效。
   el.classList.remove("is-visible");
-  requestAnimationFrame(()=>{ if(el.style.display !== "none") el.classList.add("is-visible"); });
+  requestAnimationFrame(()=>{
+    measureRmtHeight();
+    if(el.style.display !== "none") el.classList.add("is-visible");
+  });
 }
 function syncRemoteModeUI(){
   const sw = $("cfg_remote_rcon_mode");
@@ -4146,16 +4162,15 @@ function syncRemoteModeUI(){
     if(!row) continue;
     if(on) rmtMark(row, "该工具不可用", RMT_ROW_WHY, "row"); else rmtClear(row, "row");
   }
-  const hint = $("remote_mode_hint");
-  setRmtMessageVisible(hint, on);
   // 开关被拨到「关」却没保存时，这行说明照旧留着（它讲的是后端实况）——
   // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得用户对着关掉的开关读「已开启」。
   const hTag = $("rmt_hint_tag");
   if(hTag) hTag.textContent = (on && pending) ? "后端当前已保存为『开启』：" : "已开启：";
+  const hint = $("remote_mode_hint");
+  setRmtMessageVisible(hint, on);
   // ④ 「开关动了但没保存」必须当场说清 —— 否则用户会以为封禁坏了 / 以为已经生效了
   const pendEl = $("remote_mode_pending");
   if(pendEl){
-    setRmtMessageVisible(pendEl, pending);
     if(pending){
       pendEl.innerHTML = draft
         ? "⚠ 开关已勾选，但<b>还没有保存</b> —— 本地文件类能力现在仍按原样可用；"
@@ -4164,6 +4179,8 @@ function syncRemoteModeUI(){
           + "物品词典 / 知识库 / 播报等<b>仍旧不可用</b>（下列区块与知识库页保持封禁）。"
           + "点上方「保存全部设置」后才会真正恢复。";
     }
+    // 文案先写入，再测量真实高度，目录输入框会随着消息内容匀速展开 / 收回。
+    setRmtMessageVisible(pendEl, pending);
   }
   // ⑤ 整页封禁：知识库整页都长在物品词典 / 整合包指纹上，一页全废 → 整页磨砂 + 一张公告
   const kbPage = $(RMT_SEAL.id);
