@@ -4116,6 +4116,7 @@ function rmtCancelHintSwap(el){
   el.__rmtHintSwapToken = (el.__rmtHintSwapToken || 0) + 1;
   if(el.__rmtHintSwapRaf){ cancelAnimationFrame(el.__rmtHintSwapRaf); el.__rmtHintSwapRaf = null; }
   if(el.__rmtHintSwapTimer){ clearTimeout(el.__rmtHintSwapTimer); el.__rmtHintSwapTimer = null; }
+  if(el.__rmtHintSwapSwapTimer){ clearTimeout(el.__rmtHintSwapSwapTimer); el.__rmtHintSwapSwapTimer = null; }
   el.__rmtHintSwapActive = false;
   const hint = el.querySelector("#sd_hint");
   if(hint){
@@ -4137,8 +4138,10 @@ function rmtAnimateHintSwap(el, nextHtml, onDone){
   hint.style.height = from + "px";
   hint.style.overflow = "hidden";
   hint.style.transition = "height .36s var(--motion-ease),opacity .24s ease,transform .32s var(--motion-ease)";
-  hint.style.opacity = "0";
-  hint.style.transform = "translateY(-4px)";
+  // 先明确保持原文可见，下一帧才开始退场；否则同一帧内直接设为 0，
+  // 浏览器没有机会绘制出「原文正在淡出」的中间状态。
+  hint.style.opacity = "1";
+  hint.style.transform = "none";
   const finish = ()=>{
     if(el.__rmtHintSwapToken !== token) return;
     el.__rmtHintSwapActive = false;
@@ -4148,17 +4151,30 @@ function rmtAnimateHintSwap(el, nextHtml, onDone){
   };
   el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
     if(el.__rmtHintSwapToken !== token) return;
-    hint.innerHTML = nextHtml;
-    const target = Math.max(1, Math.ceil(hint.scrollHeight || 1));
-    el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+    hint.style.opacity = "0";
+    hint.style.transform = "translateY(-4px)";
+    el.__rmtHintSwapRaf = null;
+    // 让原文先完整退场，再替换 HTML；随后高度与新文案一起进入，
+    // 避免新文案在旧的两行高度里停留到动画末尾才突然收缩。
+    el.__rmtHintSwapSwapTimer = setTimeout(()=>{
       if(el.__rmtHintSwapToken !== token) return;
-      hint.style.height = target + "px";
-      hint.style.opacity = "1";
-      hint.style.transform = "none";
-      el.__rmtHintSwapRaf = null;
-    });
+      hint.innerHTML = nextHtml;
+      // 读取自然高度时暂时解除旧的固定高度，否则 scrollHeight 会被旧的
+      // 两行高度“垫住”，动画结束清理 inline height 时就会突然缩回一行。
+      hint.style.height = "auto";
+      const target = Math.max(1, Math.ceil(hint.getBoundingClientRect().height || hint.scrollHeight || 1));
+      hint.style.height = from + "px";
+      el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+        if(el.__rmtHintSwapToken !== token) return;
+        hint.style.height = target + "px";
+        hint.style.opacity = "1";
+        hint.style.transform = "none";
+        el.__rmtHintSwapRaf = null;
+        el.__rmtHintSwapSwapTimer = null;
+      });
+    }, 150);
   });
-  el.__rmtHintSwapTimer = setTimeout(finish, 430);
+  el.__rmtHintSwapTimer = setTimeout(finish, 570);
 }
 function rmtSoftHint(el, why){
   const hint = el.querySelector("#sd_hint");
