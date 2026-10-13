@@ -51,6 +51,11 @@ ITEM_SYNTAX_COMPONENTS = "components"
 #: 版本未知且未手动声明 —— 不得生成任何带数据的命令
 ITEM_SYNTAX_UNKNOWN = "unknown"
 
+#: 插件官方支持的最低 Minecraft 版本（主人 2026-10-14 裁决守门铁律）
+#: 1.7.10 向下的远古版本不在官方支持范围内；若在此类服务端上运行，按 1.7.10
+#: 最低支持规则（预扁平化家族名 + 数据值）尽力回落生成，官方不承诺兼容性且不接收反馈。
+MIN_SUPPORTED_MC_VERSION = (1, 7, 10)
+
 #: 预扁平化分水岭（v0.23.2）：1.13 重写了命令图（give/execute/effect/difficulty/data）
 #: 并做资源 ID 扁平化。低于此版本 = 本插件不自动生成命令。
 ITEM_PREFLATTEN_CUTOVER = (1, 13)
@@ -542,6 +547,11 @@ def build_version_context(
         lines.append(
             f"- 物品语法世代：**legacy_preflatten**（1.13 以下 · 预扁平化；来源：{syntax_source}）"
         )
+        if info.mc is not None and tuple(info.mc) < MIN_SUPPORTED_MC_VERSION:
+            lines.append(
+                f"- ⚠️ **该服务端版本（{version_text(info.mc)}）低于插件官方支持下限 {version_text(MIN_SUPPORTED_MC_VERSION)}**。"
+                "本次生成按 1.7.10 最低支持规则尽力回落，不承诺可用性或兼容性。"
+            )
         lines.append(
             "- 本版本正确的物品写法（照抄结构，只换 ID / 数量 / 数据值）：\n  " + _PREFLATTEN_TEMPLATE
         )
@@ -622,10 +632,16 @@ def describe_capabilities(
     if syntax == ITEM_SYNTAX_UNKNOWN:
         support_note = "版本未知：带 NBT / 附魔 / 物品组件的请求不会被自动生成"
     elif syntax == ITEM_SYNTAX_PREFLATTEN:
-        support_note = (
-            f"预扁平化世代（低于 {version_text(ITEM_PREFLATTEN_CUTOVER)}）："
-            "按「家族名 + 数据值」生成，域外数据值一律拒绝"
-        )
+        if info.mc is not None and tuple(info.mc) < MIN_SUPPORTED_MC_VERSION:
+            support_note = (
+                f"低于官方支持下限（{version_text(MIN_SUPPORTED_MC_VERSION)}）："
+                "按 1.7.10 规则尽力回落生成，不保证兼容性且不提供售后支持"
+            )
+        else:
+            support_note = (
+                f"预扁平化世代（低于 {version_text(ITEM_PREFLATTEN_CUTOVER)}）："
+                "按「家族名 + 数据值」生成，域外数据值一律拒绝"
+            )
     elif syntax == ITEM_SYNTAX_UNSUPPORTED_PREFLATTEN:
         support_note = "物品语法世代未确认：物品类命令不会自动生成"
     else:
@@ -642,6 +658,7 @@ def describe_capabilities(
         "support_note": support_note,
         "cutover": version_text(ITEM_COMPONENTS_CUTOVER),
         "preflatten_cutover": version_text(ITEM_PREFLATTEN_CUTOVER),
+        "min_supported": version_text(MIN_SUPPORTED_MC_VERSION),
         # 真机验证矩阵（诚实标注：唯一实测过的服务端形态）
         "verified_on": "1.20.1 · Forge 47.4.23",
         "enchant_renames": [

@@ -161,6 +161,23 @@ def incident_regression_cases() -> None:
           any(c["version"] == (1, 20, 5) for c in vc.CUTOVERS), "")
 
 
+def min_supported_cases() -> None:
+    print("---- 八、1.7.10 支持下限与免责回落（2026-10-14 裁决）----")
+    check("常量 MIN_SUPPORTED_MC_VERSION 就是 1.7.10",
+          vc.MIN_SUPPORTED_MC_VERSION == (1, 7, 10))
+    info_172 = vc.resolve_version_info("1.7.2", "")
+    check("1.7.2 (< 1.7.10) 仍按 legacy_preflatten 尽力回落",
+          vc.resolve_item_syntax(info_172)[0] == vc.ITEM_SYNTAX_PREFLATTEN)
+    desc_172 = vc.describe_capabilities(info_172)
+    check("1.7.2 描述快照标明低于官方支持下限",
+          "低于官方支持下限" in desc_172["support_note"], desc_172["support_note"])
+    check("1.7.2 描述快照暴露 min_supported 为 1.7.10",
+          desc_172["min_supported"] == "1.7.10")
+    ctx_172 = vc.build_version_context(info_172)
+    check("1.7.2 提示词注入告警警告低于官方支持下限",
+          "低于插件官方支持下限 1.7.10" in ctx_172, ctx_172[:200])
+
+
 def main() -> int:
     parse_cases()
     syntax_cases()
@@ -169,6 +186,7 @@ def main() -> int:
     context_cases()
     escape_hatch_cases()
     incident_regression_cases()
+    min_supported_cases()
     print("==========================================")
     if _fail:
         print(f"FAILED {len(_fail)} 项：")
