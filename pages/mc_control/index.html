@@ -4050,6 +4050,12 @@ function rmtUnsoftHint(el){
   const hint = el && el.querySelector("#sd_hint");
   if(hint && el.dataset.hintKeep){ hint.innerHTML = el.dataset.hintKeep; delete el.dataset.hintKeep; }
 }
+function rmtFinishSoftClear(el){
+  if(!el) return;
+  rmtUnsoftHint(el);
+  // 目录输入框的灰显状态要跟收回动画同一帧结束，避免关闭时先闪回亮色。
+  if(el.id === "sd_box") el.classList.remove("dimmed");
+}
 // 关闭异地模式时还原：先收回磨砂、标签，再摘掉标记类和牌子。
 // 这样输入框 / 卡片不会在视觉上瞬间跳回原态，重新打开也能取消正在进行的收回。
 function rmtClear(el, mode){
@@ -4062,7 +4068,7 @@ function rmtClear(el, mode){
   if(sealMode || !el.classList.contains(cls)){
     if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
     el.classList.remove("rmt-closing", cls);
-    if(softMode) rmtUnsoftHint(el);
+    if(softMode) rmtFinishSoftClear(el);
     const chip = el.querySelector(chipSel);
     if(chip) chip.remove();
     return;
@@ -4073,7 +4079,7 @@ function rmtClear(el, mode){
     // 计时期间若重新打开，rmtMark 已经取消本次回调。
     if(el.classList.contains("rmt-closing")){
       el.classList.remove("rmt-closing", cls);
-      if(softMode) rmtUnsoftHint(el);
+      if(softMode) rmtFinishSoftClear(el);
       const chip = el.querySelector(chipSel);
       if(chip) chip.remove();
     }
@@ -4113,15 +4119,19 @@ function syncRemoteModeUI(){
   const wasSealed = RMT.painted;
   RMT.on = on; RMT.pending = pending; RMT.painted = on;
   // ① 服务器目录：这一栏跟着**草稿**走 —— 想改成本地模式，得先把目录填好再保存
-  const sd = $("cfg_server_dir");
-  if(sd) sd.disabled = draft;
   const box = $("sd_box");
   if(box){
-    box.classList.toggle("dimmed", draft);
+    const closing = !draft && box.classList.contains("rmt-off-soft");
+    // 开启时先铺上灰显样式再禁用输入框；关闭时保留灰显到收回动画结束，
+    // 避免浏览器的 disabled / enabled 重绘把文字短暂刷成亮白色。
+    if(draft || closing) box.classList.add("dimmed");
+    else box.classList.remove("dimmed");
     if(draft) rmtMark(box, "异地模式 · 无需填写",
                    "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。", "soft");
     else rmtClear(box, "soft");
   }
+  const sd = $("cfg_server_dir");
+  if(sd) sd.disabled = draft;
   // ② 依赖服务端本地文件的卡片：整块磨砂封住（保存后才撤）
   for(const [id, title, why] of RMT_BLOCKS){
     const el = $(id);
