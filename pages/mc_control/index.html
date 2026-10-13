@@ -452,8 +452,15 @@ details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);fo
 details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 /* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
 /* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
-#sd_box.dimmed input{pointer-events:none;color:var(--dim);opacity:1;
+#sd_box input{color:var(--text);-webkit-text-fill-color:var(--text);
+  /* 颜色必须跟状态类同步切换，不能从正常色过渡到灰色；否则提示文案换行 / 替换
+     触发重绘时，输入框会在收回动画首帧短暂亮白。几何与底色仍保留过渡。 */
+  transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease}
+#sd_box input::placeholder{color:var(--faint);-webkit-text-fill-color:var(--faint);opacity:1}
+#sd_box.dimmed input,#sd_box.rmt-off-soft.rmt-closing input{pointer-events:none;color:var(--dim);opacity:1;
   -webkit-text-fill-color:var(--dim);background:var(--panel3)}
+#sd_box.dimmed input::placeholder,#sd_box.rmt-off-soft.rmt-closing input::placeholder{color:var(--dim);
+  -webkit-text-fill-color:var(--dim);opacity:1}
 /* ===== v0.21.16：异地 RCON 模式 → 不可用区块的「亚克力磨砂 + 文字告知」 =====
    开启异地模式后，所有依赖服务端本地文件的能力（事件播报 / 聊天桥接 / 物品词典 /
    知识库 / 版本探测 / 进程指标）在后端按设计禁用。前端必须让用户一眼看出「这儿现在
