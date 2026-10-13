@@ -507,6 +507,16 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 /* 目录标记框向外扩展，给输入框与说明留白，并保留原始宽度和对齐。 */
 #sd_box.rmt-off-soft::after{inset:-8px -12px}
 @media(max-width:640px){#sd_box.rmt-off-soft::after{inset:-8px -10px}}
+/* 关闭异地模式时沿着相反方向收回：先退掉覆盖层 / 标签，再解除禁用类。 */
+.rmt-off.rmt-closing::after{opacity:0;transition:opacity .3s ease}
+.rmt-off.rmt-closing>*:not(.rmt-badge){filter:blur(0);opacity:1;transition:filter .3s var(--motion-ease),opacity .3s ease}
+.rmt-off.rmt-closing>.rmt-badge{opacity:0;transform:translate(-50%,-50%) scale(.9);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-row.rmt-closing::after{opacity:0;transition:opacity .3s ease}
+.rmt-off-row.rmt-closing .sw-t,.rmt-off-row.rmt-closing .sw{filter:blur(0);opacity:1;transition:filter .3s var(--motion-ease),opacity .3s ease}
+.rmt-off-row.rmt-closing>.rmt-tag{opacity:0;transform:scale(.88);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing::after{opacity:0;transform:scale(.985);transition:opacity .28s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing #sd_hint{opacity:0;transform:translateY(-4px);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing>.rmt-tag{opacity:0;transform:translateY(-50%) scale(.9);transition:opacity .24s ease,transform .3s var(--motion-ease)}
 /* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
@@ -3989,6 +3999,10 @@ function rmtMark(el, title, why, mode){
   const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
   const chipMode = rowMode || softMode;                     // 小标签（span）；seal 是独立公告层
   const cls = sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off"));
+  // 用户在收回过程中又重新打开时，立刻取消待删除计时，避免旧的关闭回调
+  // 把刚恢复的标签 / 覆盖层误删掉。
+  if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
+  el.classList.remove("rmt-closing");
   el.classList.add(cls);
   const chipSel = sealMode ? ":scope > .rmt-seal-card"
                            : (chipMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge");
@@ -4036,22 +4050,53 @@ function rmtUnsoftHint(el){
   const hint = el && el.querySelector("#sd_hint");
   if(hint && el.dataset.hintKeep){ hint.innerHTML = el.dataset.hintKeep; delete el.dataset.hintKeep; }
 }
-// 关闭异地模式时还原：撤磨砂、摘牌子
+// 关闭异地模式时还原：先收回磨砂、标签，再摘掉标记类和牌子。
+// 这样输入框 / 卡片不会在视觉上瞬间跳回原态，重新打开也能取消正在进行的收回。
 function rmtClear(el, mode){
   if(!el) return;
   const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
-  el.classList.remove(sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off")));
-  if(softMode) rmtUnsoftHint(el);
-  const chip = el.querySelector(sealMode ? ":scope > .rmt-seal-card"
-                     : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge"));
-  if(chip) chip.remove();
+  const cls = sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off"));
+  const chipSel = sealMode ? ":scope > .rmt-seal-card"
+                           : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge");
+  // 整页公告切换页面时无需保留旧的遮罩；其它标记则沿着反方向过渡。
+  if(sealMode || !el.classList.contains(cls)){
+    if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
+    el.classList.remove("rmt-closing", cls);
+    if(softMode) rmtUnsoftHint(el);
+    const chip = el.querySelector(chipSel);
+    if(chip) chip.remove();
+    return;
+  }
+  if(el.__rmtCloseTimer) clearTimeout(el.__rmtCloseTimer);
+  el.classList.add("rmt-closing");
+  el.__rmtCloseTimer = setTimeout(()=>{
+    // 计时期间若重新打开，rmtMark 已经取消本次回调。
+    if(el.classList.contains("rmt-closing")){
+      el.classList.remove("rmt-closing", cls);
+      if(softMode) rmtUnsoftHint(el);
+      const chip = el.querySelector(chipSel);
+      if(chip) chip.remove();
+    }
+    el.__rmtCloseTimer = null;
+  }, 340);
 }
 function setRmtMessageVisible(el, visible){
   if(!el) return;
+  if(el.__rmtHideTimer){ clearTimeout(el.__rmtHideTimer); el.__rmtHideTimer = null; }
   const already = el.classList.contains("is-visible");
-  el.style.display = visible ? "block" : "none";
   el.setAttribute("aria-hidden", visible ? "false" : "true");
-  if(!visible){ el.classList.remove("is-visible"); return; }
+  if(!visible){
+    // 关闭时保留盒子，让 max-height / opacity / 位移过渡完整播放；动画结束
+    // 再隐藏，避免下一次打开时留下不可见的布局占位。
+    if(!already){ el.style.display = "none"; return; }
+    el.classList.remove("is-visible");
+    el.__rmtHideTimer = setTimeout(()=>{
+      if(!el.classList.contains("is-visible")) el.style.display = "none";
+      el.__rmtHideTimer = null;
+    }, 440);
+    return;
+  }
+  el.style.display = "block";
   if(already){ el.classList.add("is-visible"); return; }
   // 先显示折叠盒，再在下一帧展开，让 max-height / opacity / 位移过渡真正生效。
   el.classList.remove("is-visible");
