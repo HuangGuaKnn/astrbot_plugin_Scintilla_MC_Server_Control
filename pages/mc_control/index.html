@@ -527,6 +527,10 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 .rmt-off-soft.rmt-closing::after{opacity:0;transform:scale(.985);transition:opacity .28s ease,transform .3s var(--motion-ease)}
 .rmt-off-soft.rmt-closing #sd_hint{opacity:0;transform:translateY(-4px);transition:opacity .24s ease,transform .3s var(--motion-ease)}
 .rmt-off-soft.rmt-closing>.rmt-tag{opacity:0;transform:translateY(-50%) scale(.9);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+/* 原始目录说明在收回结束后再淡入，避免 rmtClear 直接恢复 innerHTML 造成瞬间出现。 */
+#sd_box.rmt-hint-restoring #sd_hint{opacity:0;transform:translateY(-4px);
+  transition:opacity .28s ease,transform .32s var(--motion-ease)}
+#sd_box.rmt-hint-restoring #sd_hint.rmt-hint-restored{opacity:1;transform:none}
 /* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
@@ -4012,6 +4016,10 @@ function rmtMark(el, title, why, mode){
   // 用户在收回过程中又重新打开时，立刻取消待删除计时，避免旧的关闭回调
   // 把刚恢复的标签 / 覆盖层误删掉。
   if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
+  if(el.__rmtRestoreTimer){ clearTimeout(el.__rmtRestoreTimer); el.__rmtRestoreTimer = null; }
+  el.classList.remove("rmt-hint-restoring");
+  const softHint = el.querySelector("#sd_hint");
+  if(softHint) softHint.classList.remove("rmt-hint-restored");
   el.classList.remove("rmt-closing");
   el.classList.add(cls);
   const chipSel = sealMode ? ":scope > .rmt-seal-card"
@@ -4062,8 +4070,32 @@ function rmtUnsoftHint(el){
 }
 function rmtFinishSoftClear(el){
   if(!el) return;
-  rmtUnsoftHint(el);
-  // 目录输入框的灰显状态要跟收回动画同一帧结束，避免关闭时先闪回亮色。
+  const hint = el.querySelector("#sd_hint");
+  // 收回后的淡入正在播放时，重复同步只应保持现状，不要把 dimmed 提前摘掉。
+  if(el.id === "sd_box" && el.classList.contains("rmt-hint-restoring")) return;
+  // 目录提示文本的恢复也做一次淡入；动画期间继续保留 dimmed，避免
+  // 文本重排和输入框恢复亮色发生在同一帧。
+  if(el.id === "sd_box" && hint && el.dataset.hintKeep
+     && !el.classList.contains("rmt-hint-restoring")){
+    if(el.__rmtRestoreTimer) clearTimeout(el.__rmtRestoreTimer);
+    el.classList.add("rmt-hint-restoring");
+    hint.classList.remove("rmt-hint-restored");
+    hint.innerHTML = el.dataset.hintKeep;
+    delete el.dataset.hintKeep;
+    requestAnimationFrame(()=>{
+      if(el.classList.contains("rmt-hint-restoring")) hint.classList.add("rmt-hint-restored");
+    });
+    el.__rmtRestoreTimer = setTimeout(()=>{
+      el.classList.remove("rmt-hint-restoring");
+      hint.classList.remove("rmt-hint-restored");
+      el.classList.remove("dimmed");
+      el.__rmtRestoreTimer = null;
+    }, 320);
+    return;
+  }
+  // 非目录软标记没有需要淡入的长文本，直接完成清理。
+  if(hint) hint.classList.remove("rmt-hint-restored");
+  el.classList.remove("rmt-hint-restoring");
   if(el.id === "sd_box") el.classList.remove("dimmed");
 }
 // 关闭异地模式时还原：先收回磨砂、标签，再摘掉标记类和牌子。
