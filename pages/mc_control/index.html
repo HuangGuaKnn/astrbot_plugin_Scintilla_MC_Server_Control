@@ -546,7 +546,7 @@ details.adv-fold .adv-sum.adv-sum-entering{opacity:0;transform:translateY(4px) s
 /* 原始目录说明在收回结束后再淡入，避免 rmtClear 直接恢复 innerHTML 造成瞬间出现。 */
 #sd_box.rmt-hint-restoring #sd_hint{opacity:0;transform:translateY(-4px);
   transition:opacity .28s ease,transform .32s var(--motion-ease)}
-#sd_box.rmt-hint-restoring #sd_hint.rmt-hint-restored{opacity:1;transform:none}
+#sd_box.rmt-hint-restoring #sd_hint{overflow:hidden}
 /* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
@@ -4071,9 +4071,8 @@ function rmtMark(el, title, why, mode){
   // 把刚恢复的标签 / 覆盖层误删掉。
   if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
   if(el.__rmtRestoreTimer){ clearTimeout(el.__rmtRestoreTimer); el.__rmtRestoreTimer = null; }
+  rmtCancelHintSwap(el);
   el.classList.remove("rmt-hint-restoring");
-  const softHint = el.querySelector("#sd_hint");
-  if(softHint) softHint.classList.remove("rmt-hint-restored");
   el.classList.remove("rmt-closing");
   el.classList.add(cls);
   const chipSel = sealMode ? ":scope > .rmt-seal-card"
@@ -4112,43 +4111,85 @@ document.addEventListener("click", (e)=>{
 });
 // 文字型区块把原提示行换成异地模式说明；关闭时还原（原文只记一次）
 const RMT_SD_HINT = "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。";
+function rmtCancelHintSwap(el){
+  if(!el) return;
+  el.__rmtHintSwapToken = (el.__rmtHintSwapToken || 0) + 1;
+  if(el.__rmtHintSwapRaf){ cancelAnimationFrame(el.__rmtHintSwapRaf); el.__rmtHintSwapRaf = null; }
+  if(el.__rmtHintSwapTimer){ clearTimeout(el.__rmtHintSwapTimer); el.__rmtHintSwapTimer = null; }
+  el.__rmtHintSwapActive = false;
+  const hint = el.querySelector("#sd_hint");
+  if(hint){
+    hint.style.removeProperty("height");
+    hint.style.removeProperty("overflow");
+    hint.style.removeProperty("transition");
+    hint.style.removeProperty("opacity");
+    hint.style.removeProperty("transform");
+  }
+}
+function rmtAnimateHintSwap(el, nextHtml, onDone){
+  const hint = el && el.querySelector ? el.querySelector("#sd_hint") : null;
+  if(!hint) return;
+  rmtCancelHintSwap(el);
+  const token = (el.__rmtHintSwapToken || 0) + 1;
+  el.__rmtHintSwapToken = token;
+  el.__rmtHintSwapActive = true;
+  const from = Math.max(1, Math.ceil(hint.getBoundingClientRect().height || hint.scrollHeight || 1));
+  hint.style.height = from + "px";
+  hint.style.overflow = "hidden";
+  hint.style.transition = "height .36s var(--motion-ease),opacity .24s ease,transform .32s var(--motion-ease)";
+  hint.style.opacity = "0";
+  hint.style.transform = "translateY(-4px)";
+  const finish = ()=>{
+    if(el.__rmtHintSwapToken !== token) return;
+    el.__rmtHintSwapActive = false;
+    el.__rmtHintSwapTimer = null;
+    rmtCancelHintSwap(el);
+    if(onDone) onDone();
+  };
+  el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+    if(el.__rmtHintSwapToken !== token) return;
+    hint.innerHTML = nextHtml;
+    const target = Math.max(1, Math.ceil(hint.scrollHeight || 1));
+    el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+      if(el.__rmtHintSwapToken !== token) return;
+      hint.style.height = target + "px";
+      hint.style.opacity = "1";
+      hint.style.transform = "none";
+      el.__rmtHintSwapRaf = null;
+    });
+  });
+  el.__rmtHintSwapTimer = setTimeout(finish, 430);
+}
 function rmtSoftHint(el, why){
   const hint = el.querySelector("#sd_hint");
   if(!hint) return;
+  const nextHtml = why || RMT_SD_HINT;
+  if(hint.innerHTML === nextHtml) return;
   if(!el.dataset.hintKeep) el.dataset.hintKeep = hint.innerHTML;
-  hint.textContent = why || RMT_SD_HINT;
-}
-function rmtUnsoftHint(el){
-  const hint = el && el.querySelector("#sd_hint");
-  if(hint && el.dataset.hintKeep){ hint.innerHTML = el.dataset.hintKeep; delete el.dataset.hintKeep; }
+  rmtAnimateHintSwap(el, nextHtml);
 }
 function rmtFinishSoftClear(el){
   if(!el) return;
   const hint = el.querySelector("#sd_hint");
   // 收回后的淡入正在播放时，重复同步只应保持现状，不要把 dimmed 提前摘掉。
-  if(el.id === "sd_box" && el.classList.contains("rmt-hint-restoring")) return;
+  if(el.id === "sd_box" && el.classList.contains("rmt-hint-restoring")
+     && el.__rmtHintSwapActive) return;
   // 目录提示文本的恢复也做一次淡入；动画期间继续保留 dimmed，避免
   // 文本重排和输入框恢复亮色发生在同一帧。
   if(el.id === "sd_box" && hint && el.dataset.hintKeep
      && !el.classList.contains("rmt-hint-restoring")){
     if(el.__rmtRestoreTimer) clearTimeout(el.__rmtRestoreTimer);
     el.classList.add("rmt-hint-restoring");
-    hint.classList.remove("rmt-hint-restored");
-    hint.innerHTML = el.dataset.hintKeep;
+    const originalHtml = el.dataset.hintKeep;
     delete el.dataset.hintKeep;
-    requestAnimationFrame(()=>{
-      if(el.classList.contains("rmt-hint-restoring")) hint.classList.add("rmt-hint-restored");
-    });
-    el.__rmtRestoreTimer = setTimeout(()=>{
+    rmtAnimateHintSwap(el, originalHtml, ()=>{
       el.classList.remove("rmt-hint-restoring");
-      hint.classList.remove("rmt-hint-restored");
       el.classList.remove("dimmed");
-      el.__rmtRestoreTimer = null;
-    }, 320);
+    });
+    el.__rmtRestoreTimer = setTimeout(()=>{ el.__rmtRestoreTimer = null; }, 460);
     return;
   }
   // 非目录软标记没有需要淡入的长文本，直接完成清理。
-  if(hint) hint.classList.remove("rmt-hint-restored");
   el.classList.remove("rmt-hint-restoring");
   if(el.id === "sd_box") el.classList.remove("dimmed");
 }
