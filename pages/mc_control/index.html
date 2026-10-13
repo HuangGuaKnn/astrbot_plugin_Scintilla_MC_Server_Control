@@ -390,9 +390,9 @@ summary:hover{text-decoration:underline}
    留下 130px 的空位；显示态使用脚本测得的真实内容高度来做卷帘过渡。 */
 #remote_mode_pending{max-height:0}
 #remote_mode_pending.is-visible{max-height:var(--rmt-open-height,130px)}
-#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
-  transition:max-height .4s var(--motion-ease),opacity .24s ease,transform .4s var(--motion-ease),visibility 0s linear .4s}
-#row_allow_unknown.is-visible{max-height:260px;opacity:1;visibility:visible;transform:none;transition-delay:0s}
+#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;margin-top:0!important;
+  transition:max-height .4s var(--motion-ease),opacity .24s ease,transform .4s var(--motion-ease),margin-top .4s var(--motion-ease),visibility 0s linear .4s}
+#row_allow_unknown.is-visible{max-height:260px;opacity:1;visibility:visible;transform:none;margin-top:14px!important;transition-delay:0s}
 .select-pop{position:relative;isolation:isolate}
 .select-pop::after{content:"⌄";position:absolute;right:15px;top:18px;z-index:4;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-50%);transition:transform .28s var(--motion-ease),color .2s ease}
 .select-pop.is-open{z-index:30}
@@ -1305,7 +1305,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
     </div>
     <!-- v0.23.5：未知命令闸门。只在黑名单策略下生效，因此跟着策略显隐（见 syncPolicyUI） -->
-    <div class="sw-row" id="row_allow_unknown" aria-hidden="true" style="margin-top:14px">
+    <div class="sw-row" id="row_allow_unknown" aria-hidden="true">
       <div class="sw-t"><b>允许未知命令</b>
         <span>不在已知命令表里的模组 / 整合包自定义命令。<b>默认关闭 = 一律拒绝</b>：
           这类命令无法判定权限等级，危险命令清单也认不出它们 ——
@@ -2951,12 +2951,30 @@ async function refreshVersionCaps(){
 // 与 CFG_FIELDS / collectSettings 的既有链路完全一致，不新增配置键。
 function setUnknownCommandRowVisible(row, visible){
   if(!row) return;
-  row.style.display = visible ? "flex" : "none";
+  const firstRender = row.dataset.unknownRowReady !== "1";
+  row.dataset.unknownRowReady = "1";
+  row.__unknownRowToken = (row.__unknownRowToken || 0) + 1;
+  const token = row.__unknownRowToken;
+  if(row.__unknownRowHideTimer){ clearTimeout(row.__unknownRowHideTimer); row.__unknownRowHideTimer = null; }
   row.setAttribute("aria-hidden", visible ? "false" : "true");
-  if(!visible){ row.classList.remove("is-visible"); return; }
+  if(!visible){
+    // 首次按白名单初始化时直接留在 display:none；用户切回白名单时再走完整收起动画。
+    if(firstRender){ row.style.display = "none"; row.classList.remove("is-visible"); return; }
+    row.style.display = "flex";
+    row.classList.remove("is-visible");
+    row.__unknownRowHideTimer = setTimeout(()=>{
+      if(row.__unknownRowToken !== token || row.classList.contains("is-visible")) return;
+      row.style.display = "none";
+      row.__unknownRowHideTimer = null;
+    }, 420);
+    return;
+  }
+  row.style.display = "flex";
   if(row.classList.contains("is-visible")) return;
   row.classList.remove("is-visible");
-  requestAnimationFrame(()=>{ if(row.style.display !== "none") row.classList.add("is-visible"); });
+  requestAnimationFrame(()=>{
+    if(row.__unknownRowToken === token && row.style.display !== "none") row.classList.add("is-visible");
+  });
 }
 function syncPolicyUI(){
   const sel = $("cfg_danger_policy");
@@ -2971,7 +2989,6 @@ function syncPolicyUI(){
   // v0.23.5：未知命令闸门只在黑名单下生效 → 白名单时整行隐藏，免得摆个没用的开关
   const rowAU = $("row_allow_unknown");
   if(rowAU){
-    rowAU.style.display = (v === "blacklist") ? "flex" : "none";
     setUnknownCommandRowVisible(rowAU, v === "blacklist");
   }
   const now = $("policy_now");
