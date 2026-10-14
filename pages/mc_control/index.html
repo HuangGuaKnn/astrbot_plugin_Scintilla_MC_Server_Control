@@ -764,10 +764,11 @@ input[type=text],input[type=password],input[type=number],select,textarea,.search
 :where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 :where(button,a):focus:not(:focus-visible){outline:none}
 details>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;border-radius:8px}
-.tabs{top:var(--topbar-h,57px)}
-.savebar{top:calc(var(--topbar-h,57px) + var(--tabs-h,39px))}
+.tabs{top:var(--topbar-h,67px)}
+/* 吸顶保存条给页签留出一条明确的安全边界，避免实际顶栏高度略有变化时被页签盖住。 */
+.savebar{top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 8px)}
 html{scroll-behavior:smooth}
-#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,57px) + var(--tabs-h,39px) + 12px)}
+#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 12px)}
 
 /* 最新版 RCON 进阶区：保留原 details/id/字段，只提升折叠入口和状态层级。 */
 details.adv-fold{margin-top:18px;padding:13px 0 0;border-top:1px solid var(--border)}
@@ -804,7 +805,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.4
 .settings-summary-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed rgba(128,151,180,.18);font-size:10.5px;color:var(--faint)}.settings-summary-row:last-child{border-bottom:0}.settings-summary-row code{font-family:var(--mono);font-size:10.5px;color:var(--text)}
 
 @media(max-width:720px){
-  .topbar{padding:12px 14px}.tabs{top:var(--topbar-h,51px);padding:0 10px}.savebar{top:calc(var(--topbar-h,51px) + var(--tabs-h,39px))}
+  .topbar{padding:12px 14px}.tabs{top:var(--topbar-h,61px);padding:0 10px}.savebar{top:calc(var(--topbar-h,61px) + var(--tabs-h,39px) + 8px)}
   #adv_rcon .frow{flex-direction:column}#adv_rcon .frow>*{width:100%;max-width:none!important}
 }
 @media(max-width:640px){
@@ -5038,6 +5039,22 @@ async function syncThemeFromBackend(){
 // 写在
 // 本 <script> 之后，若在这里同步 bind()，$("fp_go") 等还是 null → bind 中途抛
 // TypeError → 后面的「保存全部设置」等按钮全部绑不上（点了没反应）。
+// 顶栏高度会因窗口宽度、主题字体和连接状态文案变化；把实际尺寸同步给
+// sticky 页签 / 保存条，避免固定的旧回退值让保存条顶部被页签遮住一截。
+function syncStickyChromeMetrics(){
+  const root = document.documentElement;
+  const top = document.querySelector(".topbar");
+  const tabs = document.querySelector(".tabs");
+  if(top){ root.style.setProperty("--topbar-h", Math.ceil(top.getBoundingClientRect().height) + "px"); }
+  if(tabs){ root.style.setProperty("--tabs-h", Math.ceil(tabs.getBoundingClientRect().height) + "px"); }
+}
+syncStickyChromeMetrics();
+requestAnimationFrame(syncStickyChromeMetrics);
+window.addEventListener("resize", syncStickyChromeMetrics, {passive:true});
+if(window.ResizeObserver){
+  const chromeResize = new ResizeObserver(syncStickyChromeMetrics);
+  [document.querySelector(".topbar"), document.querySelector(".tabs")].forEach(el=>{ if(el) chromeResize.observe(el); });
+}
 function boot(){
   // 进阶折叠的交互不依赖后端配置。先在异步握手 / 配置读取之前绑定，
   // 避免刷新后用户抢在 selectApi() 完成前首次点击时落回原生 details 瞬时展开。
