@@ -5012,6 +5012,13 @@ async function syncThemeFromBackend(){
 // 本 <script> 之后，若在这里同步 bind()，$("fp_go") 等还是 null → bind 中途抛
 // TypeError → 后面的「保存全部设置」等按钮全部绑不上（点了没反应）。
 function boot(){
+  // 进阶折叠的交互不依赖后端配置。先在异步握手 / 配置读取之前绑定，
+  // 避免刷新后用户抢在 selectApi() 完成前首次点击时落回原生 details 瞬时展开。
+  const earlyAdv = $("adv_rcon");
+  if(earlyAdv){
+    earlyAdv.ontoggle = renderAdvSummary;
+    bindAdvFoldMotion(earlyAdv);
+  }
   selectApi().then(({mode:m})=>{
     mode = m;
     modeTag();
