@@ -105,6 +105,7 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes page-enter{from{opacity:0}to{opacity:1}}
 .grid{display:grid;gap:14px}
+.grid>*{min-width:0}
 .g2{grid-template-columns:1fr 1fr}
 .g3{grid-template-columns:repeat(3,1fr)}
 .g4{grid-template-columns:repeat(4,1fr)}
@@ -220,7 +221,7 @@ input[type=text],input[type=password],input[type=number],select,textarea{width:1
 input:focus,select:focus,textarea:focus{border-color:var(--cyan)}
 textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5px;line-height:1.5}
 .frow{display:flex;gap:8px}
-.frow>*{flex:1}
+.frow>*{flex:1;min-width:0}
 /* v0.23.7：设置页三项单色各带一个「格式化符号」下拉（§0-§f）。取色器不在这里 —— 
    可视化调色是服务器页『文本颜色』卡片的活，设置页只做「原始值」层面最省的表达。 */
 .fcell{display:flex;gap:6px;min-width:0}
@@ -419,6 +420,7 @@ summary:hover{text-decoration:underline}
 .select-trigger:active{transform:translateY(0) scale(.995)}
 .select-menu{position:absolute;left:0;right:0;top:calc(100% + 7px);z-index:3;max-height:0;overflow:hidden;padding:0 8px;opacity:0;pointer-events:none;transform:translateY(-8px) scaleY(.86);transform-origin:top;background:var(--panel);border:1px solid transparent;border-radius:12px;box-shadow:0 16px 36px rgba(0,0,0,.24);transition:max-height .34s var(--motion-ease),padding .34s var(--motion-ease),opacity .2s ease,transform .34s var(--motion-ease),border-color .24s ease}
 .select-pop.is-open .select-menu{max-height:180px;padding:8px;opacity:1;pointer-events:auto;transform:none;border-color:var(--border2)}
+.select-pop.is-open .select-menu{overflow-y:auto}
 .select-option{display:block;width:100%;padding:8px 10px;border:0;border-radius:8px;text-align:left;color:var(--dim);font-size:11.5px;line-height:1.45;background:transparent;cursor:pointer;opacity:0;transform:translateY(-7px);transition:color .16s ease,background .16s ease,opacity .24s ease,transform .3s var(--motion-ease)}
 .select-pop.is-open .select-option{opacity:1;transform:none}
 .select-pop.is-open .select-option:nth-child(2){transition-delay:.035s}.select-pop.is-open .select-option:nth-child(3){transition-delay:.07s}
@@ -837,7 +839,7 @@ details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.4
   #adv_rcon .frow{flex-direction:column}#adv_rcon .frow>*{width:100%;max-width:none!important}
 }
 @media(max-width:640px){
-  html,body{overflow-x:hidden}.tabs{position:relative;top:auto}.savebar{position:sticky;top:8px;z-index:40;padding:11px 12px}.savebar .muted{display:-webkit-box;min-width:0;flex:1;font-size:10.5px;line-height:1.5;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.savebar .notice{flex:1 1 100%;margin-left:0!important;font-size:11px}
+  html,body{overflow-x:hidden}.tabs{position:relative;top:auto}.savebar{position:sticky;top:calc(var(--topbar-h,61px) + 8px);z-index:40;padding:11px 12px}.savebar .muted{display:-webkit-box;min-width:0;flex:1;font-size:10.5px;line-height:1.5;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.savebar .notice{flex:1 1 100%;margin-left:0!important;font-size:11px}
   .overview-hero{width:100%;min-width:0;max-width:100%;border-radius:18px;margin-bottom:16px}.hero-copy,.hero-side{width:100%;min-width:0}.hero-copy h1,.hero-copy p{max-width:100%}.hero-copy h1{font-size:27px;overflow-wrap:anywhere}.hero-copy p{font-size:12px;overflow-wrap:anywhere}
   .card{padding:17px}.stat{padding:14px}.frow{flex-direction:column}.frow>*{width:100%;max-width:none!important}.sym-add{max-width:none;flex-wrap:wrap}.sym-add input{min-width:0;flex:1 1 180px}.sym-add .btn{flex:0 0 auto}#kw_input{flex-basis:100%}#kw_add,#kw_reset{flex:1}#ver_caps_line,#rcon_runtime_line{font-size:10.5px}
 }
@@ -2713,6 +2715,8 @@ async function loadPrompts(){
   });
   renderPrompt();
 }
+// 提示词页标题栏的「刷新」按钮使用内联 onclick，需要显式暴露入口。
+window.loadPrompts = loadPrompts;
 
 function curAgent(){ return ((PR&&PR.agents)||[]).find(a=>a.role===PR_ROLE) || null; }
 
@@ -3278,6 +3282,9 @@ function setupAnimatedSelect(wrap, native){
   if(!menu.id) menu.id = `${native.id}_menu`;
   trigger.setAttribute("aria-controls", menu.id);
   const options = ()=>Array.from(menu.querySelectorAll(".select-option"));
+  const syncOptionTabStops = open=>{
+    options().forEach(opt=>{ opt.tabIndex = open ? 0 : -1; });
+  };
   const sync = ()=>{
     const selected = native.options[native.selectedIndex] || native.options[0];
     if(selected) trigger.textContent = selected.textContent;
@@ -3289,11 +3296,13 @@ function setupAnimatedSelect(wrap, native){
       `<button type="button" class="select-option" role="option" data-value="${esc(opt.value)}" aria-selected="${opt.value === current ? "true" : "false"}">${esc(opt.textContent)}</button>`
     ).join("");
     sync();
+    syncOptionTabStops(wrap.classList.contains("is-open"));
   };
   const setOpen = open=>{
     const next = !!open;
     wrap.classList.toggle("is-open", next);
     trigger.setAttribute("aria-expanded", next ? "true" : "false");
+    syncOptionTabStops(next);
     if(next){
       const active = options().find(opt=>opt.dataset.value === native.value);
       if(active) active.focus({preventScroll:true});
@@ -3363,6 +3372,11 @@ function initAnimatedSelects(){
     native.setAttribute("aria-hidden", "true");
     native.tabIndex = -1;
     setupAnimatedSelect(wrap, native);
+  });
+}
+function syncAnimatedSelects(){
+  document.querySelectorAll(".select-pop").forEach(wrap=>{
+    if(typeof wrap.__selectSync === "function") wrap.__selectSync();
   });
 }
 function initPermissionModePicker(){
@@ -4191,6 +4205,7 @@ async function loadSettings(){
   }
   // v0.22.7：版本能力与设置页同刷 —— 保存后会回到这里，因此改完版本**不必重启插件**
   // 就能看见新结论（「来源：手动声明」会立刻亮出来）。
+  syncAnimatedSelects();
   refreshVersionCaps();
 }
 // v0.23.5：落盘失败告警。后端的写接口遇到「内存改成功、磁盘没写成功」时会回
@@ -4934,8 +4949,8 @@ async function loadColors(){
   const g = r.gradient || {};
   const stops = g.stops || {};
   $("clr_grad_en").checked = !!g.enabled;
-  $("clr_grad_fmt").value = g.format || "json";
-  $("clr_plain_fmt").value = (r.plain||{}).format || "hex";
+  $("clr_grad_fmt").value = FORMAT_LABELS[g.format] ? g.format : "json";
+  $("clr_plain_fmt").value = PLAIN_LABELS[(r.plain||{}).format] ? (r.plain||{}).format : "hex";
   syncNameCells(r.colors);   // v0.23.7 追加：色名下拉按「后端会用的近似色名」回显
   applyPlainMode();          //            并按单色格式决定「取色器」还是「色名选项框」
   for(const key of Object.keys(GRAD_KEYS)){
@@ -4944,6 +4959,7 @@ async function loadColors(){
     gradState[key] = arr; renderStops(key);
   }
   refreshGradVisibility();
+  syncAnimatedSelects();
 }
 async function saveColors(){
   const payload = {};
@@ -4961,8 +4977,8 @@ async function saveColors(){
     for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(r.colors[key]); $(txt).value = r.colors[key]; }
     syncNameCells(r.colors);
     const g = r.gradient || {};
-    if(g.format) $("clr_grad_fmt").value = g.format;
-    if((r.plain||{}).format) $("clr_plain_fmt").value = r.plain.format;
+    if(g.format && FORMAT_LABELS[g.format]) $("clr_grad_fmt").value = g.format;
+    if((r.plain||{}).format && PLAIN_LABELS[r.plain.format]) $("clr_plain_fmt").value = r.plain.format;
     for(const key of Object.keys(GRAD_KEYS)){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);
