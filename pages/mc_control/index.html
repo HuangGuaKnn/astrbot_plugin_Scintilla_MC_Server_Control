@@ -97,12 +97,13 @@ button{background:none;border:none;cursor:pointer}
 
 /* ===== 布局 ===== */
 main{padding:20px;max-width:1280px;margin:0 auto}
-.page{display:none;animation:fade .25s ease}
+.page{display:none;animation:page-enter .24s ease both}
 .page.active{display:block}
 /* 二次点击确认态（iframe sandbox 无 allow-modals，原生 confirm 被静默拒绝，改用按钮武装态） */
 .btn.arming{animation:armp 0.7s infinite alternate;border-color:var(--bad)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--bad) 25%,transparent)}
 @keyframes armp{from{opacity:.7}to{opacity:1}}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes page-enter{from{opacity:0}to{opacity:1}}
 .grid{display:grid;gap:14px}
 .g2{grid-template-columns:1fr 1fr}
 .g3{grid-template-columns:repeat(3,1fr)}
@@ -709,7 +710,7 @@ body{
 .tab.active{background:rgba(101,201,255,.10);border-color:rgba(101,201,255,.2);color:var(--cyan);box-shadow:inset 0 -2px 0 var(--cyan)}
 .tab .cnt{padding:1px 7px;border-radius:999px}
 main{max-width:1400px;padding:28px clamp(16px,3vw,42px) 64px}
-.page{animation:fade .3s cubic-bezier(.2,.8,.2,1)}
+.page{animation:page-enter .24s var(--motion-ease) both}
 .grid{gap:16px}.card{border-radius:var(--r);padding:20px 22px;background-color:var(--panel);background-image:linear-gradient(145deg,rgba(255,255,255,.025),transparent 48%);box-shadow:0 8px 30px rgba(0,0,0,.08)}
 :root[data-theme="light"] .card{background-image:linear-gradient(145deg,rgba(18,111,169,.018),transparent 52%);box-shadow:0 8px 28px rgba(31,52,78,.045)}
 .card h3{font-size:11px;letter-spacing:.11em;margin-bottom:16px;color:var(--faint)}.card h3 .dot{width:8px;height:8px;box-shadow:0 0 0 4px rgba(243,187,82,.09)}
@@ -849,13 +850,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   background:linear-gradient(108deg,transparent 36%,rgba(255,255,255,.075) 48%,transparent 60%);
   transform:translateX(-55%) rotate(8deg);pointer-events:none;animation:hero-sheen 12s var(--motion-ease) infinite}
 .overview-hero>*{position:relative;z-index:1}
-.page.active>.overview-hero,.page.active>.section-lead,.page.active>.card,.page.active>.grid>.card,.page.active>.grid>.stat{
-  animation:surface-in .46s var(--motion-ease) both}
+.page.active>.overview-hero,.page.active>.section-lead,.page.active .card,.page.active .stat{
+  animation:surface-in .42s var(--motion-ease) both}
 .page.active>.section-lead{animation-delay:.04s}
 .page.active>.overview-hero{animation-delay:.02s}
-.page.active>.grid>*:nth-child(2){animation-delay:.06s}
-.page.active>.grid>*:nth-child(3){animation-delay:.1s}
-.page.active>.grid>*:nth-child(4){animation-delay:.14s}
 @media(hover:hover){
   .card,.stat{transition:transform .2s var(--motion-ease),border-color .2s ease,box-shadow .2s ease}
   .card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--cyan) 28%,var(--border));box-shadow:0 14px 34px rgba(0,0,0,.13)}
@@ -863,11 +861,11 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   .hero-pills span{transition:transform .18s ease,background .18s ease,border-color .18s ease}
   .hero-pills span:hover{transform:translateY(-2px);border-color:var(--cyan);background:rgba(101,201,255,.1)}
 }
-@keyframes surface-in{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes surface-in{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
 @keyframes live-pulse{0%,100%{transform:scale(1);opacity:.78}50%{transform:scale(1.22);opacity:1}}
 @keyframes hero-sheen{0%,58%{transform:translateX(-55%) rotate(8deg);opacity:0}70%{opacity:.8}88%,100%{transform:translateX(210%) rotate(8deg);opacity:0}}
 @keyframes ambient-drift{from{background-position:0 0,0 0,0 0,0 0}to{background-position:18px 12px,-14px 9px,22px -10px,-18px 14px}}
-@media(prefers-reduced-motion:reduce){body::before,.overview-hero::before,.hero-live-dot{animation:none}.page.active>.overview-hero,.page.active>.section-lead,.page.active>.card,.page.active>.grid>.card,.page.active>.grid>.stat{animation:none}.scroll-progress{transition:none}}
+@media(prefers-reduced-motion:reduce){body::before,.overview-hero::before,.hero-live-dot{animation:none}.page.active>.overview-hero,.page.active>.section-lead,.page.active .card,.page.active .stat{animation:none}.scroll-progress{transition:none}}
 
 </style>
 </head>
