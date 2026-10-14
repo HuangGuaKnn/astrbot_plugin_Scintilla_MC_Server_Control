@@ -109,6 +109,12 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 .g4{grid-template-columns:repeat(4,1fr)}
 @media(max-width:980px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:640px){.g2,.g3,.g4{grid-template-columns:1fr}}
+/* 知识库左右两栏共用同一行高；右栏的待审批卡隐藏时，新增卡仍填满整列。 */
+.kb-entry-grid{align-items:stretch}
+.kb-entry-side{display:flex;flex-direction:column;min-height:0}
+.kb-entry-side>.card:last-child{flex:1;min-height:0}
+.kb-entry-side>#pending_card[style*="display:none"] + .card,
+.kb-entry-side>#pending_card[style*="display: none"] + .card{margin-top:0}
 
 /* ===== 卡片 ===== */
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px}
@@ -116,6 +122,8 @@ main{padding:20px;max-width:1280px;margin:0 auto}
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
 :is(.grid,.pr-wrap)>.card+.card{margin-top:0}
+/* 服务器页首行双卡之后接着的卡片不属于同一个网格，补齐与卡片栈一致的垂直间距。 */
+#page_server>.grid + .card{margin-top:14px}
 .card h3{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .card h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber)}
 .card h3 .right{margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;font-size:11px}
@@ -1064,13 +1072,13 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div class="banner" id="kb_health"></div>
   <div class="grid g4" id="kb_stats"></div>
   <div style="height:14px"></div>
-  <div class="grid g2">
+  <div class="grid g2 kb-entry-grid">
     <div class="card">
       <h3><span class="dot"></span>条目管理 <span class="right" id="kb_fingerprint"></span></h3>
       <input type="text" class="search" id="kb_search" placeholder="搜索主题或内容…（支持中文/英文/ID 片段）">
       <div id="kb_list"><span class="muted">加载中…</span></div>
     </div>
-    <div>
+    <div class="kb-entry-side">
       <div class="card" id="pending_card" style="display:none">
         <h3><span class="dot" style="background:var(--bad)"></span>待审批（自动应用已关闭） <span class="right" id="pend_cnt"></span></h3>
         <div id="pending_list"></div>
