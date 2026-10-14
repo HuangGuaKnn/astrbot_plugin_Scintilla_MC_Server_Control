@@ -2926,7 +2926,26 @@ function bindAdvFoldMotion(d){
       return;
     }
     if(!d.open){
+      const body = d.querySelector(".adv-fold-body");
+      // 首次打开时先把起点写成明确的 0fr；file:// 页面在第一次渲染 details
+      // 时可能跳过一次样式快照，若只依赖 [open] 选择器就会直接显示终态。
+      if(body){
+        body.style.gridTemplateRows = "0fr";
+        body.style.opacity = "0";
+        body.style.visibility = "hidden";
+        body.style.pointerEvents = "none";
+      }
       d.open = true;
+      if(body){
+        void body.offsetHeight;
+        requestAnimationFrame(()=>{
+          if(d.__advFoldToken !== token || !d.open || d.classList.contains("adv-fold-closing")) return;
+          body.style.removeProperty("grid-template-rows");
+          body.style.removeProperty("opacity");
+          body.style.removeProperty("visibility");
+          body.style.removeProperty("pointer-events");
+        });
+      }
       return;
     }
     d.classList.add("adv-fold-closing");
