@@ -97,18 +97,26 @@ button{background:none;border:none;cursor:pointer}
 
 /* ===== 布局 ===== */
 main{padding:20px;max-width:1280px;margin:0 auto}
-.page{display:none;animation:fade .25s ease}
+.page{display:none;animation:page-enter .24s ease both}
 .page.active{display:block}
 /* 二次点击确认态（iframe sandbox 无 allow-modals，原生 confirm 被静默拒绝，改用按钮武装态） */
 .btn.arming{animation:armp 0.7s infinite alternate;border-color:var(--bad)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--bad) 25%,transparent)}
 @keyframes armp{from{opacity:.7}to{opacity:1}}
 @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes page-enter{from{opacity:0}to{opacity:1}}
 .grid{display:grid;gap:14px}
+.grid>*{min-width:0}
 .g2{grid-template-columns:1fr 1fr}
 .g3{grid-template-columns:repeat(3,1fr)}
 .g4{grid-template-columns:repeat(4,1fr)}
 @media(max-width:980px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:640px){.g2,.g3,.g4{grid-template-columns:1fr}}
+/* 知识库左右两栏共用同一行高；右栏的待审批卡隐藏时，新增卡仍填满整列。 */
+.kb-entry-grid{align-items:stretch}
+.kb-entry-side{display:flex;flex-direction:column;min-height:0}
+.kb-entry-side>.card:last-child{flex:1;min-height:0}
+.kb-entry-side>#pending_card[style*="display:none"] + .card,
+.kb-entry-side>#pending_card[style*="display: none"] + .card{margin-top:0}
 
 /* ===== 卡片 ===== */
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px}
@@ -116,17 +124,25 @@ main{padding:20px;max-width:1280px;margin:0 auto}
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
 :is(.grid,.pr-wrap)>.card+.card{margin-top:0}
+/* 服务器页首行双卡之后接着的卡片不属于同一个网格，补齐与卡片栈一致的垂直间距。 */
+#page_server>.grid + .card{margin-top:14px}
 .card h3{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .card h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber)}
 .card h3 .right{margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;font-size:11px}
 .card h3 .right button{color:var(--cyan);font-size:11px;font-weight:600}
 .card h3 .right button:hover{text-decoration:underline}
 .muted{color:var(--faint);font-size:11.5px}
-/* 跨页跳转链接 + 目标卡片高亮（设置页 → 服务器页 文本颜色） */
+/* 快捷跳转链接 */
 .jump{color:var(--cyan);cursor:pointer;border-bottom:1px dashed currentColor;white-space:nowrap}
 .jump:hover{color:var(--text)}
-@keyframes cardflash{0%{box-shadow:0 0 0 0 rgba(255,255,255,0)}22%{box-shadow:0 0 0 2px var(--cyan)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
-.card.flash{animation:cardflash 1.6s ease}
+/* 到达后的双次光晕独立画在伪元素上，不覆盖卡片入场动画，也不移动表单。 */
+.card.jump-highlight{position:relative}
+.card.jump-highlight::before{content:"";position:absolute;inset:-1px;z-index:4;pointer-events:none;border-radius:inherit;
+  border:2px solid color-mix(in srgb,var(--cyan) 80%,transparent);background:color-mix(in srgb,var(--cyan) 5%,transparent);
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--cyan) 12%,transparent),0 0 24px color-mix(in srgb,var(--cyan) 18%,transparent);
+  opacity:0;animation:card-jump-pulse .78s ease-in-out 2}
+@keyframes card-jump-pulse{0%,100%{opacity:0}42%,58%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.card.jump-highlight::before{animation:none;opacity:.65}}
 
 /* ===== 统计卡 ===== */
 .stat{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:12px 14px;position:relative;overflow:hidden}
@@ -181,7 +197,7 @@ input:disabled+.sl{opacity:.4;cursor:not-allowed}
 label.f{display:block;font-size:11px;color:var(--faint);font-weight:600;margin:12px 0 5px}
 label.f:first-child{margin-top:0}
 /* 设置页：易误解语义的高亮标签（蓝=说明；.on 绿色=当前生效） */
-label.f .hl{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.01em;padding:1.5px 8px;border-radius:99px;margin-left:3px;background:rgba(90,169,232,.13);color:var(--cyan);border:1px solid rgba(90,169,232,.32);white-space:nowrap}
+label.f .hl{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.01em;padding:1.5px 8px;border-radius:99px;margin:0 6px 0 3px;background:rgba(90,169,232,.13);color:var(--cyan);border:1px solid rgba(90,169,232,.32);white-space:nowrap}
 label.f .hl::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.45;margin-right:5px;vertical-align:1px}
 label.f .hl.on{background:rgba(76,195,138,.15);border-color:rgba(76,195,138,.45);color:var(--ok)}
 label.f .hl.on::before{opacity:1}
@@ -205,7 +221,7 @@ input[type=text],input[type=password],input[type=number],select,textarea{width:1
 input:focus,select:focus,textarea:focus{border-color:var(--cyan)}
 textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5px;line-height:1.5}
 .frow{display:flex;gap:8px}
-.frow>*{flex:1}
+.frow>*{flex:1;min-width:0}
 /* v0.23.7：设置页三项单色各带一个「格式化符号」下拉（§0-§f）。取色器不在这里 —— 
    可视化调色是服务器页『文本颜色』卡片的活，设置页只做「原始值」层面最省的表达。 */
 .fcell{display:flex;gap:6px;min-width:0}
@@ -374,6 +390,42 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 details{font-size:12.5px}
 summary{color:var(--cyan);cursor:pointer;font-weight:600;padding:4px 0;user-select:none}
 summary:hover{text-decoration:underline}
+#sv_status{min-height:118px}
+#sv_players{min-height:118px;align-content:flex-start}
+#sv_status,#sv_players{position:relative;transition:opacity .24s ease}
+#sv_status.is-loading,#sv_players.is-loading{opacity:.52}
+.status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
+@keyframes status-error-shake{0%,100%{transform:translateX(0) rotate(0)}18%{transform:translateX(-6px) rotate(-1.2deg)}36%{transform:translateX(6px) rotate(1.2deg)}54%{transform:translateX(-4px) rotate(-.7deg)}72%{transform:translateX(3px) rotate(.5deg)}88%{transform:translateX(-1px) rotate(0)}}
+#wf_refresh.refreshing{color:var(--cyan);border-color:rgba(101,201,255,.48);pointer-events:none}
+#wf_refresh.refreshing::after{content:"";display:inline-block;width:10px;height:10px;margin-left:6px;vertical-align:-1px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:wf-refresh-spin .7s linear infinite}
+@keyframes wf-refresh-spin{to{transform:rotate(360deg)}}
+.rmt-collapsible{display:block;overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;
+  margin-top:0!important;transition:max-height .42s var(--motion-ease),opacity .24s ease,transform .42s var(--motion-ease),margin-top .42s var(--motion-ease),visibility 0s linear .42s}
+.rmt-collapsible.is-visible{max-height:var(--rmt-open-height,520px);opacity:1;visibility:visible;transform:none;margin-top:2px!important;transition-delay:0s}
+/* 待保存提示是独立的短消息：隐藏态也必须保持 max-height:0，避免关闭时
+   留下 130px 的空位；显示态使用脚本测得的真实内容高度来做卷帘过渡。 */
+#remote_mode_pending{max-height:0}
+#remote_mode_pending.is-visible{max-height:var(--rmt-open-height,130px)}
+#row_allow_unknown{overflow:hidden;max-height:0;opacity:0;visibility:hidden;transform:translateY(-7px) scale(.985);transform-origin:top;margin-top:0!important;padding:0 2px;
+  transition:max-height .4s var(--motion-ease),padding-top .4s var(--motion-ease),padding-bottom .4s var(--motion-ease),opacity .4s ease,transform .4s var(--motion-ease),margin-top .4s var(--motion-ease),visibility 0s linear .4s}
+#row_allow_unknown.is-visible{max-height:var(--unknown-open-height,260px);opacity:1;visibility:visible;transform:none;margin-top:14px!important;padding:11px 2px;transition-delay:0s}
+.select-pop{position:relative;isolation:isolate}
+.select-pop::after{content:"⌄";position:absolute;right:15px;top:18px;z-index:4;color:var(--amber);font-size:16px;line-height:1;pointer-events:none;transform:translateY(-50%);transition:transform .28s var(--motion-ease),color .2s ease}
+.select-pop.is-open{z-index:30}
+.select-pop.is-open::after{transform:translateY(-50%) rotate(180deg);color:var(--cyan)}
+.select-pop .select-native{position:absolute!important;inset:0;width:100%!important;height:100%!important;opacity:0;pointer-events:none;z-index:-1}
+.select-trigger{display:block;width:100%;min-height:38px;padding:9px 38px 9px 12px;text-align:left;font-size:12.5px;line-height:1.45;color:var(--text);border:1px solid rgba(243,187,82,.35);border-radius:10px;background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%);cursor:pointer;transition:transform .26s var(--motion-ease),border-color .24s ease,box-shadow .24s ease,background .24s ease}
+.select-trigger:hover{border-color:var(--cyan)}
+.select-trigger:focus-visible{transform:translateY(-1px);border-color:var(--cyan);background:linear-gradient(110deg,rgba(101,201,255,.1),var(--panel2) 64%);box-shadow:0 0 0 4px rgba(101,201,255,.09),0 10px 24px rgba(0,0,0,.12)}
+.select-trigger:active{transform:translateY(0) scale(.995)}
+.select-menu{position:absolute;left:0;right:0;top:calc(100% + 7px);z-index:3;max-height:0;overflow:hidden;padding:0 8px;opacity:0;pointer-events:none;transform:translateY(-8px) scaleY(.86);transform-origin:top;background:var(--panel);border:1px solid transparent;border-radius:12px;box-shadow:0 16px 36px rgba(0,0,0,.24);transition:max-height .34s var(--motion-ease),padding .34s var(--motion-ease),opacity .2s ease,transform .34s var(--motion-ease),border-color .24s ease}
+.select-pop.is-open .select-menu{max-height:180px;padding:8px;opacity:1;pointer-events:auto;transform:none;border-color:var(--border2)}
+.select-pop.is-open .select-menu{overflow-y:auto}
+.select-option{display:block;width:100%;padding:8px 10px;border:0;border-radius:8px;text-align:left;color:var(--dim);font-size:11.5px;line-height:1.45;background:transparent;cursor:pointer;opacity:0;transform:translateY(-7px);transition:color .16s ease,background .16s ease,opacity .24s ease,transform .3s var(--motion-ease)}
+.select-pop.is-open .select-option{opacity:1;transform:none}
+.select-pop.is-open .select-option:nth-child(2){transition-delay:.035s}.select-pop.is-open .select-option:nth-child(3){transition-delay:.07s}
+.select-option:hover,.select-option:focus-visible{color:var(--text);background:rgba(101,201,255,.1);outline:none}
+.select-option[aria-selected="true"]{color:var(--cyan);background:rgba(101,201,255,.08);font-weight:700}
 @media(max-width:720px){.topbar{padding:10px 14px}.tabs{padding:0 10px;top:51px}.brand-sub{display:none}main{padding:14px}.savebar{top:90px}.savebar .notice{margin-left:0!important;flex:1 1 100%}}
 
 /* ===== 设置页：分区标题 & 开关网格 ===== */
@@ -389,15 +441,31 @@ summary:hover{text-decoration:underline}
 
 /* v0.21.44：知识库卡的原理说明收进折叠区（默认收起）—— 卡片高度不再被文案撑高，
    同排左卡的大片空档随之消失。summary 样式只在卡内生效，不动全局 details/summary。 */
-details.kb-fold{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
-details.kb-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0}
+details.kb-fold{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
+details.kb-fold>summary{font-size:11px;font-weight:700;list-style:none;display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-height:34px;padding:7px 10px;border:1px solid var(--border2);border-radius:10px;background:linear-gradient(110deg,rgba(167,139,250,.08),transparent 64%);color:var(--text);cursor:pointer}
 details.kb-fold>summary::-webkit-details-marker{display:none}
-details.kb-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
-details.kb-fold[open]>summary::before{content:"▾"}
+details.kb-fold>summary::before{content:"▸";font-size:10px;color:var(--violet);transform:rotate(0);transition:transform .24s var(--motion-ease)}
+details.kb-fold[open]>summary::before{content:"▸";transform:rotate(90deg)}
 details.kb-fold>summary::after{content:"（点开看实测数据与前提）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
 details.kb-fold[open]>summary::after{content:"（点标题收起）"}
-details.kb-fold .hint{margin-top:9px;line-height:1.7}
-details.kb-fold .hint b{color:var(--dim);font-weight:600}
+details.kb-fold .kb-fold-body{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none;transition:grid-template-rows .42s var(--motion-ease),opacity .24s ease,visibility 0s linear .42s}
+details.kb-fold .kb-fold-body-inner{min-height:0;overflow:hidden}
+details.kb-fold[open] .kb-fold-body{grid-template-rows:1fr;opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+details.kb-fold.kb-fold-closing .kb-fold-body{grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none}
+.kb-guide-lead{display:flex;align-items:flex-start;gap:9px;margin-top:12px;padding:10px 12px;border:1px solid rgba(167,139,250,.3);border-radius:10px;background:rgba(167,139,250,.07);font-size:11px;line-height:1.65}
+.kb-guide-lead b{flex:0 0 auto;color:var(--violet);font-size:11px}
+.kb-guide-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.kb-guide-card{padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel2)}
+.kb-guide-card.primary{border-color:rgba(76,195,138,.35);background:linear-gradient(135deg,rgba(76,195,138,.08),var(--panel2) 70%)}
+.kb-guide-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.kb-guide-head b{font-size:11.5px;color:var(--text)}
+.kb-guide-badge{padding:2px 7px;border-radius:99px;background:rgba(76,195,138,.14);color:var(--ok);font-size:9.5px;font-weight:700;white-space:nowrap}
+.kb-guide-card p{font-size:10.8px;line-height:1.65;color:var(--dim)}
+.kb-guide-facts{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.kb-guide-facts span{padding:2px 6px;border-radius:6px;background:var(--panel3);color:var(--faint);font-size:9.5px;line-height:1.45}
+.kb-guide-note{margin-top:10px;padding:8px 10px;border-top:1px dashed var(--border2);color:var(--faint);font-size:10.5px;line-height:1.65}
+.kb-guide-note b{color:var(--dim)}
+@media(max-width:640px){.kb-guide-grid{grid-template-columns:1fr}.kb-guide-lead{display:block}.kb-guide-lead b{display:block;margin-bottom:3px}}
 /* v0.23.0：RCON 卡的进阶调参收进折叠区（默认收起）—— 基础三件套（地址 / 端口 / 密码）
    之后的设置项对普通用户只是噪音，卡片高度随之回落。与知识库卡同一套视觉语言
    （details.kb-fold），只是 summary 文案不同；额外多一枚收起态摘要徽标。
@@ -407,18 +475,61 @@ details.kb-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
 details.adv-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0;cursor:pointer}
 details.adv-fold>summary::-webkit-details-marker{display:none}
+details.adv-fold .adv-fold-body{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none;transition:grid-template-rows .42s var(--motion-ease),opacity .24s ease,visibility 0s linear .42s}
+details.adv-fold .adv-fold-body-inner{min-height:0;overflow:hidden}
+details.adv-fold[open] .adv-fold-body{grid-template-rows:1fr;opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+details.adv-fold.adv-fold-closing .adv-fold-body{grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none}
 details.adv-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
 details.adv-fold[open]>summary::before{content:"▾"}
-details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
-details.adv-fold[open]>summary::after{content:"（点标题收起）"}
+/* 尾部提示是两个状态文案的叠层，固定同一块宽度后再做上下淡入淡出，
+   避免 details 收起完成时 content 瞬间变长，把摘要徽标挤到下一行。 */
+.adv-fold-hint{display:inline-grid;grid-template-areas:"hint";align-items:center;width:145px;max-width:145px;min-width:0;flex:0 1 145px;overflow:hidden;color:var(--faint);font-size:10.5px;font-weight:500;line-height:1.4;vertical-align:middle;transition:width .28s var(--motion-ease),max-width .28s var(--motion-ease),flex-basis .28s var(--motion-ease),margin-left .2s ease,opacity .2s ease,visibility 0s linear .28s}
+.adv-fold-hint>span{grid-area:hint;display:block;overflow:hidden;white-space:nowrap;opacity:.85;transform:translateY(0);transition:opacity .22s ease,transform .3s var(--motion-ease)}
+.adv-fold-hint-open{opacity:0!important;transform:translateY(5px) scale(.97)!important}
+details.adv-fold[open]>summary .adv-fold-hint-closed{opacity:0;transform:translateY(-5px) scale(.97)}
+details.adv-fold[open]>summary .adv-fold-hint-open{opacity:.85!important;transform:none!important}
+/* 黄色的「版本未填」警告需要独占摘要空间，收起这句辅助提示，避免被挤到下一行。
+   警告态不能沿用辅助文案的 max-width 过渡：过渡中的残余宽度会把摘要徽标
+   挤到下一行，产生一次非线性的高度跳变。进入警告态时直接释放该 flex 项；
+   离开警告态仍沿用普通态的渐入效果。 */
+details.adv-fold.adv-rcon-warn>summary .adv-fold-hint{width:0;max-width:0;flex-basis:0;margin-left:0;opacity:0;visibility:hidden;pointer-events:none}
 details.adv-fold .hint{margin-top:9px;line-height:1.7}
 details.adv-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);font-weight:500}
 details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
+/* 进阶设置摘要切换时做一次短暂退场 / 入场，避免黄色警告像瞬移一样改字。 */
+details.adv-fold .adv-sum{display:inline-block;transform-origin:right center;
+  transition:color .22s ease,border-color .22s ease,background-color .22s ease,opacity .22s ease,transform .3s var(--motion-ease)}
+details.adv-fold .adv-sum.adv-sum-switching{opacity:0;transform:translateY(-4px) scale(.96);pointer-events:none}
+details.adv-fold .adv-sum.adv-sum-entering{opacity:0;transform:translateY(4px) scale(.96)}
+/* 重建 RCON 的结果是异步追加到状态行，使用独立的入场态避免「请求失败」瞬移出现。 */
+.rcon-reset-feedback{display:inline-block;opacity:0;transform:translateY(-5px) scale(.96);filter:blur(1px);
+  transition:opacity .24s ease,transform .32s var(--motion-ease),filter .24s ease}
+.rcon-reset-feedback.is-visible{opacity:1;transform:none;filter:none}
+.rcon-reset-feedback.bad{color:var(--warn)}
+.rcon-reset-feedback.ok{color:var(--ok)}
+/* 异地模式漏填版本时，字段标题、感叹号和输入框一起进入警告态。 */
+#cfg_server_version_label{display:flex;align-items:center;gap:5px;transition:color .24s ease}
+#cfg_server_version_label .rmt-version-mark{display:inline-flex;align-items:center;justify-content:center;
+  width:0;height:16px;overflow:hidden;opacity:0;transform:translateX(-5px) scale(.72);border-radius:5px;
+  color:var(--on-accent);background:var(--warn);font-size:10px;font-weight:800;line-height:1;
+  transition:width .28s var(--motion-ease),opacity .2s ease,transform .3s var(--motion-ease)}
+#cfg_server_version_label.rmt-version-warn{color:var(--warn)}
+#cfg_server_version_label.rmt-version-warn .rmt-version-mark{width:16px;opacity:1;transform:none}
+#cfg_server_version{transition:border-color .24s ease,background-color .24s ease,box-shadow .24s ease}
+#cfg_server_version.rmt-version-warn{border-color:rgba(233,170,69,.62);background:rgba(233,170,69,.06);
+  box-shadow:0 0 0 3px rgba(233,170,69,.08)}
 /* v0.21.15：异地 RCON 模式下目录区置灰（值保留，只是不参与能力激活） */
 /* v0.21.17：这里**不能**再叠 opacity —— 见下方 .rmt-off-soft 的说明 */
-#sd_box.dimmed input{pointer-events:none;color:var(--dim);opacity:1;
+#sd_box input{color:var(--text);-webkit-text-fill-color:var(--text);
+  /* 颜色必须跟状态类同步切换，不能从正常色过渡到灰色；否则提示文案换行 / 替换
+     触发重绘时，输入框会在收回动画首帧短暂亮白。几何与底色仍保留过渡。 */
+  transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease}
+#sd_box input::placeholder{color:var(--faint);-webkit-text-fill-color:var(--faint);opacity:1}
+#sd_box.dimmed input,#sd_box.rmt-off-soft.rmt-closing input{pointer-events:none;color:var(--dim);opacity:1;
   -webkit-text-fill-color:var(--dim);background:var(--panel3)}
+#sd_box.dimmed input::placeholder,#sd_box.rmt-off-soft.rmt-closing input::placeholder{color:var(--dim);
+  -webkit-text-fill-color:var(--dim);opacity:1}
 /* ===== v0.21.16：异地 RCON 模式 → 不可用区块的「亚克力磨砂 + 文字告知」 =====
    开启异地模式后，所有依赖服务端本地文件的能力（事件播报 / 聊天桥接 / 物品词典 /
    知识库 / 版本探测 / 进程指标）在后端按设计禁用。前端必须让用户一眼看出「这儿现在
@@ -472,6 +583,23 @@ details.adv-fold .adv-sum.warn{color:var(--warn);font-weight:600}
 /* 标签落在标题行右上角：那一行右侧本来就是空的，不会盖住输入框与提示 */
 .rmt-off-soft>.rmt-tag{position:absolute;top:0;right:0;left:auto;transform:translateY(-50%)}
 .rmt-off-soft #sd_hint{color:var(--warn)}
+/* 目录标记框向外扩展，给输入框与说明留白，并保留原始宽度和对齐。 */
+#sd_box.rmt-off-soft::after{inset:-8px -12px}
+@media(max-width:640px){#sd_box.rmt-off-soft::after{inset:-8px -10px}}
+/* 关闭异地模式时沿着相反方向收回：先退掉覆盖层 / 标签，再解除禁用类。 */
+.rmt-off.rmt-closing::after{opacity:0;transition:opacity .3s ease}
+.rmt-off.rmt-closing>*:not(.rmt-badge){filter:blur(0);opacity:1;transition:filter .3s var(--motion-ease),opacity .3s ease}
+.rmt-off.rmt-closing>.rmt-badge{opacity:0;transform:translate(-50%,-50%) scale(.9);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-row.rmt-closing::after{opacity:0;transition:opacity .3s ease}
+.rmt-off-row.rmt-closing .sw-t,.rmt-off-row.rmt-closing .sw{filter:blur(0);opacity:1;transition:filter .3s var(--motion-ease),opacity .3s ease}
+.rmt-off-row.rmt-closing>.rmt-tag{opacity:0;transform:scale(.88);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing::after{opacity:0;transform:scale(.985);transition:opacity .28s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing #sd_hint{opacity:0;transform:translateY(-4px);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+.rmt-off-soft.rmt-closing>.rmt-tag{opacity:0;transform:translateY(-50%) scale(.9);transition:opacity .24s ease,transform .3s var(--motion-ease)}
+/* 原始目录说明在收回结束后再淡入，避免 rmtClear 直接恢复 innerHTML 造成瞬间出现。 */
+#sd_box.rmt-hint-restoring #sd_hint{opacity:0;transform:translateY(-4px);
+  transition:opacity .28s ease,transform .32s var(--motion-ease)}
+#sd_box.rmt-hint-restoring #sd_hint{overflow:hidden}
 /* v0.21.18：**整页封禁**（知识库）—— 整页能力都长在「物品词典 / 整合包指纹」上时，
    不给每张卡各盖一枚牌子（那会变成满屏牌子互相打架），而是整页模糊压暗 + 一枚居中的亚克力公告。
    公告 position:fixed 居中：滚到哪儿都在眼前（页面滚不动也无所谓），且它自身不参与模糊，字始终清晰。
@@ -611,7 +739,7 @@ body{
 .tab.active{background:rgba(101,201,255,.10);border-color:rgba(101,201,255,.2);color:var(--cyan);box-shadow:inset 0 -2px 0 var(--cyan)}
 .tab .cnt{padding:1px 7px;border-radius:999px}
 main{max-width:1400px;padding:28px clamp(16px,3vw,42px) 64px}
-.page{animation:fade .3s cubic-bezier(.2,.8,.2,1)}
+.page{animation:page-enter .24s var(--motion-ease) both}
 .grid{gap:16px}.card{border-radius:var(--r);padding:20px 22px;background-color:var(--panel);background-image:linear-gradient(145deg,rgba(255,255,255,.025),transparent 48%);box-shadow:0 8px 30px rgba(0,0,0,.08)}
 :root[data-theme="light"] .card{background-image:linear-gradient(145deg,rgba(18,111,169,.018),transparent 52%);box-shadow:0 8px 28px rgba(31,52,78,.045)}
 .card h3{font-size:11px;letter-spacing:.11em;margin-bottom:16px;color:var(--faint)}.card h3 .dot{width:8px;height:8px;box-shadow:0 0 0 4px rgba(243,187,82,.09)}
@@ -666,10 +794,11 @@ input[type=text],input[type=password],input[type=number],select,textarea,.search
 :where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 :where(button,a):focus:not(:focus-visible){outline:none}
 details>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;border-radius:8px}
-.tabs{top:var(--topbar-h,57px)}
-.savebar{top:calc(var(--topbar-h,57px) + var(--tabs-h,39px))}
+.tabs{top:var(--topbar-h,67px)}
+/* 吸顶保存条给页签留出一条明确的安全边界，避免实际顶栏高度略有变化时被页签盖住。 */
+.savebar{top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 8px)}
 html{scroll-behavior:smooth}
-#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,57px) + var(--tabs-h,39px) + 12px)}
+#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 12px)}
 
 /* 最新版 RCON 进阶区：保留原 details/id/字段，只提升折叠入口和状态层级。 */
 details.adv-fold{margin-top:18px;padding:13px 0 0;border-top:1px solid var(--border)}
@@ -681,7 +810,10 @@ details.adv-fold .adv-sum{margin-left:auto;padding:3px 8px;border:1px solid var(
 details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.45);background:rgba(233,170,69,.08)}
 #adv_rcon>label.f{margin-top:16px}#adv_rcon .frow{align-items:flex-start}
 #ver_caps_line,#rcon_runtime_line{padding:8px 10px;border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:9px;background:rgba(101,201,255,.045);line-height:1.65}
-#rcon_runtime_line:empty,#ver_caps_line:empty{display:none}
+#rcon_runtime_line{display:block;max-height:800px;overflow:hidden;opacity:1;transform:none;transition:max-height .38s var(--motion-ease),opacity .24s ease,transform .38s var(--motion-ease),padding-top .38s var(--motion-ease),padding-bottom .38s var(--motion-ease),margin-top .38s var(--motion-ease),border-color .24s ease}
+#rcon_runtime_line:empty{max-height:0;padding-top:0;padding-bottom:0;border-color:transparent;opacity:0;visibility:hidden;transform:translateY(-5px);margin-top:0!important}
+#rcon_runtime_line:not(:empty){visibility:visible;transform:none;margin-top:8px!important}
+#ver_caps_line:empty{display:none}
 #card_terminal #cfg_perm_hint_mode{border-color:rgba(243,187,82,.35);background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%)}
 #kw_list{min-height:42px;padding:8px 10px;border-radius:11px;background:linear-gradient(135deg,rgba(101,201,255,.045),transparent 60%)}
 #kw_list .sym{border-radius:999px;padding-left:10px;background:var(--panel3);border-color:rgba(101,201,255,.26)}
@@ -703,11 +835,11 @@ details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.4
 .settings-summary-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed rgba(128,151,180,.18);font-size:10.5px;color:var(--faint)}.settings-summary-row:last-child{border-bottom:0}.settings-summary-row code{font-family:var(--mono);font-size:10.5px;color:var(--text)}
 
 @media(max-width:720px){
-  .topbar{padding:12px 14px}.tabs{top:var(--topbar-h,51px);padding:0 10px}.savebar{top:calc(var(--topbar-h,51px) + var(--tabs-h,39px))}
+  .topbar{padding:12px 14px}.tabs{top:var(--topbar-h,61px);padding:0 10px}.savebar{top:calc(var(--topbar-h,61px) + var(--tabs-h,39px) + 8px)}
   #adv_rcon .frow{flex-direction:column}#adv_rcon .frow>*{width:100%;max-width:none!important}
 }
 @media(max-width:640px){
-  html,body{overflow-x:hidden}.tabs{position:relative;top:auto}.savebar{position:sticky;top:8px;z-index:40;padding:11px 12px}.savebar .muted{display:-webkit-box;min-width:0;flex:1;font-size:10.5px;line-height:1.5;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.savebar .notice{flex:1 1 100%;margin-left:0!important;font-size:11px}
+  html,body{overflow-x:hidden}.tabs{position:relative;top:auto}.savebar{position:sticky;top:calc(var(--topbar-h,61px) + 8px);z-index:40;padding:11px 12px}.savebar .muted{display:-webkit-box;min-width:0;flex:1;font-size:10.5px;line-height:1.5;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.savebar .notice{flex:1 1 100%;margin-left:0!important;font-size:11px}
   .overview-hero{width:100%;min-width:0;max-width:100%;border-radius:18px;margin-bottom:16px}.hero-copy,.hero-side{width:100%;min-width:0}.hero-copy h1,.hero-copy p{max-width:100%}.hero-copy h1{font-size:27px;overflow-wrap:anywhere}.hero-copy p{font-size:12px;overflow-wrap:anywhere}
   .card{padding:17px}.stat{padding:14px}.frow{flex-direction:column}.frow>*{width:100%;max-width:none!important}.sym-add{max-width:none;flex-wrap:wrap}.sym-add input{min-width:0;flex:1 1 180px}.sym-add .btn{flex:0 0 auto}#kw_input{flex-basis:100%}#kw_add,#kw_reset{flex:1}#ver_caps_line,#rcon_runtime_line{font-size:10.5px}
 }
@@ -722,6 +854,48 @@ details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.4
 select option,select optgroup{background-color:var(--panel2);color:var(--text)}
 select option:checked,select option:hover{background-color:var(--panel3);color:var(--text)}
 
+/* ===== v0.24.3 · 视觉与动效微调 =====
+   只给现有组件补充状态反馈与层次，不改变页面数据流或控件语义。 */
+:root{--motion-ease:cubic-bezier(.2,.75,.2,1)}
+body{position:relative;isolation:isolate;overflow-x:clip}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.42;
+  background-image:linear-gradient(rgba(101,201,255,.018) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(101,201,255,.018) 1px,transparent 1px),
+    radial-gradient(520px 260px at 12% 12%,rgba(101,201,255,.08),transparent 70%),
+    radial-gradient(460px 240px at 88% 72%,rgba(243,187,82,.055),transparent 72%);
+  background-size:36px 36px,36px 36px,auto,auto;
+  animation:ambient-drift 26s ease-in-out infinite alternate}
+:root[data-theme="light"] body::before{opacity:.24}
+.scroll-progress{position:fixed;left:0;top:0;z-index:100;width:0;height:3px;pointer-events:none;
+  background:linear-gradient(90deg,var(--cyan),var(--violet) 55%,var(--amber));
+  box-shadow:0 0 14px rgba(101,201,255,.7);transform-origin:left;transition:width .12s linear}
+.hero-live{display:flex;align-items:center;gap:7px;margin-bottom:11px;color:var(--dim);font-size:10px;letter-spacing:.05em}
+.hero-live-dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--amber);box-shadow:0 0 0 4px rgba(243,187,82,.12);animation:live-pulse 2s ease-in-out infinite}
+.hero-live-dot.ok{background:var(--ok);box-shadow:0 0 0 4px rgba(89,217,154,.12),0 0 14px rgba(89,217,154,.52)}
+.hero-live-dot.bad{background:var(--bad);box-shadow:0 0 0 4px rgba(255,128,99,.12),0 0 12px rgba(255,128,99,.42)}
+.hero-live-dot.pending{animation-duration:1.15s}
+.hero-live-time{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums}
+.overview-hero::before{content:"";position:absolute;inset:-45% 34% auto -12%;height:180%;
+  background:linear-gradient(108deg,transparent 36%,rgba(255,255,255,.075) 48%,transparent 60%);
+  transform:translateX(-55%) rotate(8deg);pointer-events:none;animation:hero-sheen 12s var(--motion-ease) infinite}
+.overview-hero>*{position:relative;z-index:1}
+.page.active>.overview-hero,.page.active>.section-lead,.page.active .card,.page.active .stat{
+  animation:surface-in .42s var(--motion-ease) both}
+.page.active>.section-lead{animation-delay:.04s}
+.page.active>.overview-hero{animation-delay:.02s}
+@media(hover:hover){
+  .card,.stat{transition:transform .2s var(--motion-ease),border-color .2s ease,box-shadow .2s ease}
+  .card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--cyan) 28%,var(--border));box-shadow:0 14px 34px rgba(0,0,0,.13)}
+  .stat:hover{transform:translateY(-3px);box-shadow:0 14px 30px rgba(0,0,0,.16)}
+  .hero-pills span{transition:transform .18s ease,background .18s ease,border-color .18s ease}
+  .hero-pills span:hover{transform:translateY(-2px);border-color:var(--cyan);background:rgba(101,201,255,.1)}
+}
+@keyframes surface-in{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
+@keyframes live-pulse{0%,100%{transform:scale(1);opacity:.78}50%{transform:scale(1.22);opacity:1}}
+@keyframes hero-sheen{0%,58%{transform:translateX(-55%) rotate(8deg);opacity:0}70%{opacity:.8}88%,100%{transform:translateX(210%) rotate(8deg);opacity:0}}
+@keyframes ambient-drift{from{background-position:0 0,0 0,0 0,0 0}to{background-position:18px 12px,-14px 9px,22px -10px,-18px 14px}}
+@media(prefers-reduced-motion:reduce){body::before,.overview-hero::before,.hero-live-dot{animation:none}.page.active>.overview-hero,.page.active>.section-lead,.page.active .card,.page.active .stat{animation:none}.scroll-progress{transition:none}}
+
 </style>
 </head>
 <body>
@@ -732,7 +906,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <div>
       <div style="display:flex;align-items:center;gap:8px">
         <span class="brand-name">Minecraft Server 智控台</span>
-        <span class="ver" id="ver">v0.23.3</span>
+        <span class="ver" id="ver">v0.24.3</span>
       </div>
       <div class="brand-sub">RCON 控制 · 知识库 · 多Agent 工作流 · 提示词 · 事件播报</div>
     </div>
@@ -744,6 +918,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
     <button class="winbtn" id="winbtn" style="display:none" onclick="openStandalone()">⧉ 新窗口打开</button>
   </div>
 </div>
+
+<div class="scroll-progress" id="scroll_progress" aria-hidden="true"></div>
 
 <!-- ===== Tab 导航 ===== -->
 <nav class="tabs" id="tabs">
@@ -766,6 +942,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <p>从 RCON 状态、在线玩家到知识库与 Agent 工作流，重要信息集中在这里。先看运行状态，再决定下一步动作。</p>
     </div>
     <div class="hero-side">
+      <div class="hero-live" role="status" aria-live="polite"><span class="hero-live-dot pending" id="hero_live_dot"></span><span id="hero_live_text">正在建立连接</span><span class="hero-live-time" id="hero_live_time">--:--</span></div>
       <div class="hero-side-label">今日控制面</div>
       <div class="hero-side-title">实时运行 · 清晰可控</div>
       <div class="hero-side-copy">用事件流追踪服务器变化，用知识库和工作流减少重复操作。</div>
@@ -797,7 +974,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
   <div class="grid g2">
     <div class="card">
       <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
-      <div id="sv_status"><span class="muted">加载中…</span></div>
+      <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
       <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
       <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
     </div>
@@ -923,13 +1100,13 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
   <div class="banner" id="kb_health"></div>
   <div class="grid g4" id="kb_stats"></div>
   <div style="height:14px"></div>
-  <div class="grid g2">
+  <div class="grid g2 kb-entry-grid">
     <div class="card">
       <h3><span class="dot"></span>条目管理 <span class="right" id="kb_fingerprint"></span></h3>
       <input type="text" class="search" id="kb_search" placeholder="搜索主题或内容…（支持中文/英文/ID 片段）">
       <div id="kb_list"><span class="muted">加载中…</span></div>
     </div>
-    <div>
+    <div class="kb-entry-side">
       <div class="card" id="pending_card" style="display:none">
         <h3><span class="dot" style="background:var(--bad)"></span>待审批（自动应用已关闭） <span class="right" id="pend_cnt"></span></h3>
         <div id="pending_list"></div>
@@ -978,7 +1155,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
   </div>
   <div style="height:14px"></div>
   <div class="card">
-    <h3><span class="dot" style="background:var(--amber)"></span>最近任务日志 <span class="right"><button onclick="loadWorkflow(true)">刷新</button></span></h3>
+      <h3><span class="dot" style="background:var(--amber)"></span>最近任务日志 <span class="right"><button type="button" id="wf_refresh">刷新</button></span></h3>
     <div id="wf_logs"><span class="muted">加载中…</span></div>
   </div>
 </div>
@@ -1048,7 +1225,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <div class="sw-t"><b>异地 RCON 模式</b><span>AstrBot 与服务端不在同一台机器 · 只映射了 RCON 端口</span></div>
         <label class="sw"><input type="checkbox" id="cfg_remote_rcon_mode"><span class="sl"></span></label>
       </div>
-      <div class="hint" id="remote_mode_hint" style="display:none;margin-top:2px">
+      <div class="hint rmt-collapsible" id="remote_mode_hint" aria-hidden="true" aria-live="polite" style="margin-top:2px">
         <span id="rmt_hint_tag">已开启：</span><b>服务器目录可以留空</b>，插件只走 RCON 下发指令。作为交换，
         <b>物品词典 / 知识库 / 聊天桥接 / 服务器事件播报 / 版本探测 / 进程指标</b>
         这些依赖服务端本地文件的能力会按设计禁用 —— 下方对应区块会被<b>标记为不可用并写明原因</b>，
@@ -1057,7 +1234,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         插件不会猜一个版本硬编）：附魔 / NBT / 物品组件类请求会被拒绝。要用这类功能，请在此手填：
         <span class="jump" onclick="openAdvRcon('cfg_server_version')">展开「进阶设置」填写 →</span>
       </div>
-      <div class="hint" id="remote_mode_pending" style="display:none;margin-top:2px;color:var(--warn)"></div>
+      <div class="hint rmt-collapsible" id="remote_mode_pending" aria-hidden="true" aria-live="polite" style="margin-top:2px;color:var(--warn)"></div>
       <div id="sd_box" style="margin-top:12px">
         <label class="f" style="margin-top:0">服务器目录 server_dir</label>
         <input type="text" id="cfg_server_dir" placeholder="C:\...\Server">
@@ -1072,7 +1249,8 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <input type="password" id="cfg_rcon_password" placeholder="••••••••">
       <div class="setting-subhead"><span>响应边界</span><em>决定长命令何时算完成</em></div>
       <details class="adv-fold" id="adv_rcon">
-        <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-sum" id="adv_rcon_sum"></span></summary>
+        <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-fold-hint" aria-live="polite"><span class="adv-fold-hint-closed">（一般不用改 · 点开调参）</span><span class="adv-fold-hint-open">（点标题收起）</span></span><span class="adv-sum" id="adv_rcon_sum"></span></summary>
+        <div class="adv-fold-body"><div class="adv-fold-body-inner">
         <label class="f" style="margin-top:12px">RCON 超时（秒）</label>
         <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
         <label class="f">响应结束判定方式</label>
@@ -1091,7 +1269,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
         <label class="f" style="margin-top:16px">服务端版本与物品语法</label>
         <div class="frow" style="margin-top:2px">
           <div style="flex:1">
-            <label class="f" style="margin-top:0">服务端版本 server_version_override</label>
+            <label class="f" id="cfg_server_version_label" style="margin-top:0">服务端版本 server_version_override<span class="rmt-version-mark" aria-hidden="true" title="异地模式：服务端版本未填（附魔 / NBT 会被拒）">!</span></label>
             <input type="text" id="cfg_server_version" placeholder="留空 = 自动探测，例：1.20.1">
           </div>
           <div style="flex:1;max-width:250px">
@@ -1107,6 +1285,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
           探测必然失败：此时<b>留空也能保存</b>，但会按「版本未知」处理 ——
           附魔 / NBT / 物品组件类请求会被明确拒绝（插件不会猜一个版本硬编，猜错只会生成解析失败的命令）。
           要用这类功能，请在此手填。</div>
+        </div></div>
       </details>
 
       <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
@@ -1128,7 +1307,7 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       <label class="f">命令工具白名单 / 黑名单 danger_command_policy</label>
       <div class="hint" style="margin-top:2px">
         两个模式的开关与说明统一放在下方
-        <span class="jump" onclick="document.getElementById('card_policy').scrollIntoView({behavior:'smooth',block:'center'})">「命令工具 · 白名单 / 黑名单」</span>
+        <span class="jump" onclick="jumpToCard('card_policy')">「命令工具 · 白名单 / 黑名单」</span>
         窗口里。管理员 <b>admin_ids</b> 不受策略限制，永远可用全部能力。
       </div>
       <label class="f">封禁默认理由 ban_default_reason</label>
@@ -1174,10 +1353,10 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       本策略只管「命令工具」；想限制「喊话」请到「指令」分组关闭「喊话对全员开放」。
       改动后记得点「保存全部设置」。<br>
       被拒绝时不只是「拦住」，还会让决策 AI 明白这是权限判定、不是用法问题（详见下方
-      <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
+      <span class="jump" onclick="jumpToCard('card_terminal')">「拦截即终局 · 闸门强化」</span>）。
     </div>
     <!-- v0.23.5：未知命令闸门。只在黑名单策略下生效，因此跟着策略显隐（见 syncPolicyUI） -->
-    <div class="sw-row" id="row_allow_unknown" style="margin-top:14px">
+    <div class="sw-row" id="row_allow_unknown" aria-hidden="true">
       <div class="sw-t"><b>允许未知命令</b>
         <span>不在已知命令表里的模组 / 整合包自定义命令。<b>默认关闭 = 一律拒绝</b>：
           这类命令无法判定权限等级，危险命令清单也认不出它们 ——
@@ -1198,11 +1377,15 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
       改个参数、换个工具接着硬试。
     </div>
     <label class="f">权限前置提醒 · 触发时机 permission_hint_mode</label>
-    <select id="cfg_perm_hint_mode">
-      <option value="always">always —— 每次对话都注入（旧行为）</option>
-      <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
-      <option value="off">off —— 从不注入，只在被拦时告知</option>
-    </select>
+    <div class="select-pop" id="perm_hint_mode_select">
+      <select class="select-native" id="cfg_perm_hint_mode" aria-hidden="true" tabindex="-1">
+        <option value="always">always —— 每次对话都注入（旧行为）</option>
+        <option value="on_demand">on_demand —— 仅涉及 MC 时注入（默认，推荐）</option>
+        <option value="off">off —— 从不注入，只在被拦时告知</option>
+      </select>
+      <button type="button" class="select-trigger" id="cfg_perm_hint_mode_trigger" aria-haspopup="listbox" aria-expanded="false">on_demand —— 仅涉及 MC 时注入（默认，推荐）</button>
+      <div class="select-menu" id="cfg_perm_hint_mode_menu" role="listbox" aria-label="权限前置提醒触发时机"></div>
+    </div>
     <div class="hint" style="margin-top:2px">
       非管理员发起对话时，提前把「哪些命令工具会被直接拒绝 + 有哪些替代方式」挂到这轮的用户消息里
       （不动系统提示词，避免影响缓存命中）。<b>on_demand</b> 只在两种情况注入：
@@ -1407,18 +1590,34 @@ select option:checked,select option:hover{background-color:var(--panel3);color:v
           <div class="hint" id="kb_rerank_p_tip"></div>
         </div>
       </div>
-      <details class="kb-fold">
+      <details class="kb-fold" id="kb_engine_fold">
         <summary>检索引擎与增强检索怎么选</summary>
-        <div class="hint"><b>检索引擎</b>：BM25 按「字序」匹配，查「黄铜」不会捞出「铜黄」，权重自动压低「通用 / 方案 / 规则」这类套话，长条目也不会靠字数霸榜 —— 实测结果精确率 20.5% → 58.6%（2.9 倍）、无关条目减少 82%，5000 条规模检索 6.3ms → 2.0ms。切换后点「保存全部设置」即时生效，无需重载插件。<br>
-        <b>旧版</b>：中文按单字、英文按整段做子串命中，字面与历史结果完全一致，但容易连锁误召回（查「满配一把枪」会捞出一堆含「配 / 方 / 案」的条目）。仅在需要与历史检索结果完全对齐时才选。</div>
-        <div class="hint"><b>语义增强检索</b>：只建议大型服务器启用 —— 开启后提问可以「换种说法」问，例如问「后台连不上了」，也能捞到库里那条「RCON 连接失败排查」。本机实测（438 条语料 / 24 组查询）：Hit@1 75.0% → 87.5%、Hit@6 79.2% → 100%（口语改写型 Hit@6 58.3% → 100%），无关条目误召回同步归零。<br>
-        <b>代价</b>：每次检索多一次嵌入调用（约 300~500ms 延迟）；建库时每条约一次，只算新增 / 改动过的条目，结果落盘缓存，不会重复烧。<br>
-        <b>前提</b>：先在 AstrBot「服务提供商」里添加一个 Embedding 模型（如 Qwen3-Embedding-4B）。没有的话开关开了也不生效 —— 检索会安静退化成纯 BM25，不报错；条目少的小库用 BM25 已经够准，故默认关闭。</div>
-        <div class="hint"><b>重排序精排</b>：库大了、问法杂了之后，「召回」难免把真正对的条目排到中游 —— 精排（Cross-Encoder）把候选池逐条与提问重新比对，看的是真实相关性，能把该在前面的提上来。开启后检索变成两段式：先召回 20 条候选，再精排取前几条。<br>
-        <b>与语义增强检索独立</b>：没有 Embedding 模型也能单开（只对 BM25 召回池精排）；两者同开就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。<br>
-        <b>代价 / 前提</b>：每次检索多一次重排 API 往返（约几百毫秒），小库不值这份延迟，故默认关闭；需先在「服务提供商」里添加一个 Rerank 模型（如 vllm_rerank / Qwen3-Reranker-8B），没配置时开关开了也不报错 —— 检索安静退化为召回顺序。</div>
-        <div class="hint"><b>模型回落</b>：上面两个下拉只列 AstrBot 里<b>已加载</b>的模型（配置了但没启用、或加载失败的不会出现）；留空 = 自动使用第一个（与不指定时行为完全一致）；指定的模型哪天被删了，检索会自动回落到第一个并在保存时提示，不会因此失效。<br>
-        <b>生效时机</b>：词典与知识库在插件启动时构建；改 server_dir 或「物品词典 / 学习型知识库」这两项开关会在保存时就地重建（无需重载插件），其余开关即时生效。</div>
+        <div class="kb-fold-body"><div class="kb-fold-body-inner">
+          <div class="kb-guide-lead"><b>先看结论</b><span>大多数服务器直接用 <strong>BM25</strong>；问法变化多且有模型资源时再开<strong>语义增强</strong>；资料很多、还要更准时再加<strong>重排序</strong>。</span></div>
+          <div class="kb-guide-grid">
+            <div class="kb-guide-card primary">
+              <div class="kb-guide-head"><b>BM25 · 默认推荐</b><span class="kb-guide-badge">快速</span></div>
+              <p>中文二元切分，按字序匹配，能压低“通用 / 方案 / 规则”等套话的权重。小库到大库都够用，无需额外模型。</p>
+              <div class="kb-guide-facts"><span>精确率 20.5% → 58.6%</span><span>5000 条：2.0ms</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>旧版 · 兼容模式</b></div>
+              <p>中文按单字、英文按整段做子串命中，结果与旧版本一致，但容易把含相同单字的无关条目一起召回。</p>
+              <div class="kb-guide-facts"><span>仅需历史结果一致时使用</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>语义增强 · 按需开启</b><span class="kb-guide-badge">大库</span></div>
+              <p>支持“换种说法”提问；438 条实测 Hit@1 75% → 87.5%，Hit@6 79.2% → 100%。</p>
+              <div class="kb-guide-facts"><span>前提：Embedding 模型</span><span>代价：约 300~500ms</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>重排序精排 · 大库按需</b><span class="kb-guide-badge">更准</span></div>
+              <p>先召回 20 条，再逐条比较相关性提取前几条；可独立于语义增强运行，两者同开就是完整三段式检索。</p>
+              <div class="kb-guide-facts"><span>前提：Rerank 模型</span><span>代价：约几百毫秒</span></div>
+            </div>
+          </div>
+          <div class="kb-guide-note"><b>模型与生效：</b>两个下拉只列已加载模型，留空自动取第一个；模型缺失时会静默回退，不会让检索失效。改 server_dir 或物品词典 / 学习型知识库开关后保存时重建，其余开关即时生效。</div>
+        </div></div>
       </details>
     </div>
   </div>
@@ -1522,6 +1721,18 @@ let WF = null;       // 工作流快照
 const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// 顶部细进度条只反映当前页面滚动位置，不参与任何业务请求。
+function syncScrollProgress(){
+  const bar = $("scroll_progress");
+  if(!bar) return;
+  const root = document.documentElement;
+  const max = Math.max(0, root.scrollHeight - root.clientHeight);
+  bar.style.width = (max ? Math.min(100, Math.max(0, window.scrollY / max * 100)) : 0) + "%";
+}
+window.addEventListener("scroll", syncScrollProgress, {passive:true});
+window.addEventListener("resize", syncScrollProgress);
+syncScrollProgress();
+
 // ============ API 层（bridge 优先，直连降级） ============
 async function directApi(path, method, body){
   const opt = { method, credentials: "include", headers: {} };
@@ -1601,11 +1812,102 @@ function setNotice(el, txt, isErr){
   clearTimeout(el._t);
   el._t = setTimeout(()=>{ el.className="notice"; }, 3500);
 }
-function connDot(ok, txt){ $("conn_dot").className = "p " + (ok?"on":"off"); $("conn_txt").textContent = txt; }
+function connDot(ok, txt){
+  $("conn_dot").className = "p " + (ok === null ? "" : (ok ? "on" : "off"));
+  $("conn_txt").textContent = txt;
+  const dot = $("hero_live_dot"), text = $("hero_live_text"), time = $("hero_live_time");
+  if(dot) dot.className = "hero-live-dot " + (ok === null ? "pending" : (ok ? "ok" : "bad"));
+  if(text) text.textContent = ok === null ? "正在建立连接" : (ok ? "控制台已连接" : "连接失败 · 请检查配置");
+  if(time && ok !== null) time.textContent = new Date().toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit"});
+}
 function modeTag(){ $("mode_tag").innerHTML = "模式 <b>"+(mode==="bridge"?"桥接":"直连")+"</b>"; }
+
+// 快捷跳转：只让最后一次跳转生效；滚动和目标布局都稳定后再亮起两次。
+let pendingCardJump = null;
+let highlightedJumpCard = null;
+let cardHighlightTimer = null;
+function cancelCardJump(){
+  if(pendingCardJump){ pendingCardJump(); pendingCardJump = null; }
+  clearTimeout(cardHighlightTimer);
+  if(highlightedJumpCard) highlightedJumpCard.classList.remove("jump-highlight");
+  highlightedJumpCard = null;
+}
+function jumpToCard(target, {layoutDelay=0, focus=false}={}){
+  target = typeof target === "string" ? $(target) : target;
+  const card = target && target.closest(".card");
+  if(!card) return;
+  cancelCardJump();
+  let frame = 0, delayTimer = null, cancelled = false;
+  const cancel = ()=>{
+    cancelled = true;
+    clearTimeout(delayTimer);
+    cancelAnimationFrame(frame);
+    window.removeEventListener("wheel", cancel);
+    window.removeEventListener("touchstart", cancel);
+    window.removeEventListener("keydown", onKey);
+    if(pendingCardJump === cancel) pendingCardJump = null;
+  };
+  const onKey = ev=>{ if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(ev.key)) cancel(); };
+  pendingCardJump = cancel;
+  window.addEventListener("wheel", cancel, {passive:true});
+  window.addEventListener("touchstart", cancel, {passive:true});
+  window.addEventListener("keydown", onKey);
+  const start = ()=>{
+    if(cancelled || !target.isConnected || !target.getClientRects().length){ cancel(); return; }
+    if(focus) target.focus({preventScroll:true});
+    // 长卡片从标题处开始显示；短卡片居中于顶栏 / 保存条下方的可见区域。
+    let clearance = 12;
+    document.querySelectorAll(".topbar,.tabs,#savebar").forEach(el=>{
+      const style = getComputedStyle(el);
+      if(["sticky","fixed"].includes(style.position) && el.getClientRects().length){
+        clearance = Math.max(clearance, (parseFloat(style.top) || 0) + el.getBoundingClientRect().height + 12);
+      }
+    });
+    const rect = target.getBoundingClientRect();
+    const offset = Math.max(0, (window.innerHeight - clearance - 16 - rect.height) / 2);
+    const root = document.scrollingElement || document.documentElement;
+    const top = Math.max(0, Math.min(root.scrollHeight-root.clientHeight, window.scrollY+rect.top-clearance-offset));
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({top, behavior:reduced ? "auto" : "smooth"});
+    const started = performance.now();
+    let lastY = window.scrollY, lastTop = target.getBoundingClientRect().top, stableSince = started;
+    const check = now=>{
+      if(cancelled || !target.isConnected || !target.getClientRects().length){ cancel(); return; }
+      const y = window.scrollY, targetTop = target.getBoundingClientRect().top;
+      if(Math.abs(y-lastY) > .25 || Math.abs(targetTop-lastTop) > .25) stableSince = now;
+      lastY = y; lastTop = targetTop;
+      if(now-started >= 160 && now-stableSince >= 140){
+        cancel();
+        card.classList.remove("jump-highlight");
+        void card.offsetWidth;
+        card.classList.add("jump-highlight");
+        highlightedJumpCard = card;
+        cardHighlightTimer = setTimeout(()=>{
+          card.classList.remove("jump-highlight");
+          if(highlightedJumpCard === card) highlightedJumpCard = null;
+        }, 1640);
+        return;
+      }
+      if(now-started > 3000){ cancel(); return; }
+      frame = requestAnimationFrame(check);
+    };
+    frame = requestAnimationFrame(check);
+  };
+  if(layoutDelay) delayTimer = setTimeout(start, layoutDelay);
+  else frame = requestAnimationFrame(start);
+}
+window.jumpToCard = jumpToCard;
 
 // ============ Tab 切换 ============
 function switchTab(name){
+  if(!document.getElementById("page_" + name)) return;
+  cancelCardJump();
+  if(window.scrollY > 0) window.scrollTo({top:0, behavior:"auto"});
+  if(name !== "settings"){
+    const picker = $("perm_hint_mode_select"), trigger = $("cfg_perm_hint_mode_trigger");
+    if(picker) picker.classList.remove("is-open");
+    if(trigger) trigger.setAttribute("aria-expanded", "false");
+  }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.page===name));
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.id==="page_"+name));
   if(name==="overview") loadOverview();
@@ -1622,15 +1924,7 @@ document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click", ()=>swi
 // 跨页跳转：设置页「启用渐变色」→ 服务器页『文本颜色』卡片（切页 + 平滑滚动 + 高亮闪烁）
 function jumpToTextColor(){
   switchTab("server");
-  const card = document.getElementById("srv_color_card");
-  if(!card) return;
-  clearTimeout(jumpToTextColor._t);
-  jumpToTextColor._t = setTimeout(()=>{
-    try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
-    card.classList.remove("flash"); void card.offsetWidth;   // 重排以便重复触发动画
-    card.classList.add("flash");
-    setTimeout(()=>card.classList.remove("flash"), 1700);
-  }, 80);
+  jumpToCard("srv_color_card", {layoutDelay:440});
 }
 window.jumpToTextColor = jumpToTextColor;
 ["jump_text_color","jump_text_color2"].forEach(id=>{
@@ -1686,11 +1980,20 @@ function renderRconRuntime(rt){
 async function resetRcon(){
   const el = $("rcon_runtime_line");
   const r = await callPost("rcon/reset").catch(()=>({ok:false,error:"请求失败"}));
+  const appendFeedback = (ok, message)=>{
+    if(!el) return;
+    if(el.textContent.trim()) el.appendChild(document.createTextNode(" "));
+    const item = document.createElement("span");
+    item.className = "rcon-reset-feedback " + (ok ? "ok" : "bad");
+    item.textContent = (ok ? "✓ " : "✗ ") + String(message || (ok ? "已重建" : "重建失败"));
+    el.appendChild(item);
+    requestAnimationFrame(()=>item.classList.add("is-visible"));
+  };
   if(r && r.ok){
     renderRconRuntime(r.runtime);
-    if(el) el.insertAdjacentHTML("beforeend", ` <span class="muted">✓ ${esc(r.message||"已重建")}</span>`);
+    appendFeedback(true, r.message || "已重建");
   } else if(el){
-    el.insertAdjacentHTML("beforeend", ` <span style="color:var(--warn)">✗ ${esc((r&&r.error)||"重建失败")}</span>`);
+    appendFeedback(false, (r&&r.error) || "重建失败");
   }
 }
 
@@ -1775,38 +2078,54 @@ function testRconInto(elId){
 
 // ============ 服务器页 ============
 async function loadServer(){
-  $("sv_status").innerHTML = `<span class="muted">正在查询…</span>`;
-  $("sv_players").innerHTML = "";
-  const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
-  // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
-  // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
-  renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
-  if(!r.ok){
-    $("sv_status").innerHTML = `<span class="badge bad">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
-    $("sv_players").innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
-    $("sv_online_tag").innerHTML = "";
-    return;
+  if(loadServer._pending) return;
+  const status = $("sv_status"), players = $("sv_players"), refresh = $("sv_refresh");
+  loadServer._pending = true;
+  status.classList.add("is-loading");
+  players.classList.add("is-loading");
+  status.setAttribute("aria-busy", "true");
+  players.setAttribute("aria-busy", "true");
+  if(refresh) refresh.disabled = true;
+  try{
+    // 保留上一份内容，查询期间只降低明度，避免成功 / 失败两种高度切换造成页面跳动。
+    const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
+    // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
+    // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
+    renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
+    if(!r.ok){
+      status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+      players.innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
+      $("sv_online_tag").innerHTML = "";
+      return;
+    }
+    const list = r.list||{};
+    status.innerHTML = `
+      <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
+      <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
+      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+    // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
+    // 等于「版本未知」这条最重要的提示根本没到用户眼前。
+    if(r.version_hint){
+      $("sv_ver_caps").insertAdjacentHTML("beforeend",
+        `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
+    }
+    // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
+    if(RMT.on) status.insertAdjacentHTML("beforeend",
+      `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
+      + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
+    $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
+    const pls = list.players||[];
+    players.innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
+    // 事件流
+    loadServerEvents();
+  }finally{
+    loadServer._pending = false;
+    status.classList.remove("is-loading");
+    players.classList.remove("is-loading");
+    status.removeAttribute("aria-busy");
+    players.removeAttribute("aria-busy");
+    if(refresh) refresh.disabled = false;
   }
-  const list = r.list||{};
-  $("sv_status").innerHTML = `
-    <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
-    <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
-    <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
-  // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
-  // 等于「版本未知」这条最重要的提示根本没到用户眼前。
-  if(r.version_hint){
-    $("sv_ver_caps").insertAdjacentHTML("beforeend",
-      `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
-  }
-  // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
-  if(RMT.on) $("sv_status").insertAdjacentHTML("beforeend",
-    `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
-    + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
-  $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
-  const pls = list.players||[];
-  $("sv_players").innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
-  // 事件流
-  loadServerEvents();
 }
 async function loadServerEvents(){
   const r = await callGet("events").catch(()=>({ok:false}));
@@ -2231,13 +2550,7 @@ async function fpModalDone(goKnowledge){
   await presetNotice("ack");
   if(goKnowledge){
     switchTab("knowledge");
-    const card = $("kb_preset_card");
-    if(card){
-      try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
-      card.classList.remove("flash"); void card.offsetWidth;
-      card.classList.add("flash");
-      setTimeout(() => card.classList.remove("flash"), 1700);
-    }
+    jumpToCard("kb_preset_card", {layoutDelay:440});
   }
 }
 async function checkFingerprintNotice(){
@@ -2308,9 +2621,23 @@ document.addEventListener("click", e => {
 const WF_BADGE = {done:["ok","✓ 完成"],failed:["bad","✗ 失败"],running:["warn","… 执行中"],error:["bad","! 异常"]};
 const WF_AGENT = [["分类器","classifier"],["模板判断","judge"],["模板工程师","engineer"],["实现器","implementer"],["纠错器","corrector"]];
 async function loadWorkflow(silent){
+  if(loadWorkflow._pending) return;
+  const refresh = $("wf_refresh"), refreshLabel = refresh ? refresh.textContent : "刷新";
+  const startedAt = Date.now();
+  const restoreRefresh = ()=>{
+    loadWorkflow._pending = false;
+    if(refresh){ refresh.disabled = false; refresh.classList.remove("refreshing"); refresh.textContent = refreshLabel; }
+  };
+  loadWorkflow._pending = true;
+  if(!silent && refresh){ refresh.disabled = true; refresh.classList.add("refreshing"); refresh.textContent = "刷新中"; }
   const r = await callGet("workflow/status").catch(()=>({ok:false}));
+  if(!silent){
+    const remain = Math.max(0, 280 - (Date.now() - startedAt));
+    if(remain) await new Promise(resolve=>setTimeout(resolve, remain));
+  }
   if(!r || !r.ok){
-    if(!silent) $("wf_logs").innerHTML = `<span class="badge bad">工作流状态获取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    if(!silent) $("wf_logs").innerHTML = `<span role="status" class="badge bad status-error-badge">工作流状态获取失败${r&&r.error?"："+esc(r.error):""}</span>`;
+    restoreRefresh();
     return;
   }
   WF = r;
@@ -2356,6 +2683,7 @@ async function loadWorkflow(silent){
       ${l.detail?`<div class="detail">${esc(l.detail)}</div>`:""}
     </div>`;
   }).join("") : `<div class="empty">暂无任务记录</div>`;
+  restoreRefresh();
 }
 
 
@@ -2387,6 +2715,8 @@ async function loadPrompts(){
   });
   renderPrompt();
 }
+// 提示词页标题栏的「刷新」按钮使用内联 onclick，需要显式暴露入口。
+window.loadPrompts = loadPrompts;
 
 function curAgent(){ return ((PR&&PR.agents)||[]).find(a=>a.role===PR_ROLE) || null; }
 
@@ -2608,36 +2938,190 @@ const S_DEFAULTS = {
 // 这种「必须补的事」要在 summary 上就看得见，不能靠用户自己想起来展开。
 // 反过来说，承载安全警示的状态行（#ver_caps_line / #rcon_runtime_line）与
 // 「重建 RCON 连接」按钮**不进折叠区** —— 收起等于把警示藏掉。
+function renderRconVersionWarning(needsVersion){
+  const label = $("cfg_server_version_label");
+  const field = $("cfg_server_version");
+  if(label){
+    label.classList.toggle("rmt-version-warn", !!needsVersion);
+    const mark = label.querySelector(".rmt-version-mark");
+    if(mark) mark.setAttribute("aria-hidden", needsVersion ? "false" : "true");
+  }
+  if(field) field.classList.toggle("rmt-version-warn", !!needsVersion);
+}
+function renderAdvSummaryText(el, text, warn){
+  if(!el) return;
+  const nextClass = warn ? "adv-sum warn" : "adv-sum";
+  if(el.textContent === text && el.className === nextClass) return;
+  el.__advSummaryTarget = {text, warn};
+  if(!el.dataset.advSummaryReady){
+    el.className = nextClass;
+    el.textContent = text;
+    el.dataset.advSummaryReady = "1";
+    return;
+  }
+  if(el.__advSummarySwapTimer) clearTimeout(el.__advSummarySwapTimer);
+  el.classList.remove("adv-sum-entering");
+  el.classList.add("adv-sum-switching");
+  el.__advSummarySwapTimer = setTimeout(()=>{
+    const target = el.__advSummaryTarget;
+    if(!target) return;
+    el.className = (target.warn ? "adv-sum warn" : "adv-sum") + " adv-sum-entering";
+    el.textContent = target.text;
+    requestAnimationFrame(()=>{
+      if(el.__advSummaryTarget && el.__advSummaryTarget.text === target.text
+         && el.__advSummaryTarget.warn === target.warn){
+        el.classList.remove("adv-sum-entering");
+      }
+    });
+    el.__advSummarySwapTimer = null;
+  }, 120);
+}
 function renderAdvSummary(){
   const el = $("adv_rcon_sum");
   if(!el) return;
+  const adv = $("adv_rcon");
   const rmt = $("cfg_remote_rcon_mode");
   const ver = ($("cfg_server_version") || {}).value || "";
   const to = ($("cfg_rcon_timeout") || {}).value || "";
   const mode = ($("cfg_rcon_end_mode") || {}).value || "sentinel";
-  if(rmt && rmt.checked && !String(ver).trim()){
+  const needsVersion = !!(rmt && rmt.checked && !String(ver).trim());
+  // 警告出现时立即占住摘要空间；警告消失时延后到文案退场 / 入场完成后再恢复尾部提示。
+  if(adv && adv.__advRconHintRestoreTimer){
+    clearTimeout(adv.__advRconHintRestoreTimer);
+    adv.__advRconHintRestoreTimer = null;
+  }
+  if(needsVersion && adv) adv.classList.add("adv-rcon-warn");
+  renderRconVersionWarning(needsVersion);
+  if(needsVersion){
     // 异地模式读不到服务端文件 → 版本只能手填；漏填的后果要点名（「会被拒」），
     // 但别写成保存的前置条件：留空照样能保存（v0.23.9 统一口径）。
-    el.className = "adv-sum warn";
-    el.textContent = "⚠ 异地模式：服务端版本未填（附魔 / NBT 会被拒）";
+    renderAdvSummaryText(el, "⚠ 异地模式：服务端版本未填（附魔 / NBT 会被拒）", true);
     return;
   }
-  el.className = "adv-sum";
-  el.textContent = `当前：超时 ${to || "默认 5"}s · `
-    + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）");
+  renderAdvSummaryText(el, `当前：超时 ${to || "默认 5"}s · `
+    + (mode === "idle" ? "idle（静默窗口）" : "sentinel（结束哨兵）"), false);
+  if(adv && adv.classList.contains("adv-rcon-warn")){
+    // input + change 可能连续触发；每次都重新计时，确保摘要退场完成前尾部提示不参与布局。
+    adv.__advRconHintRestoreTimer = setTimeout(()=>{
+      const liveRmt = $("cfg_remote_rcon_mode");
+      const liveVer = ($("cfg_server_version") || {}).value || "";
+      if(!(liveRmt && liveRmt.checked && !String(liveVer).trim())){
+        adv.classList.remove("adv-rcon-warn");
+      }
+      adv.__advRconHintRestoreTimer = null;
+    }, 520);
+  }
 }
 function openAdvRcon(focusId){
   const d = $("adv_rcon");
   if(!d) return;
+  const expanding = !d.open || d.classList.contains("adv-fold-closing");
+  if(d.__advFoldCloseTimer){ clearTimeout(d.__advFoldCloseTimer); d.__advFoldCloseTimer = null; }
+  d.classList.remove("adv-fold-closing");
   d.open = true;
   renderAdvSummary();
   const el = focusId && $(focusId);
   if(el){
-    el.scrollIntoView({behavior:"smooth", block:"center"});
-    el.focus({preventScroll:true});
+    jumpToCard(el, {layoutDelay:expanding ? 440 : 0, focus:true});
   }
 }
 window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .jump 写法一致）
+
+// 原生 details 在关闭时会立刻把内容从渲染树中收掉，导致卷帘收起看不见。
+// 拦截 summary 点击：关闭时先保持 open，播放 body 的 0fr 过渡，结束后再真正移除 open。
+function bindAdvFoldMotion(d){
+  if(!d || d.dataset.motionBound === "1") return;
+  const summary = d.querySelector("summary");
+  if(!summary) return;
+  d.dataset.motionBound = "1";
+  summary.addEventListener("click", ev=>{
+    ev.preventDefault();
+    d.__advFoldToken = (d.__advFoldToken || 0) + 1;
+    const token = d.__advFoldToken;
+    if(d.__advFoldCloseTimer){ clearTimeout(d.__advFoldCloseTimer); d.__advFoldCloseTimer = null; }
+    if(d.classList.contains("adv-fold-closing")){
+      d.classList.remove("adv-fold-closing");
+      d.open = true;
+      return;
+    }
+    if(!d.open){
+      const body = d.querySelector(".adv-fold-body");
+      // 首次打开时先把起点写成明确的 0fr；file:// 页面在第一次渲染 details
+      // 时可能跳过一次样式快照，若只依赖 [open] 选择器就会直接显示终态。
+      if(body){
+        body.style.gridTemplateRows = "0fr";
+        body.style.opacity = "0";
+        body.style.visibility = "hidden";
+        body.style.pointerEvents = "none";
+      }
+      d.open = true;
+      if(body){
+        void body.offsetHeight;
+        requestAnimationFrame(()=>{
+          if(d.__advFoldToken !== token || !d.open || d.classList.contains("adv-fold-closing")) return;
+          body.style.removeProperty("grid-template-rows");
+          body.style.removeProperty("opacity");
+          body.style.removeProperty("visibility");
+          body.style.removeProperty("pointer-events");
+        });
+      }
+      return;
+    }
+    d.classList.add("adv-fold-closing");
+    d.__advFoldCloseTimer = setTimeout(()=>{
+      if(d.__advFoldToken !== token) return;
+      d.open = false;
+      d.classList.remove("adv-fold-closing");
+      d.__advFoldCloseTimer = null;
+      renderAdvSummary();
+    }, 440);
+  });
+}
+
+// 知识库说明也保留原生 details 语义，但关闭时先播放 0fr 卷帘，
+// 避免浏览器立刻移除内容造成瞬间收缩。
+function bindKbFoldMotion(d){
+  if(!d || d.dataset.motionBound === "1") return;
+  const summary = d.querySelector("summary"), body = d.querySelector(".kb-fold-body");
+  if(!summary || !body) return;
+  d.dataset.motionBound = "1";
+  summary.addEventListener("click", ev=>{
+    ev.preventDefault();
+    d.__kbFoldToken = (d.__kbFoldToken || 0) + 1;
+    const token = d.__kbFoldToken;
+    if(d.__kbFoldCloseTimer){ clearTimeout(d.__kbFoldCloseTimer); d.__kbFoldCloseTimer = null; }
+    if(d.classList.contains("kb-fold-closing")){
+      d.classList.remove("kb-fold-closing");
+      d.open = true;
+      return;
+    }
+    if(!d.open){
+      body.style.gridTemplateRows = "0fr";
+      body.style.opacity = "0";
+      body.style.visibility = "hidden";
+      body.style.pointerEvents = "none";
+      d.open = true;
+      void body.offsetHeight;
+      requestAnimationFrame(()=>{
+        if(d.__kbFoldToken !== token || !d.open || d.classList.contains("kb-fold-closing")) return;
+        body.style.removeProperty("grid-template-rows");
+        body.style.removeProperty("opacity");
+        body.style.removeProperty("visibility");
+        body.style.removeProperty("pointer-events");
+      });
+      return;
+    }
+    d.classList.add("kb-fold-closing");
+    const close = ()=>{
+      if(d.__kbFoldToken !== token) return;
+      d.open = false;
+      d.classList.remove("kb-fold-closing");
+      d.__kbFoldCloseTimer = null;
+    };
+    if(window.matchMedia("(prefers-reduced-motion: reduce)").matches) close();
+    else d.__kbFoldCloseTimer = setTimeout(close, 440);
+  });
+}
 
 // ============ 服务端版本能力（v0.22.7） ============
 // 设置页必须**能改**、也必须**能看见** Agent 实际在用哪个版本 ——
@@ -2704,6 +3188,46 @@ async function refreshVersionCaps(){
 // ============ 命令工具 白名单 / 黑名单（v0.20.0） ============
 // 视觉上是两张模式卡（单选 + 圆点），真实取值仍走隐藏的 select#cfg_danger_policy，
 // 与 CFG_FIELDS / collectSettings 的既有链路完全一致，不新增配置键。
+function measureUnknownCommandRow(row){
+  if(!row || row.style.display === "none") return;
+  const wasVisible = row.classList.contains("is-visible");
+  const prevMax = row.style.maxHeight;
+  row.classList.add("is-visible");
+  row.style.maxHeight = "none";
+  const natural = Math.max(1, Math.ceil(row.getBoundingClientRect().height || row.scrollHeight || 1));
+  if(prevMax) row.style.maxHeight = prevMax; else row.style.removeProperty("max-height");
+  if(!wasVisible) row.classList.remove("is-visible");
+  row.style.setProperty("--unknown-open-height", natural + "px");
+}
+function setUnknownCommandRowVisible(row, visible){
+  if(!row) return;
+  const firstRender = row.dataset.unknownRowReady !== "1";
+  row.dataset.unknownRowReady = "1";
+  row.__unknownRowToken = (row.__unknownRowToken || 0) + 1;
+  const token = row.__unknownRowToken;
+  if(row.__unknownRowHideTimer){ clearTimeout(row.__unknownRowHideTimer); row.__unknownRowHideTimer = null; }
+  row.setAttribute("aria-hidden", visible ? "false" : "true");
+  if(!visible){
+    // 首次按白名单初始化时直接留在 display:none；用户切回白名单时再走完整收起动画。
+    if(firstRender){ row.style.display = "none"; row.classList.remove("is-visible"); return; }
+    row.style.display = "flex";
+    measureUnknownCommandRow(row);
+    row.classList.remove("is-visible");
+    row.__unknownRowHideTimer = setTimeout(()=>{
+      if(row.__unknownRowToken !== token || row.classList.contains("is-visible")) return;
+      row.style.display = "none";
+      row.__unknownRowHideTimer = null;
+    }, 420);
+    return;
+  }
+  row.style.display = "flex";
+  measureUnknownCommandRow(row);
+  if(row.classList.contains("is-visible")) return;
+  row.classList.remove("is-visible");
+  requestAnimationFrame(()=>{
+    if(row.__unknownRowToken === token && row.style.display !== "none") row.classList.add("is-visible");
+  });
+}
 function syncPolicyUI(){
   const sel = $("cfg_danger_policy");
   if(!sel) return;
@@ -2716,7 +3240,9 @@ function syncPolicyUI(){
   });
   // v0.23.5：未知命令闸门只在黑名单下生效 → 白名单时整行隐藏，免得摆个没用的开关
   const rowAU = $("row_allow_unknown");
-  if(rowAU) rowAU.style.display = (v === "blacklist") ? "" : "none";
+  if(rowAU){
+    setUnknownCommandRowVisible(rowAU, v === "blacklist");
+  }
   const now = $("policy_now");
   if(now){
     now.textContent = "当前生效：" + (v === "whitelist" ? "白名单" : "黑名单");
@@ -2735,6 +3261,128 @@ function bindPolicyUI(){
   syncPolicyUI();
 }
 // ============ 拦截即终局 · 闸门强化（v0.21.0） ============
+function setupAnimatedSelect(wrap, native){
+  if(!wrap || !native || wrap.dataset.bound === "1") return;
+  let trigger = wrap.querySelector(".select-trigger");
+  let menu = wrap.querySelector(".select-menu");
+  if(!trigger){
+    trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "select-trigger";
+    wrap.appendChild(trigger);
+  }
+  if(!menu){
+    menu = document.createElement("div");
+    menu.className = "select-menu";
+    menu.setAttribute("role", "listbox");
+    wrap.appendChild(menu);
+  }
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  if(!menu.id) menu.id = `${native.id}_menu`;
+  trigger.setAttribute("aria-controls", menu.id);
+  const options = ()=>Array.from(menu.querySelectorAll(".select-option"));
+  const syncOptionTabStops = open=>{
+    options().forEach(opt=>{ opt.tabIndex = open ? 0 : -1; });
+  };
+  const sync = ()=>{
+    const selected = native.options[native.selectedIndex] || native.options[0];
+    if(selected) trigger.textContent = selected.textContent;
+    options().forEach(opt=>opt.setAttribute("aria-selected", opt.dataset.value === native.value ? "true" : "false"));
+  };
+  const renderOptions = ()=>{
+    const current = native.value;
+    menu.innerHTML = Array.from(native.options).map(opt=>
+      `<button type="button" class="select-option" role="option" data-value="${esc(opt.value)}" aria-selected="${opt.value === current ? "true" : "false"}">${esc(opt.textContent)}</button>`
+    ).join("");
+    sync();
+    syncOptionTabStops(wrap.classList.contains("is-open"));
+  };
+  const setOpen = open=>{
+    const next = !!open;
+    wrap.classList.toggle("is-open", next);
+    trigger.setAttribute("aria-expanded", next ? "true" : "false");
+    syncOptionTabStops(next);
+    if(next){
+      const active = options().find(opt=>opt.dataset.value === native.value);
+      if(active) active.focus({preventScroll:true});
+    }
+  };
+  const setValue = value=>{
+    if(!Array.from(native.options).some(opt=>opt.value === value)) return;
+    native.value = value;
+    native.dispatchEvent(new Event("change", {bubbles:true}));
+    sync();
+  };
+  trigger.addEventListener("click", ()=>setOpen(trigger.getAttribute("aria-expanded") !== "true"));
+  trigger.addEventListener("keydown", e=>{
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); setOpen(trigger.getAttribute("aria-expanded") !== "true"); return; }
+    if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      setOpen(true);
+      const list = options(), idx = list.findIndex(opt=>opt.dataset.value === native.value);
+      const next = list[Math.max(0, Math.min(list.length-1, idx + (e.key === "ArrowDown" ? 1 : -1)))];
+      if(next) next.focus({preventScroll:true});
+    }
+  });
+  menu.addEventListener("click", e=>{
+    const opt = e.target.closest(".select-option");
+    if(!opt) return;
+    setValue(opt.dataset.value);
+    setOpen(false);
+    trigger.focus({preventScroll:true});
+  });
+  menu.addEventListener("keydown", e=>{
+    const list = options(), current = document.activeElement, idx = list.indexOf(current);
+    if(e.key === "Escape"){ e.preventDefault(); setOpen(false); trigger.focus({preventScroll:true}); return; }
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); if(current) setValue(current.dataset.value); setOpen(false); trigger.focus({preventScroll:true}); return; }
+    if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      const next = list[Math.max(0, Math.min(list.length-1, idx + (e.key === "ArrowDown" ? 1 : -1)))];
+      if(next) next.focus({preventScroll:true});
+    }
+  });
+  native.addEventListener("change", sync);
+  if(window.MutationObserver){
+    const mo = new MutationObserver(renderOptions);
+    mo.observe(native, {childList:true});
+    wrap.__selectObserver = mo;
+  }
+  document.addEventListener("click", e=>{ if(!wrap.contains(e.target)) setOpen(false); });
+  wrap.__selectSync = sync;
+  wrap.dataset.bound = "1";
+  renderOptions();
+}
+function initAnimatedSelects(){
+  document.querySelectorAll("select").forEach(native=>{
+    if(native.hidden || native.style.display === "none" || native.closest(".select-pop") || native.id === "cfg_danger_policy") return;
+    const parent = native.parentElement;
+    if(!parent) return;
+    const cs = getComputedStyle(native);
+    const wrap = document.createElement("div");
+    wrap.className = "select-pop select-pop-generic";
+    wrap.style.flex = cs.flex;
+    wrap.style.maxWidth = cs.maxWidth;
+    wrap.style.minWidth = cs.minWidth;
+    wrap.style.alignSelf = cs.alignSelf;
+    wrap.style.gridColumn = cs.gridColumn;
+    parent.insertBefore(wrap, native);
+    wrap.appendChild(native);
+    native.classList.add("select-native");
+    native.setAttribute("aria-hidden", "true");
+    native.tabIndex = -1;
+    setupAnimatedSelect(wrap, native);
+  });
+}
+function syncAnimatedSelects(){
+  document.querySelectorAll(".select-pop").forEach(wrap=>{
+    if(typeof wrap.__selectSync === "function") wrap.__selectSync();
+  });
+}
+function initPermissionModePicker(){
+  const wrap = $("perm_hint_mode_select"), native = $("cfg_perm_hint_mode");
+  setupAnimatedSelect(wrap, native);
+}
 function syncTerminalUI(){
   const now = $("terminal_now");
   const mode = $("cfg_perm_hint_mode"), latch = $("cfg_perm_latch"), ttl = $("cfg_perm_latch_ttl");
@@ -2746,6 +3394,9 @@ function syncTerminalUI(){
   if(latch && latch.checked) on.push("会话闩锁 " + (parseInt((ttl&&ttl.value)||"300",10)||300) + "s");
   now.textContent = on.length ? ("当前生效：" + on.join(" + ")) : "当前生效：仅事后拦截";
   now.style.color = on.length ? "var(--amber)" : "var(--muted, #888)";
+  initPermissionModePicker();
+  const trigger = $("cfg_perm_hint_mode_trigger");
+  if(trigger && document.activeElement !== trigger) trigger.textContent = mode.options[mode.selectedIndex]?.textContent || "";
 }
 function bindTerminalUI(){
   ["cfg_perm_hint_mode","cfg_perm_latch","cfg_perm_latch_ttl"].forEach(id=>{
@@ -3471,7 +4122,10 @@ async function loadSettings(){
   if(rcr) rcr.onclick = resetRcon;
   // v0.23.0：RCON 进阶设置折叠 —— 收起态摘要随值走；展开 / 收起时同步刷新
   const adv = $("adv_rcon");
-  if(adv) adv.ontoggle = renderAdvSummary;
+  if(adv){
+    adv.ontoggle = renderAdvSummary;
+    bindAdvFoldMotion(adv);
+  }
   ["cfg_rcon_timeout","cfg_rcon_end_mode","cfg_server_version","cfg_item_syntax","cfg_remote_rcon_mode"]
     .forEach(id=>{
       const el = $(id); if(!el) return;
@@ -3551,6 +4205,7 @@ async function loadSettings(){
   }
   // v0.22.7：版本能力与设置页同刷 —— 保存后会回到这里，因此改完版本**不必重启插件**
   // 就能看见新结论（「来源：手动声明」会立刻亮出来）。
+  syncAnimatedSelects();
   refreshVersionCaps();
 }
 // v0.23.5：落盘失败告警。后端的写接口遇到「内存改成功、磁盘没写成功」时会回
@@ -3718,6 +4373,13 @@ function rmtMark(el, title, why, mode){
   const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
   const chipMode = rowMode || softMode;                     // 小标签（span）；seal 是独立公告层
   const cls = sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off"));
+  // 用户在收回过程中又重新打开时，立刻取消待删除计时，避免旧的关闭回调
+  // 把刚恢复的标签 / 覆盖层误删掉。
+  if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
+  if(el.__rmtRestoreTimer){ clearTimeout(el.__rmtRestoreTimer); el.__rmtRestoreTimer = null; }
+  rmtCancelHintSwap(el);
+  el.classList.remove("rmt-hint-restoring");
+  el.classList.remove("rmt-closing");
   el.classList.add(cls);
   const chipSel = sealMode ? ":scope > .rmt-seal-card"
                            : (chipMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge");
@@ -3755,25 +4417,168 @@ document.addEventListener("click", (e)=>{
 });
 // 文字型区块把原提示行换成异地模式说明；关闭时还原（原文只记一次）
 const RMT_SD_HINT = "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。";
+function rmtCancelHintSwap(el){
+  if(!el) return;
+  el.__rmtHintSwapToken = (el.__rmtHintSwapToken || 0) + 1;
+  if(el.__rmtHintSwapRaf){ cancelAnimationFrame(el.__rmtHintSwapRaf); el.__rmtHintSwapRaf = null; }
+  if(el.__rmtHintSwapTimer){ clearTimeout(el.__rmtHintSwapTimer); el.__rmtHintSwapTimer = null; }
+  if(el.__rmtHintSwapSwapTimer){ clearTimeout(el.__rmtHintSwapSwapTimer); el.__rmtHintSwapSwapTimer = null; }
+  el.__rmtHintSwapActive = false;
+  const hint = el.querySelector("#sd_hint");
+  if(hint){
+    hint.style.removeProperty("height");
+    hint.style.removeProperty("overflow");
+    hint.style.removeProperty("transition");
+    hint.style.removeProperty("opacity");
+    hint.style.removeProperty("transform");
+  }
+}
+function rmtAnimateHintSwap(el, nextHtml, onDone){
+  const hint = el && el.querySelector ? el.querySelector("#sd_hint") : null;
+  if(!hint) return;
+  rmtCancelHintSwap(el);
+  const token = (el.__rmtHintSwapToken || 0) + 1;
+  el.__rmtHintSwapToken = token;
+  el.__rmtHintSwapActive = true;
+  const from = Math.max(1, Math.ceil(hint.getBoundingClientRect().height || hint.scrollHeight || 1));
+  hint.style.height = from + "px";
+  hint.style.overflow = "hidden";
+  hint.style.transition = "height .36s var(--motion-ease),opacity .24s ease,transform .32s var(--motion-ease)";
+  // 先明确保持原文可见，下一帧才开始退场；否则同一帧内直接设为 0，
+  // 浏览器没有机会绘制出「原文正在淡出」的中间状态。
+  hint.style.opacity = "1";
+  hint.style.transform = "none";
+  const finish = ()=>{
+    if(el.__rmtHintSwapToken !== token) return;
+    el.__rmtHintSwapActive = false;
+    el.__rmtHintSwapTimer = null;
+    rmtCancelHintSwap(el);
+    if(onDone) onDone();
+  };
+  el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+    if(el.__rmtHintSwapToken !== token) return;
+    hint.style.opacity = "0";
+    hint.style.transform = "translateY(-4px)";
+    el.__rmtHintSwapRaf = null;
+    // 让原文先完整退场，再替换 HTML；随后高度与新文案一起进入，
+    // 避免新文案在旧的两行高度里停留到动画末尾才突然收缩。
+    el.__rmtHintSwapSwapTimer = setTimeout(()=>{
+      if(el.__rmtHintSwapToken !== token) return;
+      hint.innerHTML = nextHtml;
+      // 读取自然高度时暂时解除旧的固定高度，否则 scrollHeight 会被旧的
+      // 两行高度“垫住”，动画结束清理 inline height 时就会突然缩回一行。
+      hint.style.height = "auto";
+      const target = Math.max(1, Math.ceil(hint.getBoundingClientRect().height || hint.scrollHeight || 1));
+      hint.style.height = from + "px";
+      el.__rmtHintSwapRaf = requestAnimationFrame(()=>{
+        if(el.__rmtHintSwapToken !== token) return;
+        hint.style.height = target + "px";
+        hint.style.opacity = "1";
+        hint.style.transform = "none";
+        el.__rmtHintSwapRaf = null;
+        el.__rmtHintSwapSwapTimer = null;
+      });
+    }, 150);
+  });
+  el.__rmtHintSwapTimer = setTimeout(finish, 570);
+}
 function rmtSoftHint(el, why){
   const hint = el.querySelector("#sd_hint");
   if(!hint) return;
+  const nextHtml = why || RMT_SD_HINT;
+  if(hint.innerHTML === nextHtml) return;
   if(!el.dataset.hintKeep) el.dataset.hintKeep = hint.innerHTML;
-  hint.textContent = why || RMT_SD_HINT;
+  rmtAnimateHintSwap(el, nextHtml);
 }
-function rmtUnsoftHint(el){
-  const hint = el && el.querySelector("#sd_hint");
-  if(hint && el.dataset.hintKeep){ hint.innerHTML = el.dataset.hintKeep; delete el.dataset.hintKeep; }
+function rmtFinishSoftClear(el){
+  if(!el) return;
+  const hint = el.querySelector("#sd_hint");
+  // 收回后的淡入正在播放时，重复同步只应保持现状，不要把 dimmed 提前摘掉。
+  if(el.id === "sd_box" && el.classList.contains("rmt-hint-restoring")
+     && el.__rmtHintSwapActive) return;
+  // 目录提示文本的恢复也做一次淡入；动画期间继续保留 dimmed，避免
+  // 文本重排和输入框恢复亮色发生在同一帧。
+  if(el.id === "sd_box" && hint && el.dataset.hintKeep
+     && !el.classList.contains("rmt-hint-restoring")){
+    if(el.__rmtRestoreTimer) clearTimeout(el.__rmtRestoreTimer);
+    el.classList.add("rmt-hint-restoring");
+    const originalHtml = el.dataset.hintKeep;
+    delete el.dataset.hintKeep;
+    rmtAnimateHintSwap(el, originalHtml, ()=>{
+      el.classList.remove("rmt-hint-restoring");
+      el.classList.remove("dimmed");
+    });
+    el.__rmtRestoreTimer = setTimeout(()=>{ el.__rmtRestoreTimer = null; }, 460);
+    return;
+  }
+  // 非目录软标记没有需要淡入的长文本，直接完成清理。
+  el.classList.remove("rmt-hint-restoring");
+  if(el.id === "sd_box") el.classList.remove("dimmed");
 }
-// 关闭异地模式时还原：撤磨砂、摘牌子
+// 关闭异地模式时还原：先收回磨砂、标签，再摘掉标记类和牌子。
+// 这样输入框 / 卡片不会在视觉上瞬间跳回原态，重新打开也能取消正在进行的收回。
 function rmtClear(el, mode){
   if(!el) return;
   const rowMode = mode === "row", softMode = mode === "soft", sealMode = mode === "seal";
-  el.classList.remove(sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off")));
-  if(softMode) rmtUnsoftHint(el);
-  const chip = el.querySelector(sealMode ? ":scope > .rmt-seal-card"
-                     : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge"));
-  if(chip) chip.remove();
+  const cls = sealMode ? "rmt-seal" : (rowMode ? "rmt-off-row" : (softMode ? "rmt-off-soft" : "rmt-off"));
+  const chipSel = sealMode ? ":scope > .rmt-seal-card"
+                           : (rowMode || softMode ? ":scope > .rmt-tag" : ":scope > .rmt-badge");
+  // 整页公告切换页面时无需保留旧的遮罩；其它标记则沿着反方向过渡。
+  if(sealMode || !el.classList.contains(cls)){
+    if(el.__rmtCloseTimer){ clearTimeout(el.__rmtCloseTimer); el.__rmtCloseTimer = null; }
+    el.classList.remove("rmt-closing", cls);
+    if(softMode) rmtFinishSoftClear(el);
+    const chip = el.querySelector(chipSel);
+    if(chip) chip.remove();
+    return;
+  }
+  if(el.__rmtCloseTimer) clearTimeout(el.__rmtCloseTimer);
+  el.classList.add("rmt-closing");
+  el.__rmtCloseTimer = setTimeout(()=>{
+    // 计时期间若重新打开，rmtMark 已经取消本次回调。
+    if(el.classList.contains("rmt-closing")){
+      el.classList.remove("rmt-closing", cls);
+      if(softMode) rmtFinishSoftClear(el);
+      const chip = el.querySelector(chipSel);
+      if(chip) chip.remove();
+    }
+    el.__rmtCloseTimer = null;
+  }, 340);
+}
+function setRmtMessageVisible(el, visible){
+  if(!el) return;
+  if(el.__rmtHideTimer){ clearTimeout(el.__rmtHideTimer); el.__rmtHideTimer = null; }
+  const already = el.classList.contains("is-visible");
+  el.setAttribute("aria-hidden", visible ? "false" : "true");
+  if(!visible){
+    // 关闭时保留盒子，让 max-height / opacity / 位移过渡完整播放；动画结束
+    // 再隐藏，避免下一次打开时留下不可见的布局占位。
+    if(!already){ el.style.display = "none"; return; }
+    // 用当前真实高度作为反向动画的起点，不让固定上限把内容瞬间压回去。
+    el.style.setProperty("--rmt-open-height", Math.max(1, el.scrollHeight) + "px");
+    el.classList.remove("is-visible");
+    el.__rmtHideTimer = setTimeout(()=>{
+      if(!el.classList.contains("is-visible")) el.style.display = "none";
+      el.__rmtHideTimer = null;
+    }, 440);
+    return;
+  }
+  el.style.display = "block";
+  // 先读取内容实际占用的高度，再让 .is-visible 使用这个值；短提示不会
+  // 因为从 0 过渡到 520px 而在首帧突然把下面的输入框推开。
+  const measureRmtHeight = ()=>{
+    if(el.style.display !== "none"){
+      el.style.setProperty("--rmt-open-height", Math.max(1, el.scrollHeight) + "px");
+    }
+  };
+  measureRmtHeight();
+  if(already){ el.classList.add("is-visible"); return; }
+  // 先显示折叠盒，再在下一帧展开，让 max-height / opacity / 位移过渡真正生效。
+  el.classList.remove("is-visible");
+  requestAnimationFrame(()=>{
+    measureRmtHeight();
+    if(el.style.display !== "none") el.classList.add("is-visible");
+  });
 }
 function syncRemoteModeUI(){
   const sw = $("cfg_remote_rcon_mode");
@@ -3786,15 +4591,19 @@ function syncRemoteModeUI(){
   const wasSealed = RMT.painted;
   RMT.on = on; RMT.pending = pending; RMT.painted = on;
   // ① 服务器目录：这一栏跟着**草稿**走 —— 想改成本地模式，得先把目录填好再保存
-  const sd = $("cfg_server_dir");
-  if(sd) sd.disabled = draft;
   const box = $("sd_box");
   if(box){
-    box.classList.toggle("dimmed", draft);
+    const closing = !draft && box.classList.contains("rmt-off-soft");
+    // 开启时先铺上灰显样式再禁用输入框；关闭时保留灰显到收回动画结束，
+    // 避免浏览器的 disabled / enabled 重绘把文字短暂刷成亮白色。
+    if(draft || closing) box.classList.add("dimmed");
+    else box.classList.remove("dimmed");
     if(draft) rmtMark(box, "异地模式 · 无需填写",
                    "异地模式只走 RCON 通信，不读服务端本地文件 —— 这一栏填不填都不校验，也没法编辑。", "soft");
     else rmtClear(box, "soft");
   }
+  const sd = $("cfg_server_dir");
+  if(sd) sd.disabled = draft;
   // ② 依赖服务端本地文件的卡片：整块磨砂封住（保存后才撤）
   for(const [id, title, why] of RMT_BLOCKS){
     const el = $(id);
@@ -3809,16 +4618,15 @@ function syncRemoteModeUI(){
     if(!row) continue;
     if(on) rmtMark(row, "该工具不可用", RMT_ROW_WHY, "row"); else rmtClear(row, "row");
   }
-  const hint = $("remote_mode_hint");
-  if(hint) hint.style.display = on ? "block" : "none";
   // 开关被拨到「关」却没保存时，这行说明照旧留着（它讲的是后端实况）——
   // 那就把开头三个字换成「后端当前已保存为『开启』：」，免得用户对着关掉的开关读「已开启」。
   const hTag = $("rmt_hint_tag");
   if(hTag) hTag.textContent = (on && pending) ? "后端当前已保存为『开启』：" : "已开启：";
+  const hint = $("remote_mode_hint");
+  setRmtMessageVisible(hint, on);
   // ④ 「开关动了但没保存」必须当场说清 —— 否则用户会以为封禁坏了 / 以为已经生效了
   const pendEl = $("remote_mode_pending");
   if(pendEl){
-    pendEl.style.display = pending ? "block" : "none";
     if(pending){
       pendEl.innerHTML = draft
         ? "⚠ 开关已勾选，但<b>还没有保存</b> —— 本地文件类能力现在仍按原样可用；"
@@ -3827,6 +4635,8 @@ function syncRemoteModeUI(){
           + "物品词典 / 知识库 / 播报等<b>仍旧不可用</b>（下列区块与知识库页保持封禁）。"
           + "点上方「保存全部设置」后才会真正恢复。";
     }
+    // 文案先写入，再测量真实高度，目录输入框会随着消息内容匀速展开 / 收回。
+    setRmtMessageVisible(pendEl, pending);
   }
   // ⑤ 整页封禁：知识库整页都长在物品词典 / 整合包指纹上，一页全废 → 整页磨砂 + 一张公告
   const kbPage = $(RMT_SEAL.id);
@@ -4139,8 +4949,8 @@ async function loadColors(){
   const g = r.gradient || {};
   const stops = g.stops || {};
   $("clr_grad_en").checked = !!g.enabled;
-  $("clr_grad_fmt").value = g.format || "json";
-  $("clr_plain_fmt").value = (r.plain||{}).format || "hex";
+  $("clr_grad_fmt").value = FORMAT_LABELS[g.format] ? g.format : "json";
+  $("clr_plain_fmt").value = PLAIN_LABELS[(r.plain||{}).format] ? (r.plain||{}).format : "hex";
   syncNameCells(r.colors);   // v0.23.7 追加：色名下拉按「后端会用的近似色名」回显
   applyPlainMode();          //            并按单色格式决定「取色器」还是「色名选项框」
   for(const key of Object.keys(GRAD_KEYS)){
@@ -4149,6 +4959,7 @@ async function loadColors(){
     gradState[key] = arr; renderStops(key);
   }
   refreshGradVisibility();
+  syncAnimatedSelects();
 }
 async function saveColors(){
   const payload = {};
@@ -4166,8 +4977,8 @@ async function saveColors(){
     for(const [pick,txt,key] of CLR_ITEMS){ $(pick).value = clrHex(r.colors[key]); $(txt).value = r.colors[key]; }
     syncNameCells(r.colors);
     const g = r.gradient || {};
-    if(g.format) $("clr_grad_fmt").value = g.format;
-    if((r.plain||{}).format) $("clr_plain_fmt").value = r.plain.format;
+    if(g.format && FORMAT_LABELS[g.format]) $("clr_grad_fmt").value = g.format;
+    if((r.plain||{}).format && PLAIN_LABELS[r.plain.format]) $("clr_plain_fmt").value = r.plain.format;
     for(const key of Object.keys(GRAD_KEYS)){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);
@@ -4189,6 +5000,8 @@ async function resetColors(){
 function bind(){
   $("sv_refresh").onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
+  const wfRefresh = $("wf_refresh");
+  if(wfRefresh) wfRefresh.onclick = ()=>loadWorkflow();
   let bcMode = "chat";
   document.querySelectorAll(".bc-mode").forEach(b=>b.addEventListener("click", ()=>{
     bcMode = b.dataset.mode;
@@ -4300,6 +5113,8 @@ function bind(){
   bindColors();
   bindPrompts();
   bindTargets();
+  // 统一把可见原生下拉升级成同一套卷帘控件；底层 select 仍保留用于配置读取 / 写回。
+  initAnimatedSelects();
 }
 
 // ============ 主题切换（v0.21.13 / v0.23.4）============
@@ -4391,7 +5206,32 @@ async function syncThemeFromBackend(){
 // 写在
 // 本 <script> 之后，若在这里同步 bind()，$("fp_go") 等还是 null → bind 中途抛
 // TypeError → 后面的「保存全部设置」等按钮全部绑不上（点了没反应）。
+// 顶栏高度会因窗口宽度、主题字体和连接状态文案变化；把实际尺寸同步给
+// sticky 页签 / 保存条，避免固定的旧回退值让保存条顶部被页签遮住一截。
+function syncStickyChromeMetrics(){
+  const root = document.documentElement;
+  const top = document.querySelector(".topbar");
+  const tabs = document.querySelector(".tabs");
+  if(top){ root.style.setProperty("--topbar-h", Math.ceil(top.getBoundingClientRect().height) + "px"); }
+  if(tabs){ root.style.setProperty("--tabs-h", Math.ceil(tabs.getBoundingClientRect().height) + "px"); }
+}
+syncStickyChromeMetrics();
+requestAnimationFrame(syncStickyChromeMetrics);
+window.addEventListener("resize", syncStickyChromeMetrics, {passive:true});
+if(window.ResizeObserver){
+  const chromeResize = new ResizeObserver(syncStickyChromeMetrics);
+  [document.querySelector(".topbar"), document.querySelector(".tabs")].forEach(el=>{ if(el) chromeResize.observe(el); });
+}
 function boot(){
+  // 进阶折叠的交互不依赖后端配置。先在异步握手 / 配置读取之前绑定，
+  // 避免刷新后用户抢在 selectApi() 完成前首次点击时落回原生 details 瞬时展开。
+  const earlyAdv = $("adv_rcon");
+  if(earlyAdv){
+    earlyAdv.ontoggle = renderAdvSummary;
+    bindAdvFoldMotion(earlyAdv);
+  }
+  const kbFold = $("kb_engine_fold");
+  if(kbFold) bindKbFoldMotion(kbFold);
   selectApi().then(({mode:m})=>{
     mode = m;
     modeTag();
