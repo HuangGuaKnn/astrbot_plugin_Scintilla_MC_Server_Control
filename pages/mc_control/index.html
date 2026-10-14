@@ -442,6 +442,10 @@ details.kb-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
 details.adv-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0;cursor:pointer}
 details.adv-fold>summary::-webkit-details-marker{display:none}
+details.adv-fold .adv-fold-body{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none;transition:grid-template-rows .42s var(--motion-ease),opacity .24s ease,visibility 0s linear .42s}
+details.adv-fold .adv-fold-body-inner{min-height:0;overflow:hidden}
+details.adv-fold[open] .adv-fold-body{grid-template-rows:1fr;opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+details.adv-fold.adv-fold-closing .adv-fold-body{grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none}
 details.adv-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
 details.adv-fold[open]>summary::before{content:"▾"}
 details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";display:inline-block;max-width:240px;overflow:hidden;white-space:nowrap;font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85;transition:max-width .24s var(--motion-ease),margin-left .2s ease,opacity .2s ease}
@@ -460,6 +464,12 @@ details.adv-fold .adv-sum{display:inline-block;transform-origin:right center;
   transition:color .22s ease,border-color .22s ease,background-color .22s ease,opacity .22s ease,transform .3s var(--motion-ease)}
 details.adv-fold .adv-sum.adv-sum-switching{opacity:0;transform:translateY(-4px) scale(.96);pointer-events:none}
 details.adv-fold .adv-sum.adv-sum-entering{opacity:0;transform:translateY(4px) scale(.96)}
+/* 重建 RCON 的结果是异步追加到状态行，使用独立的入场态避免「请求失败」瞬移出现。 */
+.rcon-reset-feedback{display:inline-block;opacity:0;transform:translateY(-5px) scale(.96);filter:blur(1px);
+  transition:opacity .24s ease,transform .32s var(--motion-ease),filter .24s ease}
+.rcon-reset-feedback.is-visible{opacity:1;transform:none;filter:none}
+.rcon-reset-feedback.bad{color:var(--warn)}
+.rcon-reset-feedback.ok{color:var(--ok)}
 /* 异地模式漏填版本时，字段标题、感叹号和输入框一起进入警告态。 */
 #cfg_server_version_label{display:flex;align-items:center;gap:5px;transition:color .24s ease}
 #cfg_server_version_label .rmt-version-mark{display:inline-flex;align-items:center;justify-content:center;
@@ -761,7 +771,10 @@ details.adv-fold .adv-sum{margin-left:auto;padding:3px 8px;border:1px solid var(
 details.adv-fold .adv-sum.warn{color:var(--warn);border-color:rgba(233,170,69,.45);background:rgba(233,170,69,.08)}
 #adv_rcon>label.f{margin-top:16px}#adv_rcon .frow{align-items:flex-start}
 #ver_caps_line,#rcon_runtime_line{padding:8px 10px;border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:9px;background:rgba(101,201,255,.045);line-height:1.65}
-#rcon_runtime_line:empty,#ver_caps_line:empty{display:none}
+#rcon_runtime_line{display:block;max-height:800px;overflow:hidden;opacity:1;transform:none;transition:max-height .38s var(--motion-ease),opacity .24s ease,transform .38s var(--motion-ease),padding-top .38s var(--motion-ease),padding-bottom .38s var(--motion-ease),margin-top .38s var(--motion-ease),border-color .24s ease}
+#rcon_runtime_line:empty{max-height:0;padding-top:0;padding-bottom:0;border-color:transparent;opacity:0;visibility:hidden;transform:translateY(-5px);margin-top:0!important}
+#rcon_runtime_line:not(:empty){visibility:visible;transform:none;margin-top:8px!important}
+#ver_caps_line:empty{display:none}
 #card_terminal #cfg_perm_hint_mode{border-color:rgba(243,187,82,.35);background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%)}
 #kw_list{min-height:42px;padding:8px 10px;border-radius:11px;background:linear-gradient(135deg,rgba(101,201,255,.045),transparent 60%)}
 #kw_list .sym{border-radius:999px;padding-left:10px;background:var(--panel3);border-color:rgba(101,201,255,.26)}
@@ -1201,6 +1214,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div class="setting-subhead"><span>响应边界</span><em>决定长命令何时算完成</em></div>
       <details class="adv-fold" id="adv_rcon">
         <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-sum" id="adv_rcon_sum"></span></summary>
+        <div class="adv-fold-body"><div class="adv-fold-body-inner">
         <label class="f" style="margin-top:12px">RCON 超时（秒）</label>
         <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
         <label class="f">响应结束判定方式</label>
@@ -1235,6 +1249,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
           探测必然失败：此时<b>留空也能保存</b>，但会按「版本未知」处理 ——
           附魔 / NBT / 物品组件类请求会被明确拒绝（插件不会猜一个版本硬编，猜错只会生成解析失败的命令）。
           要用这类功能，请在此手填。</div>
+        </div></div>
       </details>
 
       <div class="hint" id="ver_caps_line" style="margin-top:8px"></div>
@@ -1844,11 +1859,20 @@ function renderRconRuntime(rt){
 async function resetRcon(){
   const el = $("rcon_runtime_line");
   const r = await callPost("rcon/reset").catch(()=>({ok:false,error:"请求失败"}));
+  const appendFeedback = (ok, message)=>{
+    if(!el) return;
+    if(el.textContent.trim()) el.appendChild(document.createTextNode(" "));
+    const item = document.createElement("span");
+    item.className = "rcon-reset-feedback " + (ok ? "ok" : "bad");
+    item.textContent = (ok ? "✓ " : "✗ ") + String(message || (ok ? "已重建" : "重建失败"));
+    el.appendChild(item);
+    requestAnimationFrame(()=>item.classList.add("is-visible"));
+  };
   if(r && r.ok){
     renderRconRuntime(r.runtime);
-    if(el) el.insertAdjacentHTML("beforeend", ` <span class="muted">✓ ${esc(r.message||"已重建")}</span>`);
+    appendFeedback(true, r.message || "已重建");
   } else if(el){
-    el.insertAdjacentHTML("beforeend", ` <span style="color:var(--warn)">✗ ${esc((r&&r.error)||"重建失败")}</span>`);
+    appendFeedback(false, (r&&r.error) || "重建失败");
   }
 }
 
@@ -2884,6 +2908,38 @@ function openAdvRcon(focusId){
 }
 window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .jump 写法一致）
 
+// 原生 details 在关闭时会立刻把内容从渲染树中收掉，导致卷帘收起看不见。
+// 拦截 summary 点击：关闭时先保持 open，播放 body 的 0fr 过渡，结束后再真正移除 open。
+function bindAdvFoldMotion(d){
+  if(!d || d.dataset.motionBound === "1") return;
+  const summary = d.querySelector("summary");
+  if(!summary) return;
+  d.dataset.motionBound = "1";
+  summary.addEventListener("click", ev=>{
+    ev.preventDefault();
+    d.__advFoldToken = (d.__advFoldToken || 0) + 1;
+    const token = d.__advFoldToken;
+    if(d.__advFoldCloseTimer){ clearTimeout(d.__advFoldCloseTimer); d.__advFoldCloseTimer = null; }
+    if(d.classList.contains("adv-fold-closing")){
+      d.classList.remove("adv-fold-closing");
+      d.open = true;
+      return;
+    }
+    if(!d.open){
+      d.open = true;
+      return;
+    }
+    d.classList.add("adv-fold-closing");
+    d.__advFoldCloseTimer = setTimeout(()=>{
+      if(d.__advFoldToken !== token) return;
+      d.open = false;
+      d.classList.remove("adv-fold-closing");
+      d.__advFoldCloseTimer = null;
+      renderAdvSummary();
+    }, 440);
+  });
+}
+
 // ============ 服务端版本能力（v0.22.7） ============
 // 设置页必须**能改**、也必须**能看见** Agent 实际在用哪个版本 ——
 // 否则会出现「UI 显示 1.21、Agent 按 1.20.1 构造」这种最难查的错位。
@@ -3873,7 +3929,10 @@ async function loadSettings(){
   if(rcr) rcr.onclick = resetRcon;
   // v0.23.0：RCON 进阶设置折叠 —— 收起态摘要随值走；展开 / 收起时同步刷新
   const adv = $("adv_rcon");
-  if(adv) adv.ontoggle = renderAdvSummary;
+  if(adv){
+    adv.ontoggle = renderAdvSummary;
+    bindAdvFoldMotion(adv);
+  }
   ["cfg_rcon_timeout","cfg_rcon_end_mode","cfg_server_version","cfg_item_syntax","cfg_remote_rcon_mode"]
     .forEach(id=>{
       const el = $(id); if(!el) return;
