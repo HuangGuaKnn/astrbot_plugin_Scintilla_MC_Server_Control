@@ -970,6 +970,15 @@ class ModKnowledgeBase:
         """从磁盘重新读取（外部改动后刷新内存）。"""
         self.load()
 
+    def invalidate_vector_cache(self) -> None:
+        """作废当前预设的磁盘向量缓存与内存索引。"""
+        try:
+            self.vec_path.unlink(missing_ok=True)
+        except Exception as e:
+            _log.warning("作废向量缓存文件失败（%s）: %s", self.vec_path, e)
+        self._sem = None
+        self.cache_error = ""
+
     def entry_count(self) -> int:
         return len(self._data.get("entries", {}))
 
@@ -2110,6 +2119,52 @@ class KnowledgePresetManager:
         # 返回**副本**：p 是注册表里的活对象，save_* 字段不能跟着写进磁盘
         return {**p, **fields}
 
+    def invalidate_all_vector_caches(self) -> int:
+        """使所有预设的向量缓存失效（删除所有 .vec.npz 磁盘文件，并清空当前活动预设内存索引）。
+
+        返回被删除的文件数量。用于切换嵌入模型 Provider 时整库作废旧模型产物。
+        单文件删除失败时不阻断其他缓存清理，尽可能彻底清理。
+        """
+        count = 0
+        seen_files: set[Path] = set()
+
+        # 1. 遍历注册表中的预设
+        for p in getattr(self, "reg", {}).get("presets", []):
+            pid = p.get("id")
+            if pid:
+                f = self.preset_path(pid).with_suffix(VECTOR_CACHE_SUFFIX)
+                seen_files.add(f.resolve() if hasattr(f, "resolve") else f)
+                try:
+                    if f.exists():
+                        f.unlink(missing_ok=True)
+                        count += 1
+                except Exception as e:
+                    _log.warning("作废预设向量缓存失败（%s）: %s", f, e)
+
+        # 2. 保底扫描 data_dir 下所有的 *.vec.npz（防止孤儿预设缓存遗留）
+        try:
+            for f in self.data_dir.glob("*" + VECTOR_CACHE_SUFFIX):
+                rf = f.resolve() if hasattr(f, "resolve") else f
+                if rf in seen_files:
+                    continue
+                seen_files.add(rf)
+                try:
+                    if f.exists():
+                        f.unlink(missing_ok=True)
+                        count += 1
+                except Exception as e:
+                    _log.warning("清理孤儿预设向量缓存失败（%s）: %s", f, e)
+        except Exception as e:
+            _log.warning("遍历数据目录向量缓存失败: %s", e)
+
+        # 3. 内存中的当前激活预设索引重置
+        if self.kb is not None:
+            try:
+                self.kb.invalidate_vector_cache()
+            except Exception as e:
+                _log.warning("重置当前知识库向量索引失败: %s", e)
+        return count
+
     def remove(self, pid: str) -> dict:
         """删除预设（至少保留一个）。删除激活预设时自动切到第一个。"""
         p = self.get(pid)
@@ -2121,6 +2176,7 @@ class KnowledgePresetManager:
         file_err = ""
         try:
             self.preset_path(pid).unlink(missing_ok=True)
+            self.preset_path(pid).with_suffix(VECTOR_CACHE_SUFFIX).unlink(missing_ok=True)
         except Exception as e:                       # noqa: BLE001
             # v0.23.5 第三轮：删不掉就说出来。此前 `except: pass` —— 文件删不掉时
             # 注册表里预设已经没了、文件还躺在数据目录里，下次恢复逻辑又会把它捞回来。

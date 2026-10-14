@@ -53,7 +53,7 @@ from .core.legacy_items import (
     plan_give as legacy_plan_give,
 )
 from .core.rate_limit import Cooldown
-from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase
+from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase, VECTOR_CACHE_SUFFIX
 from .core.mod_fingerprint import compute_server_identity
 from .core.player_bindings import PlayerBindings
 from .core.workflow import MCWorkflow
@@ -1389,6 +1389,33 @@ class McControlPlugin(Star):
         except Exception as e:
             self.logger.warning("知识库向量构建失败: %s", e)
             return {"ok": False, "reason": str(e)}
+
+    def _kb_invalidate_all_vector_caches(self) -> int:
+        """使所有预设的向量缓存全数失效（删除所有 .vec.npz 文件并清空当前索引内存）。
+
+        用于切换嵌入模型 Provider 时调用，防止旧模型向量留存产生维度与空间错配。
+        """
+        count = 0
+        if self._kbman is not None:
+            count = self._kbman.invalidate_all_vector_caches()
+        elif self._knowledge is not None:
+            self._knowledge.invalidate_vector_cache()
+            count = 1
+        else:
+            # 兜底：管理器与当前知识库尚未初始化时，直接扫描数据目录清理孤儿缓存
+            try:
+                kdir = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control")
+                if kdir and Path(kdir).is_dir():
+                    for f in Path(kdir).glob("*" + VECTOR_CACHE_SUFFIX):
+                        try:
+                            if f.exists():
+                                f.unlink(missing_ok=True)
+                                count += 1
+                        except Exception as e:
+                            self.logger.warning("清理孤儿向量缓存文件失败（%s）: %s", f, e)
+            except Exception as e:
+                self.logger.warning("扫描数据目录清理孤儿向量缓存失败: %s", e)
+        return count
 
     def _kb_touch_vectors(self) -> None:
         """知识写入后，后台把新条目补进向量索引（语义通道关闭时什么都不做）。

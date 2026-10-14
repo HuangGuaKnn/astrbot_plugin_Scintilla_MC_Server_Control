@@ -59,7 +59,7 @@ _VANILLA_SRC_FLAG = "_vanilla_src_loaded"
 #: 从 ``minecraft_server.1.12.2.jar`` 这类文件名里抠版本。
 _JAR_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _RECIPE_RESULT_KEYS = ("result",)
-_RECIPE_INPUT_KEYS = ("ingredients", "key", "base", "addition", "input", "ingredient")
+_RECIPE_INPUT_KEYS = ("ingredients", "base", "addition", "input", "ingredient", "ingredients_list", "template")
 
 #: 服务端 jar 的常见落点（v0.23.8）—— 除开 ``libraries/net/minecraft/server/`` 与根目录。
 #:
@@ -709,8 +709,10 @@ class ItemDictionary:
                         ns = n[len("assets/"):].split("/lang/", 1)[0]
                         if ns and "/" not in ns:
                             ns_set.add(ns)
-                    elif n.startswith("data/") and "/recipes/" in n:
-                        ns = n[len("data/"):].split("/recipes/", 1)[0]
+                    elif n.startswith("data/") and ("/recipes/" in n or "/recipe/" in n):
+                        # 兼容 1.21+ 单数 data/<ns>/recipe/ 与旧版复数 data/<ns>/recipes/
+                        sep = "/recipes/" if "/recipes/" in n else "/recipe/"
+                        ns = n[len("data/"):].split(sep, 1)[0]
                         if ns and "/" not in ns:
                             ns_set.add(ns)
                 mod_id, mod_name = None, None
@@ -750,12 +752,13 @@ class ItemDictionary:
                                 ns,
                                 lang_code,
                             )
-                    prefix = f"data/{ns}/recipes/"
-                    for n in names:
-                        if n.startswith(prefix) and n.endswith(".json"):
-                            self._parse_recipe(
-                                zf.read(n).decode("utf-8", "replace"), ns, n
-                            )
+                    # 兼容 1.21+ 单数 data/<ns>/recipe/ 与旧版复数 data/<ns>/recipes/
+                    for prefix in (f"data/{ns}/recipes/", f"data/{ns}/recipe/"):
+                        for n in names:
+                            if n.startswith(prefix) and n.endswith(".json"):
+                                self._parse_recipe(
+                                    zf.read(n).decode("utf-8", "replace"), ns, n
+                                )
         except Exception:
             # 单个 jar 解析失败不影响整体
             pass
@@ -821,30 +824,42 @@ class ItemDictionary:
         result = data.get("result") if "result" in data else data.get("output")
         output, count = None, 1
         if isinstance(result, dict):
-            output = result.get("item") or result.get("id")
+            output = result.get("id") or result.get("item")
             count = result.get("count", 1)
         elif isinstance(result, str):
             output = result
         if not output:
             return
         inputs: list[str] = []
+        # pattern 中的 key 映射（传统或 1.21+ 形状合成配方）
+        if "key" in data and isinstance(data["key"], dict):
+            keymap = data["key"]
+            pattern = data.get("pattern")
+            if isinstance(pattern, list):
+                for row in pattern:
+                    if isinstance(row, str):
+                        for ch in row:
+                            if ch in keymap:
+                                self._collect_id(keymap[ch], inputs)
+                    elif isinstance(row, (dict, list)):
+                        self._collect_id(row, inputs)
+            else:
+                for v in keymap.values():
+                    self._collect_id(v, inputs)
+        elif "pattern" in data and isinstance(data["pattern"], list):
+            # 兼容无 key 映射的平铺 pattern（仅当为对象或完整命名空间标识符时收集）
+            for row in data["pattern"]:
+                if isinstance(row, (dict, list)):
+                    self._collect_id(row, inputs)
+                elif isinstance(row, str) and (":" in row or len(row) > 3):
+                    self._collect_id(row, inputs)
+
+        # 常规输入列表（无序合成、熔炼、锻造等）
         for k in _RECIPE_INPUT_KEYS:
             if k not in data:
                 continue
-            v = data[k]
-            if isinstance(v, dict):
-                self._collect_id(v, inputs)
-            elif isinstance(v, list):
-                for sub in v:
-                    if isinstance(sub, dict):
-                        self._collect_id(sub, inputs)
-        # pattern 中的 key 映射（合成配方）
-        if "key" in data and isinstance(data["key"], dict):
-            keymap = data["key"]
-            for row in data.get("pattern", []) or []:
-                for ch in row:
-                    if ch in keymap and isinstance(keymap[ch], dict):
-                        self._collect_id(keymap[ch], inputs)
+            self._collect_id(data[k], inputs)
+
         recipe = {
             "id": name,
             "type": str(data.get("type", "")).split(":")[-1],
@@ -855,10 +870,20 @@ class ItemDictionary:
         self.recipes.setdefault(output, []).append(recipe)
 
     @staticmethod
-    def _collect_id(component: dict, into: list[str]) -> None:
-        iid = component.get("item") or component.get("tag")
-        if iid:
-            into.append(iid)
+    def _collect_id(component, into: list[str]) -> None:
+        if not component:
+            return
+        if isinstance(component, str):
+            into.append(component)
+        elif isinstance(component, dict):
+            # 1.21.2 兼容：item / id / tag 可能为字符串或字符串列表
+            for field in ("id", "item", "tag"):
+                val = component.get(field)
+                if val:
+                    ItemDictionary._collect_id(val, into)
+        elif isinstance(component, (list, tuple, set)):
+            for sub in component:
+                ItemDictionary._collect_id(sub, into)
 
     # ================= 缓存 =================
 

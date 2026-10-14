@@ -1089,20 +1089,27 @@ class LogWatcher:
     # 注意：不能简单地「能解码就用」——例如 GBK 的「群」(Èº) 恰好也是
     # 合法的 UTF-8 序列（会解成「Ⱥ」），因此这里改用「可读性评分」择优。
 
-    @staticmethod
-    def _text_score(text: str) -> int:
-        """给解码结果打「可读性」分：中文/ASCII 加分，乱码区（拉丁扩展/希腊/西里尔）扣分。"""
+    @classmethod
+    def _text_score(cls, text: str, enc: str = "") -> int:
+        """给解码结果打「可读性」分：中文/ASCII 加分，乱码区（拉丁扩展/希腊/西里尔）扣分。
+
+        v0.24.4（Issue #9 P2）：
+        UTF-8 汉字占 3 字节，GBK 汉字占 2 字节。按字符计分时，UTF-8 两个汉字（6 字节）
+        若碰巧被 GBK 误解码为 3 个冷门汉字（6 字节），GBK 会因字符数多而虚高反超。
+        因此引入 enc 差异化权重（UTF-8 CJK 5分，GBK CJK 3分），补齐字节密度差异。
+        """
         score = 0
+        cjk_bonus = 5 if enc == "utf-8" else 3
         for ch in text:
             o = ord(ch)
             if o < 0x80:
                 score += 2                      # ASCII 正常
             elif 0x4E00 <= o <= 0x9FFF:         # CJK 统一汉字
-                score += 3
+                score += cjk_bonus
             elif 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF:
-                score += 3                      # 中日韩标点 / 全角
+                score += cjk_bonus              # 中日韩标点 / 全角
             elif o in (0x2018, 0x2019, 0x201C, 0x201D, 0x2026, 0x2014, 0x00B7):
-                score += 3                      # 常用中文标点
+                score += cjk_bonus              # 常用中文标点
             elif 0x00C0 <= o <= 0x024F:         # 拉丁扩展（GBK 误解 UTF-8 的典型产物）
                 score -= 2
             elif 0x0370 <= o <= 0x03FF or 0x0400 <= o <= 0x04FF:
@@ -1119,7 +1126,11 @@ class LogWatcher:
             self._enc = cands[0][0]
             return cands[0][1]
         cands.sort(
-            key=lambda it: (self._text_score(it[1]), it[0] == self._enc),
+            key=lambda it: (
+                self._text_score(it[1], it[0]) + (5 if (self._enc and it[0] == self._enc) else 0),
+                it[0] == self._enc,
+                it[0] == "utf-8",
+            ),
             reverse=True,
         )
         self._enc = cands[0][0]
@@ -1150,7 +1161,11 @@ class LogWatcher:
         if len(cands) == 1:
             return cands[0][0]
         cands.sort(
-            key=lambda it: (self._text_score(it[1]), it[0] == self._enc),
+            key=lambda it: (
+                self._text_score(it[1], it[0]) + (5 if (self._enc and it[0] == self._enc) else 0),
+                it[0] == self._enc,
+                it[0] == "utf-8",
+            ),
             reverse=True,
         )
         return cands[0][0]
