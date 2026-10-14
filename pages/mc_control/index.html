@@ -457,13 +457,18 @@ details.adv-fold[open] .adv-fold-body{grid-template-rows:1fr;opacity:1;visibilit
 details.adv-fold.adv-fold-closing .adv-fold-body{grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none}
 details.adv-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
 details.adv-fold[open]>summary::before{content:"▾"}
-details.adv-fold>summary::after{content:"（一般不用改 · 点开调参）";display:inline-block;max-width:240px;overflow:hidden;white-space:nowrap;font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85;transition:max-width .24s var(--motion-ease),margin-left .2s ease,opacity .2s ease}
-details.adv-fold[open]>summary::after{content:"（点标题收起）"}
+/* 尾部提示是两个状态文案的叠层，固定同一块宽度后再做上下淡入淡出，
+   避免 details 收起完成时 content 瞬间变长，把摘要徽标挤到下一行。 */
+.adv-fold-hint{display:inline-grid;grid-template-areas:"hint";align-items:center;width:145px;max-width:145px;min-width:0;flex:0 1 145px;overflow:hidden;color:var(--faint);font-size:10.5px;font-weight:500;line-height:1.4;vertical-align:middle;transition:width .28s var(--motion-ease),max-width .28s var(--motion-ease),flex-basis .28s var(--motion-ease),margin-left .2s ease,opacity .2s ease,visibility 0s linear .28s}
+.adv-fold-hint>span{grid-area:hint;display:block;overflow:hidden;white-space:nowrap;opacity:.85;transform:translateY(0);transition:opacity .22s ease,transform .3s var(--motion-ease)}
+.adv-fold-hint-open{opacity:0!important;transform:translateY(5px) scale(.97)!important}
+details.adv-fold[open]>summary .adv-fold-hint-closed{opacity:0;transform:translateY(-5px) scale(.97)}
+details.adv-fold[open]>summary .adv-fold-hint-open{opacity:.85!important;transform:none!important}
 /* 黄色的「版本未填」警告需要独占摘要空间，收起这句辅助提示，避免被挤到下一行。
    警告态不能沿用辅助文案的 max-width 过渡：过渡中的残余宽度会把摘要徽标
    挤到下一行，产生一次非线性的高度跳变。进入警告态时直接释放该 flex 项；
    离开警告态仍沿用普通态的渐入效果。 */
-details.adv-fold.adv-rcon-warn>summary::after{max-width:0;margin-left:0;opacity:0;visibility:hidden;pointer-events:none;transition:none}
+details.adv-fold.adv-rcon-warn>summary .adv-fold-hint{width:0;max-width:0;flex-basis:0;margin-left:0;opacity:0;visibility:hidden;pointer-events:none}
 details.adv-fold .hint{margin-top:9px;line-height:1.7}
 details.adv-fold .hint b{color:var(--dim);font-weight:600}
 details.adv-fold .adv-sum{font-size:10.5px;font-weight:500;color:var(--faint);font-weight:500}
@@ -1220,7 +1225,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <input type="password" id="cfg_rcon_password" placeholder="••••••••">
       <div class="setting-subhead"><span>响应边界</span><em>决定长命令何时算完成</em></div>
       <details class="adv-fold" id="adv_rcon">
-        <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-sum" id="adv_rcon_sum"></span></summary>
+        <summary>进阶设置：超时 · 结束边界 · 版本语法<span class="adv-fold-hint" aria-live="polite"><span class="adv-fold-hint-closed">（一般不用改 · 点开调参）</span><span class="adv-fold-hint-open">（点标题收起）</span></span><span class="adv-sum" id="adv_rcon_sum"></span></summary>
         <div class="adv-fold-body"><div class="adv-fold-body-inner">
         <label class="f" style="margin-top:12px">RCON 超时（秒）</label>
         <input type="number" id="cfg_rcon_timeout" placeholder="5" step="0.5">
