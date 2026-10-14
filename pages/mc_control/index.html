@@ -131,11 +131,17 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 .card h3 .right button{color:var(--cyan);font-size:11px;font-weight:600}
 .card h3 .right button:hover{text-decoration:underline}
 .muted{color:var(--faint);font-size:11.5px}
-/* 跨页跳转链接 + 目标卡片高亮（设置页 → 服务器页 文本颜色） */
+/* 快捷跳转链接 */
 .jump{color:var(--cyan);cursor:pointer;border-bottom:1px dashed currentColor;white-space:nowrap}
 .jump:hover{color:var(--text)}
-@keyframes cardflash{0%{box-shadow:0 0 0 0 rgba(255,255,255,0)}22%{box-shadow:0 0 0 2px var(--cyan)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
-.card.flash{animation:cardflash 1.6s ease}
+/* 到达后的双次光晕独立画在伪元素上，不覆盖卡片入场动画，也不移动表单。 */
+.card.jump-highlight{position:relative}
+.card.jump-highlight::before{content:"";position:absolute;inset:-1px;z-index:4;pointer-events:none;border-radius:inherit;
+  border:2px solid color-mix(in srgb,var(--cyan) 80%,transparent);background:color-mix(in srgb,var(--cyan) 5%,transparent);
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--cyan) 12%,transparent),0 0 24px color-mix(in srgb,var(--cyan) 18%,transparent);
+  opacity:0;animation:card-jump-pulse .78s ease-in-out 2}
+@keyframes card-jump-pulse{0%,100%{opacity:0}42%,58%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.card.jump-highlight::before{animation:none;opacity:.65}}
 
 /* ===== 统计卡 ===== */
 .stat{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:12px 14px;position:relative;overflow:hidden}
@@ -1283,7 +1289,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <label class="f">命令工具白名单 / 黑名单 danger_command_policy</label>
       <div class="hint" style="margin-top:2px">
         两个模式的开关与说明统一放在下方
-        <span class="jump" onclick="document.getElementById('card_policy').scrollIntoView({behavior:'smooth',block:'center'})">「命令工具 · 白名单 / 黑名单」</span>
+        <span class="jump" onclick="jumpToCard('card_policy')">「命令工具 · 白名单 / 黑名单」</span>
         窗口里。管理员 <b>admin_ids</b> 不受策略限制，永远可用全部能力。
       </div>
       <label class="f">封禁默认理由 ban_default_reason</label>
@@ -1329,7 +1335,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       本策略只管「命令工具」；想限制「喊话」请到「指令」分组关闭「喊话对全员开放」。
       改动后记得点「保存全部设置」。<br>
       被拒绝时不只是「拦住」，还会让决策 AI 明白这是权限判定、不是用法问题（详见下方
-      <span class="jump" onclick="document.getElementById('card_terminal').scrollIntoView({behavior:'smooth',block:'center'})">「拦截即终局 · 闸门强化」</span>）。
+      <span class="jump" onclick="jumpToCard('card_terminal')">「拦截即终局 · 闸门强化」</span>）。
     </div>
     <!-- v0.23.5：未知命令闸门。只在黑名单策略下生效，因此跟着策略显隐（见 syncPolicyUI） -->
     <div class="sw-row" id="row_allow_unknown" aria-hidden="true">
@@ -1782,9 +1788,86 @@ function connDot(ok, txt){
 }
 function modeTag(){ $("mode_tag").innerHTML = "模式 <b>"+(mode==="bridge"?"桥接":"直连")+"</b>"; }
 
+// 快捷跳转：只让最后一次跳转生效；滚动和目标布局都稳定后再亮起两次。
+let pendingCardJump = null;
+let highlightedJumpCard = null;
+let cardHighlightTimer = null;
+function cancelCardJump(){
+  if(pendingCardJump){ pendingCardJump(); pendingCardJump = null; }
+  clearTimeout(cardHighlightTimer);
+  if(highlightedJumpCard) highlightedJumpCard.classList.remove("jump-highlight");
+  highlightedJumpCard = null;
+}
+function jumpToCard(target, {layoutDelay=0, focus=false}={}){
+  target = typeof target === "string" ? $(target) : target;
+  const card = target && target.closest(".card");
+  if(!card) return;
+  cancelCardJump();
+  let frame = 0, delayTimer = null, cancelled = false;
+  const cancel = ()=>{
+    cancelled = true;
+    clearTimeout(delayTimer);
+    cancelAnimationFrame(frame);
+    window.removeEventListener("wheel", cancel);
+    window.removeEventListener("touchstart", cancel);
+    window.removeEventListener("keydown", onKey);
+    if(pendingCardJump === cancel) pendingCardJump = null;
+  };
+  const onKey = ev=>{ if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(ev.key)) cancel(); };
+  pendingCardJump = cancel;
+  window.addEventListener("wheel", cancel, {passive:true});
+  window.addEventListener("touchstart", cancel, {passive:true});
+  window.addEventListener("keydown", onKey);
+  const start = ()=>{
+    if(cancelled || !target.isConnected || !target.getClientRects().length){ cancel(); return; }
+    if(focus) target.focus({preventScroll:true});
+    // 长卡片从标题处开始显示；短卡片居中于顶栏 / 保存条下方的可见区域。
+    let clearance = 12;
+    document.querySelectorAll(".topbar,.tabs,#savebar").forEach(el=>{
+      const style = getComputedStyle(el);
+      if(["sticky","fixed"].includes(style.position) && el.getClientRects().length){
+        clearance = Math.max(clearance, (parseFloat(style.top) || 0) + el.getBoundingClientRect().height + 12);
+      }
+    });
+    const rect = target.getBoundingClientRect();
+    const offset = Math.max(0, (window.innerHeight - clearance - 16 - rect.height) / 2);
+    const root = document.scrollingElement || document.documentElement;
+    const top = Math.max(0, Math.min(root.scrollHeight-root.clientHeight, window.scrollY+rect.top-clearance-offset));
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({top, behavior:reduced ? "auto" : "smooth"});
+    const started = performance.now();
+    let lastY = window.scrollY, lastTop = target.getBoundingClientRect().top, stableSince = started;
+    const check = now=>{
+      if(cancelled || !target.isConnected || !target.getClientRects().length){ cancel(); return; }
+      const y = window.scrollY, targetTop = target.getBoundingClientRect().top;
+      if(Math.abs(y-lastY) > .25 || Math.abs(targetTop-lastTop) > .25) stableSince = now;
+      lastY = y; lastTop = targetTop;
+      if(now-started >= 160 && now-stableSince >= 140){
+        cancel();
+        card.classList.remove("jump-highlight");
+        void card.offsetWidth;
+        card.classList.add("jump-highlight");
+        highlightedJumpCard = card;
+        cardHighlightTimer = setTimeout(()=>{
+          card.classList.remove("jump-highlight");
+          if(highlightedJumpCard === card) highlightedJumpCard = null;
+        }, 1640);
+        return;
+      }
+      if(now-started > 3000){ cancel(); return; }
+      frame = requestAnimationFrame(check);
+    };
+    frame = requestAnimationFrame(check);
+  };
+  if(layoutDelay) delayTimer = setTimeout(start, layoutDelay);
+  else frame = requestAnimationFrame(start);
+}
+window.jumpToCard = jumpToCard;
+
 // ============ Tab 切换 ============
 function switchTab(name){
   if(!document.getElementById("page_" + name)) return;
+  cancelCardJump();
   if(window.scrollY > 0) window.scrollTo({top:0, behavior:"auto"});
   if(name !== "settings"){
     const picker = $("perm_hint_mode_select"), trigger = $("cfg_perm_hint_mode_trigger");
@@ -1807,15 +1890,7 @@ document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click", ()=>swi
 // 跨页跳转：设置页「启用渐变色」→ 服务器页『文本颜色』卡片（切页 + 平滑滚动 + 高亮闪烁）
 function jumpToTextColor(){
   switchTab("server");
-  const card = document.getElementById("srv_color_card");
-  if(!card) return;
-  clearTimeout(jumpToTextColor._t);
-  jumpToTextColor._t = setTimeout(()=>{
-    try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
-    card.classList.remove("flash"); void card.offsetWidth;   // 重排以便重复触发动画
-    card.classList.add("flash");
-    setTimeout(()=>card.classList.remove("flash"), 1700);
-  }, 80);
+  jumpToCard("srv_color_card", {layoutDelay:440});
 }
 window.jumpToTextColor = jumpToTextColor;
 ["jump_text_color","jump_text_color2"].forEach(id=>{
@@ -2441,13 +2516,7 @@ async function fpModalDone(goKnowledge){
   await presetNotice("ack");
   if(goKnowledge){
     switchTab("knowledge");
-    const card = $("kb_preset_card");
-    if(card){
-      try{ card.scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){ card.scrollIntoView(); }
-      card.classList.remove("flash"); void card.offsetWidth;
-      card.classList.add("flash");
-      setTimeout(() => card.classList.remove("flash"), 1700);
-    }
+    jumpToCard("kb_preset_card", {layoutDelay:440});
   }
 }
 async function checkFingerprintNotice(){
@@ -2910,12 +2979,14 @@ function renderAdvSummary(){
 function openAdvRcon(focusId){
   const d = $("adv_rcon");
   if(!d) return;
+  const expanding = !d.open || d.classList.contains("adv-fold-closing");
+  if(d.__advFoldCloseTimer){ clearTimeout(d.__advFoldCloseTimer); d.__advFoldCloseTimer = null; }
+  d.classList.remove("adv-fold-closing");
   d.open = true;
   renderAdvSummary();
   const el = focusId && $(focusId);
   if(el){
-    el.scrollIntoView({behavior:"smooth", block:"center"});
-    el.focus({preventScroll:true});
+    jumpToCard(el, {layoutDelay:expanding ? 440 : 0, focus:true});
   }
 }
 window.openAdvRcon = openAdvRcon;   // 内联 onclick 入口（与页面既有 .jump 写法一致）
