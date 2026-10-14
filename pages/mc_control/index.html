@@ -439,15 +439,31 @@ summary:hover{text-decoration:underline}
 
 /* v0.21.44：知识库卡的原理说明收进折叠区（默认收起）—— 卡片高度不再被文案撑高，
    同排左卡的大片空档随之消失。summary 样式只在卡内生效，不动全局 details/summary。 */
-details.kb-fold{margin-top:10px;border-top:1px dashed var(--border);padding-top:10px}
-details.kb-fold>summary{font-size:11px;font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:5px;padding:2px 0}
+details.kb-fold{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
+details.kb-fold>summary{font-size:11px;font-weight:700;list-style:none;display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-height:34px;padding:7px 10px;border:1px solid var(--border2);border-radius:10px;background:linear-gradient(110deg,rgba(167,139,250,.08),transparent 64%);color:var(--text);cursor:pointer}
 details.kb-fold>summary::-webkit-details-marker{display:none}
-details.kb-fold>summary::before{content:"▸";font-size:9px;color:var(--faint);transition:transform .15s}
-details.kb-fold[open]>summary::before{content:"▾"}
+details.kb-fold>summary::before{content:"▸";font-size:10px;color:var(--violet);transform:rotate(0);transition:transform .24s var(--motion-ease)}
+details.kb-fold[open]>summary::before{content:"▸";transform:rotate(90deg)}
 details.kb-fold>summary::after{content:"（点开看实测数据与前提）";font-size:10.5px;font-weight:500;color:var(--faint);margin-left:2px;opacity:.85}
 details.kb-fold[open]>summary::after{content:"（点标题收起）"}
-details.kb-fold .hint{margin-top:9px;line-height:1.7}
-details.kb-fold .hint b{color:var(--dim);font-weight:600}
+details.kb-fold .kb-fold-body{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none;transition:grid-template-rows .42s var(--motion-ease),opacity .24s ease,visibility 0s linear .42s}
+details.kb-fold .kb-fold-body-inner{min-height:0;overflow:hidden}
+details.kb-fold[open] .kb-fold-body{grid-template-rows:1fr;opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+details.kb-fold.kb-fold-closing .kb-fold-body{grid-template-rows:0fr;opacity:0;visibility:hidden;pointer-events:none}
+.kb-guide-lead{display:flex;align-items:flex-start;gap:9px;margin-top:12px;padding:10px 12px;border:1px solid rgba(167,139,250,.3);border-radius:10px;background:rgba(167,139,250,.07);font-size:11px;line-height:1.65}
+.kb-guide-lead b{flex:0 0 auto;color:var(--violet);font-size:11px}
+.kb-guide-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.kb-guide-card{padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel2)}
+.kb-guide-card.primary{border-color:rgba(76,195,138,.35);background:linear-gradient(135deg,rgba(76,195,138,.08),var(--panel2) 70%)}
+.kb-guide-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.kb-guide-head b{font-size:11.5px;color:var(--text)}
+.kb-guide-badge{padding:2px 7px;border-radius:99px;background:rgba(76,195,138,.14);color:var(--ok);font-size:9.5px;font-weight:700;white-space:nowrap}
+.kb-guide-card p{font-size:10.8px;line-height:1.65;color:var(--dim)}
+.kb-guide-facts{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.kb-guide-facts span{padding:2px 6px;border-radius:6px;background:var(--panel3);color:var(--faint);font-size:9.5px;line-height:1.45}
+.kb-guide-note{margin-top:10px;padding:8px 10px;border-top:1px dashed var(--border2);color:var(--faint);font-size:10.5px;line-height:1.65}
+.kb-guide-note b{color:var(--dim)}
+@media(max-width:640px){.kb-guide-grid{grid-template-columns:1fr}.kb-guide-lead{display:block}.kb-guide-lead b{display:block;margin-bottom:3px}}
 /* v0.23.0：RCON 卡的进阶调参收进折叠区（默认收起）—— 基础三件套（地址 / 端口 / 密码）
    之后的设置项对普通用户只是噪音，卡片高度随之回落。与知识库卡同一套视觉语言
    （details.kb-fold），只是 summary 文案不同；额外多一枚收起态摘要徽标。
@@ -1572,18 +1588,34 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
           <div class="hint" id="kb_rerank_p_tip"></div>
         </div>
       </div>
-      <details class="kb-fold">
+      <details class="kb-fold" id="kb_engine_fold">
         <summary>检索引擎与增强检索怎么选</summary>
-        <div class="hint"><b>检索引擎</b>：BM25 按「字序」匹配，查「黄铜」不会捞出「铜黄」，权重自动压低「通用 / 方案 / 规则」这类套话，长条目也不会靠字数霸榜 —— 实测结果精确率 20.5% → 58.6%（2.9 倍）、无关条目减少 82%，5000 条规模检索 6.3ms → 2.0ms。切换后点「保存全部设置」即时生效，无需重载插件。<br>
-        <b>旧版</b>：中文按单字、英文按整段做子串命中，字面与历史结果完全一致，但容易连锁误召回（查「满配一把枪」会捞出一堆含「配 / 方 / 案」的条目）。仅在需要与历史检索结果完全对齐时才选。</div>
-        <div class="hint"><b>语义增强检索</b>：只建议大型服务器启用 —— 开启后提问可以「换种说法」问，例如问「后台连不上了」，也能捞到库里那条「RCON 连接失败排查」。本机实测（438 条语料 / 24 组查询）：Hit@1 75.0% → 87.5%、Hit@6 79.2% → 100%（口语改写型 Hit@6 58.3% → 100%），无关条目误召回同步归零。<br>
-        <b>代价</b>：每次检索多一次嵌入调用（约 300~500ms 延迟）；建库时每条约一次，只算新增 / 改动过的条目，结果落盘缓存，不会重复烧。<br>
-        <b>前提</b>：先在 AstrBot「服务提供商」里添加一个 Embedding 模型（如 Qwen3-Embedding-4B）。没有的话开关开了也不生效 —— 检索会安静退化成纯 BM25，不报错；条目少的小库用 BM25 已经够准，故默认关闭。</div>
-        <div class="hint"><b>重排序精排</b>：库大了、问法杂了之后，「召回」难免把真正对的条目排到中游 —— 精排（Cross-Encoder）把候选池逐条与提问重新比对，看的是真实相关性，能把该在前面的提上来。开启后检索变成两段式：先召回 20 条候选，再精排取前几条。<br>
-        <b>与语义增强检索独立</b>：没有 Embedding 模型也能单开（只对 BM25 召回池精排）；两者同开就是「BM25 + 向量 RRF 召回 → rerank 精排」的完整三段式。<br>
-        <b>代价 / 前提</b>：每次检索多一次重排 API 往返（约几百毫秒），小库不值这份延迟，故默认关闭；需先在「服务提供商」里添加一个 Rerank 模型（如 vllm_rerank / Qwen3-Reranker-8B），没配置时开关开了也不报错 —— 检索安静退化为召回顺序。</div>
-        <div class="hint"><b>模型回落</b>：上面两个下拉只列 AstrBot 里<b>已加载</b>的模型（配置了但没启用、或加载失败的不会出现）；留空 = 自动使用第一个（与不指定时行为完全一致）；指定的模型哪天被删了，检索会自动回落到第一个并在保存时提示，不会因此失效。<br>
-        <b>生效时机</b>：词典与知识库在插件启动时构建；改 server_dir 或「物品词典 / 学习型知识库」这两项开关会在保存时就地重建（无需重载插件），其余开关即时生效。</div>
+        <div class="kb-fold-body"><div class="kb-fold-body-inner">
+          <div class="kb-guide-lead"><b>先看结论</b><span>大多数服务器直接用 <strong>BM25</strong>；问法变化多且有模型资源时再开<strong>语义增强</strong>；资料很多、还要更准时再加<strong>重排序</strong>。</span></div>
+          <div class="kb-guide-grid">
+            <div class="kb-guide-card primary">
+              <div class="kb-guide-head"><b>BM25 · 默认推荐</b><span class="kb-guide-badge">快速</span></div>
+              <p>中文二元切分，按字序匹配，能压低“通用 / 方案 / 规则”等套话的权重。小库到大库都够用，无需额外模型。</p>
+              <div class="kb-guide-facts"><span>精确率 20.5% → 58.6%</span><span>5000 条：2.0ms</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>旧版 · 兼容模式</b></div>
+              <p>中文按单字、英文按整段做子串命中，结果与旧版本一致，但容易把含相同单字的无关条目一起召回。</p>
+              <div class="kb-guide-facts"><span>仅需历史结果一致时使用</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>语义增强 · 按需开启</b><span class="kb-guide-badge">大库</span></div>
+              <p>支持“换种说法”提问；438 条实测 Hit@1 75% → 87.5%，Hit@6 79.2% → 100%。</p>
+              <div class="kb-guide-facts"><span>前提：Embedding 模型</span><span>代价：约 300~500ms</span></div>
+            </div>
+            <div class="kb-guide-card">
+              <div class="kb-guide-head"><b>重排序精排 · 大库按需</b><span class="kb-guide-badge">更准</span></div>
+              <p>先召回 20 条，再逐条比较相关性提取前几条；可独立于语义增强运行，两者同开就是完整三段式检索。</p>
+              <div class="kb-guide-facts"><span>前提：Rerank 模型</span><span>代价：约几百毫秒</span></div>
+            </div>
+          </div>
+          <div class="kb-guide-note"><b>模型与生效：</b>两个下拉只列已加载模型，留空自动取第一个；模型缺失时会静默回退，不会让检索失效。改 server_dir 或物品词典 / 学习型知识库开关后保存时重建，其余开关即时生效。</div>
+        </div></div>
       </details>
     </div>
   </div>
@@ -3039,6 +3071,51 @@ function bindAdvFoldMotion(d){
       d.__advFoldCloseTimer = null;
       renderAdvSummary();
     }, 440);
+  });
+}
+
+// 知识库说明也保留原生 details 语义，但关闭时先播放 0fr 卷帘，
+// 避免浏览器立刻移除内容造成瞬间收缩。
+function bindKbFoldMotion(d){
+  if(!d || d.dataset.motionBound === "1") return;
+  const summary = d.querySelector("summary"), body = d.querySelector(".kb-fold-body");
+  if(!summary || !body) return;
+  d.dataset.motionBound = "1";
+  summary.addEventListener("click", ev=>{
+    ev.preventDefault();
+    d.__kbFoldToken = (d.__kbFoldToken || 0) + 1;
+    const token = d.__kbFoldToken;
+    if(d.__kbFoldCloseTimer){ clearTimeout(d.__kbFoldCloseTimer); d.__kbFoldCloseTimer = null; }
+    if(d.classList.contains("kb-fold-closing")){
+      d.classList.remove("kb-fold-closing");
+      d.open = true;
+      return;
+    }
+    if(!d.open){
+      body.style.gridTemplateRows = "0fr";
+      body.style.opacity = "0";
+      body.style.visibility = "hidden";
+      body.style.pointerEvents = "none";
+      d.open = true;
+      void body.offsetHeight;
+      requestAnimationFrame(()=>{
+        if(d.__kbFoldToken !== token || !d.open || d.classList.contains("kb-fold-closing")) return;
+        body.style.removeProperty("grid-template-rows");
+        body.style.removeProperty("opacity");
+        body.style.removeProperty("visibility");
+        body.style.removeProperty("pointer-events");
+      });
+      return;
+    }
+    d.classList.add("kb-fold-closing");
+    const close = ()=>{
+      if(d.__kbFoldToken !== token) return;
+      d.open = false;
+      d.classList.remove("kb-fold-closing");
+      d.__kbFoldCloseTimer = null;
+    };
+    if(window.matchMedia("(prefers-reduced-motion: reduce)").matches) close();
+    else d.__kbFoldCloseTimer = setTimeout(close, 440);
   });
 }
 
@@ -5137,6 +5214,8 @@ function boot(){
     earlyAdv.ontoggle = renderAdvSummary;
     bindAdvFoldMotion(earlyAdv);
   }
+  const kbFold = $("kb_engine_fold");
+  if(kbFold) bindKbFoldMotion(kbFold);
   selectApi().then(({mode:m})=>{
     mode = m;
     modeTag();
