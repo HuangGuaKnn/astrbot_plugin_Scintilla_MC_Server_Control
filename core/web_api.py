@@ -851,11 +851,18 @@ class McControlWebApi:
                             "检索会安静退化为召回顺序"
                         )
                 if "knowledge_embed_provider_id" in changed:
+                    # 换了嵌入模型配置 → 旧模型算出的向量在维度与语义空间均已失效。
+                    # v0.24.4 P2-3 修复：无论此时注入是否成功、语义开关是否开启，
+                    # 必须【无条件作废全部预设磁盘向量与内存索引】，防止关闭状态切换或坏配置残留旧模型缓存。
+                    try:
+                        self.plugin._kb_invalidate_all_vector_caches()
+                    except Exception as e:
+                        self.plugin.logger.warning("清理多预设旧向量缓存失败: %s", e)
+
                     if self.plugin._inject_embed_fn():
                         label = self.plugin.kb_effective_label("embedding")
                         if self.plugin._kb_semantic():
-                            # 换了嵌入模型 → 旧模型算的向量整库作废。这里必须
-                            # replace：可能正有一轮「旧模型」构建在跑，先取消它，
+                            # 这里必须 replace：可能正有一轮「旧模型」构建在跑，先取消它，
                             # 否则两个协程会同时改同一个 SemanticIndex。
                             self.plugin._spawn_bg(
                                 self.plugin.KB_VECTORS_TASK,
@@ -864,18 +871,20 @@ class McControlWebApi:
                             )
                             effects.append(
                                 f"嵌入模型已切换为「{label or '（未指明）'}」："
-                                "向量索引正在后台整库重算（旧模型算的向量不通用）"
+                                "旧向量已全量作废，当前预设向量正在后台整库重算"
                             )
                         else:
                             effects.append(
-                                f"嵌入模型已切换为「{label or '（未指明）'}」"
-                                "（语义增强检索未开启，暂时用不上）"
+                                f"嵌入模型已切换为「{label or '（未指明）'}」："
+                                "旧向量已全量作废（语义增强检索未开启，暂时用不上）"
                             )
                     elif self.plugin._kb_semantic():
                         effects.append(
-                            "⚠ 语义增强检索开着，但没有可用的嵌入模型 —— "
+                            "⚠ 嵌入模型配置已变更但无可用模型（旧向量已全量作废）—— "
                             "本通道会安静退化为纯 BM25"
                         )
+                    else:
+                        effects.append("嵌入模型配置已变更但无可用模型，旧向量已全量作废")
             except Exception as e:                        # noqa: BLE001
                 effects.append(f"模型切换失败：{e}")
 

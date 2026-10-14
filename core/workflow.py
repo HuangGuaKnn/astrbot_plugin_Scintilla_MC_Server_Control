@@ -34,7 +34,9 @@ from .command_result import (
     CommandResult,
     classify_command_output,
     format_results,
+    is_idempotent_command,
     is_non_idempotent_command,
+    is_silent_command,
     looks_like_complex_task,
 )
 from .rcon import RconError, RconTimeoutError
@@ -123,6 +125,7 @@ class MCWorkflow:
                       detail=decided["reason"], kind="player_missing")
             return f"[MC工作流·终止] {decided['reason']}"
         player = decided["player"]
+        player_source = str(decided.get("source", ""))
 
         # ---- v0.22.6 确定性路由守门 ----
         # 不能只依赖分类器 prompt：agent_prompts.py 里「原版物品 = simple」与
@@ -150,7 +153,7 @@ class MCWorkflow:
         # 插件卸载 / 重载时随任务册一起取消；否则流水线会活过一个已终止的插件。
         # 本地 _tasks 集合保留：流水线内部要拿它判断「还有没有在跑的任务」。
         reg = getattr(self.plugin, "_bg", None)
-        coro = self._run_complex_async(request, player, event, umo)
+        coro = self._run_complex_async(request, player, event, umo, player_source=player_source)
         task = reg.spawn("workflow", coro, policy="parallel") if reg is not None \
             else asyncio.create_task(coro)
         if task is None:
@@ -370,7 +373,8 @@ class MCWorkflow:
     # =============== 复杂路径（后台） ===============
 
     async def _run_complex_async(
-        self, request: str, player: str, event: AstrMessageEvent, umo: str
+        self, request: str, player: str, event: AstrMessageEvent, umo: str,
+        player_source: str = "",
     ) -> None:
         """后台执行完整复杂流水线，完成后主动推送通知。"""
         t0 = time.time()
@@ -378,7 +382,7 @@ class MCWorkflow:
         total_timeout = max(60, int(self._cfg("workflow_total_timeout", 1800)))
         try:
             result_text, ok = await asyncio.wait_for(
-                self._run_complex(request, player, umo), timeout=total_timeout
+                self._run_complex(request, player, umo, player_source=player_source), timeout=total_timeout
             )
         except asyncio.TimeoutError:
             result_text, ok = (
@@ -402,10 +406,15 @@ class MCWorkflow:
         except Exception as e:
             self.logger.warning("推送完成通知失败: %s", e)
 
-    async def _run_complex(self, request: str, player: str, umo: str):
+    async def _run_complex(
+        self, request: str, player: str, umo: str, player_source: str = ""
+    ) -> tuple[str, bool]:
         """复杂路径核心逻辑。返回 (结果文本, 是否成功)。"""
         # 玩家名规范化：把 explicit 的聊天昵称/别名映射成服务器真实在线玩家名（bound 已是真实名）
-        player, online_players = await self._resolve_player(player, request)
+        try:
+            player, online_players = await self._resolve_player(player, request, player_source=player_source)
+        except TypeError:
+            player, online_players = await self._resolve_player(player, request)
         online_text = ", ".join(online_players) if online_players else ""
         kb = self.plugin._knowledge
         dictionary = self.plugin._dictionary
@@ -697,7 +706,7 @@ class MCWorkflow:
         return out
 
     async def _resolve_player(
-        self, player: str, request: str
+        self, player: str, request: str, player_source: str = ""
     ) -> tuple[str, list[str]]:
         """把聊天昵称/别名解析成服务器真实在线玩家名。
 
@@ -724,12 +733,16 @@ class MCWorkflow:
             p = player.strip().lower()
             if p in low:
                 return low[p], online
-        # 2) 昵称是某在线名的子串 → 唯一则映射（如 Xiaoming → Xiaoming_233）
+        # 2) v0.24.4（Issue #9 / P1-4）：绑定账号 (source == "bound") 是已绑定的确定真实玩家ID，
+        # 离线时绝不做子串模糊提升（避免 Steve 离线时被子串匹配篡改为在线的 Steve2 误发给他人）！
+        if player_source == "bound":
+            return (player or "").strip(), online
+        # 3) 昵称是某在线名的子串 → 唯一则映射（如 Xiaoming → Xiaoming_233）
         if player and player.strip():
             r = sub_match(player)
             if r:
                 return r, online
-        # 3) 从 request 里提取：request 文本包含某在线名
+        # 4) 从 request 里提取：request 文本包含某在线名
         if request:
             r = sub_match(request)
             if r:
@@ -800,35 +813,23 @@ class MCWorkflow:
                     boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
                     response_received=bool(getattr(rcon, "last_response_received", False)),
                 )
-                # v0.22.6：熔断（并把本条标 unknown）的判据是**「重发是否有危险」**，
-                # 而不是「status 是否等于 unknown」。
-                # 静默 / 幂等命令拿到空响应时同样不知道到没到，但**重发无害** ——
-                # 按普通失败处理即可，绝不扩大熔断范围（v0.22.3 既有口径：
-                # 「普通命令拿到空响应仍按失败口径，不额外扩大熔断范围」）。
-                # 反例：批次第一条是 tellraw 广播时若误熔断，后续发物品会被无声吞掉。
-                if res.status == "unknown" and is_non_idempotent_command(cmd):
-                    # 非幂等命令（give / summon / effect …）重发就是重复副作用 ——
-                    # 单列 unknown 并**立刻停止后续命令**。
-                    reports.append({
-                        "command": cmd, "ok": False, "unknown": True, "status": "unknown",
-                        "output": res.reason,
-                    })
-                    for rest in commands[idx + 1:]:
-                        rc = str(rest.get("command", "")).strip().lstrip("/")
-                        reports.append({
-                            "command": rc or "(空)", "ok": False, "status": "skipped",
-                            "output": "因前一条命令结果未知，为避免重复副作用，本条未发送。",
-                        })
-                    break
+                # v0.22.6 / v0.24.4（Issue #9 / P1-2）：熔断与未知结果判定。
+                # fail-closed 原则：只有明确处于幂等 / 静默白名单内的命令，重发才无额外副作用。
+                # 其余所有命令（give、tp、模组命令、未知自定义命令等）只要结果未知，
+                # 一律视为可能有副作用：单列 unknown 并立刻停止后续命令，绝不标 retry_safe。
+                if res.status == "unknown":
+                    if not (is_idempotent_command(cmd) or is_silent_command(cmd)):
+                        self._unknown_and_skip(reports, commands, idx, cmd, res.reason)
+                        break
                 ok = res.status == "success"
                 status = res.status
-                # v0.24.3（GPT v0.24.2 复核 N01）：**结构化重试许可**，判定只认证据、不认状态字面：
+                # v0.24.3（N01）/ v0.24.4（Issue #9）：结构化重试许可，只认证据不认状态字面：
                 #   · 分类器给出的「确定没生效」（命令不存在 / 解析阶段被拒 / 动手前被拒）；
-                #   · 幂等命令拿到空响应（重发无副作用）—— 非幂等那条已在上面熔断 break。
+                #   · 明确幂等/静默命令拿到空响应（重发无副作用）—— 非明确幂等的命令已在上面熔断 break。
                 retry_safe = bool(getattr(res, "confirmed_not_run", False))
                 if status == "unknown":
-                    # 非幂等命令已在上面熔断返回；能走到这里说明本条重发无副作用，
-                    # 按普通失败口径上报（原因文本仍如实写明「无法确认送达」）。
+                    # 走到这里的仅限明确幂等/静默命令（如 time/weather/gamerule 等），
+                    # 按普通失败口径上报，允许安全重试。
                     status = "failed"
                     retry_safe = True
                 reports.append({
@@ -987,9 +988,16 @@ class MCWorkflow:
         fresh: list[dict] = []
         dups: list[str] = []
         for c in commands:
-            key = self._norm_cmd(c.get("command", ""))
+            cmd_raw = c.get("command", "")
+            key = self._norm_cmd(cmd_raw)
             if key and key in confirmed:
-                dups.append(str(c.get("command", "")).strip())
+                dups.append(str(cmd_raw).strip())
+                continue
+            # v0.24.4（Issue #9 / P1-3）：若命令经 B5 预重构后的规范命令已在 confirmed 中，同样判定重复
+            rerouted_cmd, _, _ = self._b5_reroute_give(cmd_raw)
+            r_key = self._norm_cmd(rerouted_cmd)
+            if r_key and r_key in confirmed:
+                dups.append(str(cmd_raw).strip())
                 continue
             fresh.append(c)
         return fresh, dups
@@ -1022,9 +1030,12 @@ class MCWorkflow:
         got: set[str] = set()
         for c, r in zip(commands, exec_reports):
             if MCWorkflow._status_of(r) == "success":
-                key = MCWorkflow._norm_cmd(c.get("command", ""))
-                if key:
-                    got.add(key)
+                # v0.24.4（Issue #9 / P1-3）：原始命令与实际下发执行的重写命令均记入账本，
+                # 确保次轮无论输出简写还是规范名，均能准确去重。
+                for candidate in (c.get("command", ""), r.get("command", "")):
+                    key = MCWorkflow._norm_cmd(candidate)
+                    if key:
+                        got.add(key)
         return got, None
 
     @staticmethod

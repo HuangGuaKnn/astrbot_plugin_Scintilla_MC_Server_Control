@@ -289,12 +289,12 @@ def _skip_execute_clauses(tokens: list[str], idx: int) -> str | None:
             idx = _need(tokens, idx, 1 + _EXEC_SIMPLE_ARITY[kw])
             continue
         if kw == "positioned":
-            # positioned as <targets> <pos:3> ／ positioned <pos:3>
-            idx = _need(tokens, idx, 6 if _peek(tokens, idx + 1) == "as" else 4)
+            # positioned as <targets> (3) ／ positioned <pos:3> (4)
+            idx = _need(tokens, idx, 3 if _peek(tokens, idx + 1) == "as" else 4)
             continue
         if kw == "rotated":
-            # rotated as <targets> <rot:2> ／ rotated <rot:2>
-            idx = _need(tokens, idx, 5 if _peek(tokens, idx + 1) == "as" else 3)
+            # rotated as <targets> (3) ／ rotated <rot:2> (3)
+            idx = _need(tokens, idx, 3)
             continue
         if kw == "facing":
             # facing entity <targets> <anchor> ／ facing <pos:3>
