@@ -52,4 +52,3 @@ def test_create_copy_from_only_reads_registered_preset():
         copied = manager.create("copy", copy_from="../../../secret")
         copied_data = json.loads(manager.preset_path(copied["id"]).read_text(encoding="utf-8"))
         assert copied_data.get("entries") == {}, copied_data
-

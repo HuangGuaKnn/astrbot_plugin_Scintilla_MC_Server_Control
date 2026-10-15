@@ -1798,9 +1798,14 @@ class McControlWebApi:
         if man is None:
             return json_response(self._kb_uninit())
         data = await request.json() or {}
+        if not isinstance(data, dict):
+            return json_response({"ok": False, "error": "参数错误"})
+        copy_from = data.get("copy_from") or None
+        if copy_from is not None and man.get(str(copy_from)) is None:
+            return json_response({"ok": False, "error": "源预设不存在"})
         preset = man.create(
             name=data.get("name", ""),
-            copy_from=(data.get("copy_from") or None),
+            copy_from=copy_from,
         )
         return json_response({
             "ok": True, **self._presets_payload(man),
