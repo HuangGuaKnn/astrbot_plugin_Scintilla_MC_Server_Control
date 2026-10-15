@@ -1693,14 +1693,37 @@ class KnowledgePresetManager:
     def _now() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def _safe_preset_id(self, pid) -> bool:
+        """Whether a registry id is safe to use as a preset filename."""
+        try:
+            self.preset_path(pid)
+        except (TypeError, ValueError):
+            return False
+        return True
+
     def _load_registry(self) -> dict:
         if self.reg_path.exists():
             try:
                 data = json.loads(self.reg_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and isinstance(data.get("presets"), list):
+                    # Registry files can survive upgrades and may also be edited
+                    # by hand.  Drop malformed ids before any active preset is
+                    # opened; otherwise the KB loader could bypass preset_path()
+                    # and construct a path outside data_dir.
+                    original = data["presets"]
+                    data["presets"] = [
+                        p for p in original
+                        if isinstance(p, dict) and self._safe_preset_id(p.get("id"))
+                    ]
+                    if not data["presets"]:
+                        return self._migrate_legacy()
                     data.setdefault("active", None)
+                    ids = {p.get("id") for p in data["presets"]}
+                    if data.get("active") not in ids:
+                        data["active"] = data["presets"][0].get("id")
                     migrated = self._migrate_notice(data)
-                    if self._recover_orphans(data) or migrated:
+                    if (len(data["presets"]) != len(original)
+                            or self._recover_orphans(data) or migrated):
                         self._write_registry_raw(data)
                     return data
             except Exception:
@@ -1741,6 +1764,8 @@ class KnowledgePresetManager:
         known = {p.get("id") for p in data["presets"]}
         for f in sorted(self.data_dir.glob("kb_preset_*.json")):
             pid = f.stem[len("kb_preset_"):]
+            if not self._safe_preset_id(pid):
+                continue
             if pid in known:
                 continue
             fp = ""
