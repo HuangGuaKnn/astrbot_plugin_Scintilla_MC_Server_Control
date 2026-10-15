@@ -57,7 +57,7 @@ from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase, VECTO
 from .core.mod_fingerprint import compute_server_identity
 from .core.player_bindings import PlayerBindings
 from .core.workflow import MCWorkflow
-from .core.web_api import McControlWebApi
+from .core.web_api import McControlWebApi, parse_bool
 from .core.log_watcher import (
     EVENT_ADVANCEMENT,
     EVENT_CHAT,
@@ -918,7 +918,13 @@ class McControlPlugin(Star):
 
     def _tool_enabled(self, name: str) -> bool:
         """读取对应 LLM 工具的开关配置（配置变更即时生效）。"""
-        return bool(self._cfg(f"enable_{name}", True))
+        # 配置可能来自旧版/手工编辑的 JSON；不能用 ``bool(raw)``，否则
+        # ``"false"`` 会变成 True，导致用户明确关闭的工具重新暴露给 LLM。
+        # 无法解析时按关闭处理，保证工具开关 fail-closed。
+        try:
+            return parse_bool(self._cfg(f"enable_{name}", True))
+        except ValueError:
+            return False
 
     # ================= 会话目标解析（UMO 规范化） =================
 
@@ -2064,8 +2070,14 @@ class McControlPlugin(Star):
                 return latched
         policy = str(self._cfg("danger_command_policy", "whitelist") or "whitelist")
         is_admin = self._is_admin(event)
-        # v0.23.5：未知命令（模组 / 整合包自定义）默认拒绝 —— 认不出就不放行
-        allow_unknown = bool(self._cfg("allow_unknown_commands", False))
+        # v0.23.5：未知命令（模组 / 整合包自定义）默认拒绝 —— 认不出就不放行。
+        # Do not use ``bool(raw)`` here: hand-edited/legacy JSON commonly stores
+        # booleans as strings, and ``bool("false")`` is True (fail-open for
+        # unknown mod commands in blacklist mode).  Invalid values fail closed.
+        try:
+            allow_unknown = parse_bool(self._cfg("allow_unknown_commands", False))
+        except ValueError:
+            allow_unknown = False
         denied = check_command_policy(command, policy=policy, is_admin=is_admin,
                                       allow_unknown=allow_unknown)
         if denied:

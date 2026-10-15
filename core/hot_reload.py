@@ -107,6 +107,20 @@ def plugin_dirs_for(pm, name: str | None = None) -> list[str]:
     Returns:
         存在的插件目录绝对路径列表。
     """
+    # ``name`` eventually becomes a path component below one of the plugin
+    # stores.  It is normally supplied by an admin-only tool, but it can still
+    # be LLM-generated input; reject traversal components before joining it.
+    if name is not None:
+        raw_name = str(name)
+        if (
+            not raw_name
+            or raw_name in {".", ".."}
+            or "/" in raw_name
+            or "\\" in raw_name
+            or "\x00" in raw_name
+        ):
+            return []
+
     store = getattr(pm, "plugin_store_path", "") or ""
     reserved_store = getattr(pm, "reserved_plugin_path", "") or ""
     targets: list[str] = []
@@ -143,9 +157,15 @@ def plugin_dirs_for(pm, name: str | None = None) -> list[str]:
                     continue
 
     seen: list[str] = []
+    allowed_roots = [_norm(x) for x in (store, reserved_store) if x]
     for path in targets:
         if path and os.path.isdir(path):
             normed = _norm(path)
+            # Do not follow a symlink from the managed store to an arbitrary
+            # directory.  ``deep_clean`` removes __pycache__ trees, so keeping
+            # the resolved path inside the configured store is essential.
+            if allowed_roots and not _path_inside(normed, allowed_roots):
+                continue
             if normed not in [_norm(x) for x in seen]:
                 seen.append(os.path.abspath(path))
     return seen

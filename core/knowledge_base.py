@@ -1973,7 +1973,20 @@ class KnowledgePresetManager:
     # ---------------- 预设读写 ----------------
 
     def preset_path(self, pid: str) -> Path:
-        return self.data_dir / f"kb_preset_{pid}.json"
+        """Return the on-disk path for a registered preset id.
+
+        Preset ids normally come from ``_preset_id()`` but older registries may
+        contain migrated ids, so we only enforce the property that matters for
+        filesystem safety: an id must be a single, bounded filename component.
+        This keeps a malformed WebUI request (for example ``../../../config``)
+        from turning the ``kb_preset_<id>.json`` template into a path traversal.
+        """
+        raw = str(pid or "")
+        if not raw or len(raw) > 128 or raw in {".", ".."}:
+            raise ValueError("预设 ID 无效")
+        if any(ch in raw for ch in ("/", "\\", "\x00")):
+            raise ValueError("预设 ID 不能包含路径分隔符")
+        return self.data_dir / f"kb_preset_{raw}.json"
 
     def _file_entries(self, pid: str) -> int:
         p = self.preset_path(pid)
@@ -2071,12 +2084,19 @@ class KnowledgePresetManager:
         pid = _preset_id()
         entries, deleted = {}, []
         if copy_from:
-            src = self.preset_path(copy_from)
-            if src.exists():
+            # ``copy_from`` is user-controlled through the WebUI.  Resolve it
+            # through the registry before touching the filesystem; otherwise a
+            # value containing ``../`` could make ``preset_path`` read an
+            # arbitrary JSON file outside the preset data directory.
+            src_preset = self.get(str(copy_from))
+            if src_preset is not None:
                 try:
-                    d = json.loads(src.read_text(encoding="utf-8"))
-                    entries = d.get("entries", {})
-                except Exception:
+                    src = self.preset_path(src_preset.get("id", ""))
+                    if src.exists():
+                        d = json.loads(src.read_text(encoding="utf-8"))
+                        if isinstance(d, dict) and isinstance(d.get("entries"), dict):
+                            entries = d["entries"]
+                except (OSError, ValueError, json.JSONDecodeError):
                     entries = {}
         # v0.23.5 第三轮：预设**文件**的写入此前没有任何保护 —— 磁盘满 / 只读时
         # 它会直接抛异常冲出 WebAPI；现在记进落盘结果，和注册表一起回报。
