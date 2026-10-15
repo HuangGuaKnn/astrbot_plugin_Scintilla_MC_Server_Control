@@ -16,6 +16,7 @@ from _paths import add_sys_paths
 add_sys_paths()
 
 from astrbot_plugin_Scintilla_MC_Server_Control.core.knowledge_base import (
+    ModKnowledgeBase,
     KnowledgePresetManager,
 )
 
@@ -68,6 +69,14 @@ def test_malicious_registry_id_is_filtered_before_kb_load():
         active = manager.active_preset() or {}
         assert active.get("id") != "../../escape"
         assert not (data_dir.parent / "escape.json").exists()
+
+
+def test_direct_kb_construction_falls_back_from_unsafe_id():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        kb = ModKnowledgeBase(str(data_dir), preset_id="../../escape")
+        assert kb.file_path.parent.resolve() == data_dir.resolve()
+        assert kb.preset_id == "legacy_default"
 
 
 def main() -> int:
