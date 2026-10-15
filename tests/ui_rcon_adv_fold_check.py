@@ -192,7 +192,7 @@ def main() -> int:
         # 真点一次「去填写」：应当展开折叠区并把焦点送到版本输入框
         pg.evaluate("() => document.getElementById('adv_rcon').open = false")
         pg.click("#cfg_save_warn button")
-        pg.wait_for_timeout(400)
+        pg.wait_for_timeout(550)
         check("动态：点「去填写」→ 折叠区展开",
               pg.evaluate("() => document.getElementById('adv_rcon').open") is True)
         check("动态：点「去填写」→ 焦点落在版本输入框",

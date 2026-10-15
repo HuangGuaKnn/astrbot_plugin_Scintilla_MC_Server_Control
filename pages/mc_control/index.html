@@ -3022,6 +3022,7 @@ function openAdvRcon(focusId){
   renderAdvSummary();
   const el = focusId && $(focusId);
   if(el){
+    el.focus({preventScroll:true});
     jumpToCard(el, {layoutDelay:expanding ? 440 : 0, focus:true});
   }
 }
