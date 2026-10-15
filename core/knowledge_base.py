@@ -65,6 +65,15 @@ VALID_STATUS = ("verified", "untested", "corrected", "pending")
 DEFAULT_SEARCH_ENGINE = "bm25"
 SEARCH_ENGINES = ("bm25", "legacy")
 
+
+def _safe_preset_component(value) -> str | None:
+    """Return a bounded filename component, or ``None`` for unsafe input."""
+    raw = str(value or "")
+    if (not raw or len(raw) > 128 or raw in {".", ".."}
+            or any(ch in raw for ch in ("/", "\\", "\x00"))):
+        return None
+    return raw
+
 # ================= 语义增强检索（可选 · v0.21.41） =================
 # 配置项 knowledge.semantic_search（**默认关闭**，见 _conf_schema.json）：
 # 开启后知识库除 BM25 词法通道外，再走一条「嵌入向量」语义通道，两通道用
@@ -599,7 +608,11 @@ class ModKnowledgeBase:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.server_id = server_id or "default"   # 当前运行服务端的整合包指纹（只读）
-        self.preset_id = preset_id or f"legacy_{self.server_id}"
+        requested_id = preset_id or f"legacy_{self.server_id}"
+        # Keep direct construction safe too; the preset manager validates
+        # registry ids, but tests/legacy callers can instantiate this class
+        # without going through that manager.
+        self.preset_id = _safe_preset_component(requested_id) or "legacy_default"
         self.preset_name = preset_name or f"知识库 {self.preset_id}"
         self.fingerprint = fingerprint           # 本预设绑定的指纹，None=未绑定
         self.on_first_write = on_first_write     # 首次写入时回调（用于绑定指纹）
@@ -2006,11 +2019,9 @@ class KnowledgePresetManager:
         This keeps a malformed WebUI request (for example ``../../../config``)
         from turning the ``kb_preset_<id>.json`` template into a path traversal.
         """
-        raw = str(pid or "")
-        if not raw or len(raw) > 128 or raw in {".", ".."}:
+        raw = _safe_preset_component(pid)
+        if raw is None:
             raise ValueError("预设 ID 无效")
-        if any(ch in raw for ch in ("/", "\\", "\x00")):
-            raise ValueError("预设 ID 不能包含路径分隔符")
         return self.data_dir / f"kb_preset_{raw}.json"
 
     def _file_entries(self, pid: str) -> int:
