@@ -2725,6 +2725,17 @@ class McControlPlugin(Star):
             count = max(1, int(count))
         except (TypeError, ValueError):
             count = 1
+        # v0.24.5：mc_give_item 也必须走统一命令长度闸门。
+        # 该工具此前只有 mc_execute_command 做了限长；LLM 若把整段文本塞进
+        # item/player，仍会被拼成超大的 RCON 报文，浪费连接并可能拖垮服务端。
+        # 先按原始参数粗筛，解析玩家/旧版物品后还会对最终命令再校验一次。
+        too_long = self._too_long(
+            f"give {player or 'player'} {item} {count}",
+            self.MAX_COMMAND_CHARS,
+            "命令",
+        )
+        if too_long:
+            return too_long
         # v0.23.2（GPT 续单裁决 Q4）：已知服务端 < 1.13 时，带数据的物品命令不自动构造。
         # 「拦截即终局」口径不变（先判定、再折腾绑定）。
         # B5（2026-10-07 真机实证）：<1.13 不再一律拒绝 —— 改走**预扁平化生成器**
@@ -2771,6 +2782,10 @@ class McControlPlugin(Star):
                 self.logger.info("[B5] %s", "；".join(_plan.notes))
         else:
             cmd = f"give {player} {item} {count}"
+        # 玩家解析或旧版生成器可能改变命令长度；以真正要发送的命令为准再拦一次。
+        too_long = self._too_long(cmd, self.MAX_COMMAND_CHARS, "命令")
+        if too_long:
+            return too_long
         try:
             rcon = await self._get_rcon()
             r = await self._exec_checked(rcon, cmd)
