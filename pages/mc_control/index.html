@@ -3241,6 +3241,7 @@ function syncPolicyUI(){
   // v0.23.5：未知命令闸门只在黑名单下生效 → 白名单时整行隐藏，免得摆个没用的开关
   const rowAU = $("row_allow_unknown");
   if(rowAU){
+    rowAU.style.display = (v === "blacklist") ? "flex" : "none";
     setUnknownCommandRowVisible(rowAU, v === "blacklist");
   }
   const now = $("policy_now");
@@ -4978,7 +4979,7 @@ async function saveColors(){
     syncNameCells(r.colors);
     const g = r.gradient || {};
     if(g.format && FORMAT_LABELS[g.format]) $("clr_grad_fmt").value = g.format;
-    if((r.plain||{}).format && PLAIN_LABELS[r.plain.format]) $("clr_plain_fmt").value = r.plain.format;
+    if((r.plain||{}).format && PLAIN_LABELS[r.plain.format]) $("clr_plain_fmt").value = (r.plain||{}).format || "hex";
     for(const key of Object.keys(GRAD_KEYS)){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);

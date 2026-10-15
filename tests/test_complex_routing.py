@@ -215,7 +215,7 @@ async def dispatch_cases() -> None:
         wf.called.append("simple")
         return "不该走到这里", "done"
 
-    async def fake_complex_async(request, player, event, umo):
+    async def fake_complex_async(request, player, event, umo, player_source="explicit"):
         wf.called.append("complex")
 
     wf._decide_player = fake_decide
@@ -247,7 +247,7 @@ async def dispatch_cases() -> None:
         wf2.called.append("simple")
         return "已把时间设为白天", "done"
 
-    async def fake_complex_async2(request, player, event, umo):
+    async def fake_complex_async2(request, player, event, umo, player_source="explicit"):
         wf2.called.append("complex")
 
     wf2._run_simple = fake_simple2

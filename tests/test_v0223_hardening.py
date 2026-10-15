@@ -392,7 +392,7 @@ def permission_cases() -> None:
         "execute as @a run give @s diamond 1",
         "execute run " * 8 + "give Steve diamond 1",     # 恰好 8 层：仍在上限内
         "execute if block ~ ~-1 ~ stone run say hi",
-        "execute positioned as @a ~ ~ ~ run say hi",
+        "execute positioned as @a run say hi",
         "execute store result score @s obj run time query daytime",
         "execute as @a run tellraw @a {\"text\":\"hi there\"}",   # 参数里带空格也不能误判
     ]
