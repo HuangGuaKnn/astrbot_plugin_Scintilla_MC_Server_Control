@@ -82,6 +82,8 @@ from .core.text_outbound import (
     RCON_SAFE_BYTES,
     SUSPECT_SINGLE_PACKET_BYTES,
     clip_text_to_bytes,
+    command_budget_error,
+    fit_command_to_budget,
     nearest_vanilla_color,
     needs_hex_color_downgrade,
     needs_legacy_wash,
@@ -597,7 +599,7 @@ class McControlPlugin(Star):
                 "服务端目录未通过结构校验：%s —— %s",
                 server_dir, "；".join(self._dir_check.get("errors") or ["结构不符"]),
             )
-        if self._cfg("dictionary_enabled", True) and not remote_mode and valid_dir:
+        if self._cfg_bool("dictionary_enabled", True) and not remote_mode and valid_dir:
             cache = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control") / "items.json"
             self._dictionary = ItemDictionary(server_dir, str(cache))
             try:      # B5：把版本喂给词典 —— jar 文件名抠不出版本时靠它选旧世代表
@@ -612,7 +614,7 @@ class McControlPlugin(Star):
                 self.logger.warning("物品词典构建失败: %s", e)
         # 初始化学习型模组知识库（预设槽位制，稳定指纹=mod ID 集合）
         # v0.18.0：指纹变化**不再自动切换/继承**知识库，只记录提醒，由用户在 WebUI 手动处理
-        if self._cfg("knowledge_enabled", True) and not remote_mode and valid_dir:
+        if self._cfg_bool("knowledge_enabled", True) and not remote_mode and valid_dir:
             try:
                 kdir = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control")
                 cache = kdir / "mod_ids_cache.json"
@@ -688,7 +690,7 @@ class McControlPlugin(Star):
             self.logger.info("WebUI 页面 API 已注册")
         except Exception as e:
             self.logger.warning("WebUI 页面 API 注册失败: %s", e)
-        if self._cfg("enable_event_listener", False):
+        if self._cfg_bool("enable_event_listener", False):
             if remote_mode:
                 self.logger.warning(
                     "服务器事件转发已开启，但当前是「异地 RCON 模式」（只映射了 RCON 端口）："
@@ -791,6 +793,29 @@ class McControlPlugin(Star):
         if key in cfg:
             return cfg[key]
         return default
+
+    def _cfg_bool(self, key: str, default: bool = False) -> bool:
+        """读取**布尔**配置项（v0.24.6）：严格解析，方向保守。
+
+        旧写法 ``bool(self._cfg(...))`` 有 fail-open 陷阱 —— 手工编辑配置文件、
+        旧版 WebUI 缓存或脚本写进来的字符串 ``"false"`` / ``"0"`` / ``"no"``
+        在 Python 里**都是真值**，会把开关**打开**。而受影响最重的恰恰是
+        ``remote_rcon_mode``（一开就禁掉全部本地文件能力）与
+        ``legacy_text_wash``（一开就去改要发出去的文本）这类「一开就改行为」的开关。
+
+        口径与 ``web_api.parse_bool`` 对齐：只认真正的布尔 / 0·1 / true·false 词表；
+        读不出结论时**回落 default**（这里不抛异常：本函数在工具与设置页热路径上，
+        抛出去会把整次调用变成 500，比按保守默认取值更糟），并留一条 WARNING。
+        """
+        raw = self._cfg(key, default)
+        try:
+            return parse_bool(raw)
+        except ValueError:
+            self.logger.warning(
+                "配置项 %s 的值无法解析为布尔（%r），已按默认值 %s 处理",
+                key, raw, default,
+            )
+            return bool(default)
 
     def _cfg_flat(self, prefix: str | None = None) -> dict:
         """把分组配置摊平成旧版扁平字典（WebUI / 调试用）。
@@ -921,6 +946,9 @@ class McControlPlugin(Star):
         # 配置可能来自旧版/手工编辑的 JSON；不能用 ``bool(raw)``，否则
         # ``"false"`` 会变成 True，导致用户明确关闭的工具重新暴露给 LLM。
         # 无法解析时按关闭处理，保证工具开关 fail-closed。
+        # v0.24.6：仍走 parse_bool（而不是 _cfg_bool）—— 工具开关是 fail-closed 语义：
+        # 配置值无法判定时**必须关**，而 _cfg_bool 读不出结论会回落 default（True），
+        # 方向正好相反。两者不可互换。
         try:
             return parse_bool(self._cfg(f"enable_{name}", True))
         except ValueError:
@@ -1165,11 +1193,11 @@ class McControlPlugin(Star):
 
     def _kb_semantic(self) -> bool:
         """读取「语义增强检索」开关（v0.21.41，默认关闭）。"""
-        return bool(self._cfg("knowledge_semantic_search", False))
+        return self._cfg_bool("knowledge_semantic_search", False)
 
     def _kb_rerank(self) -> bool:
         """读取「重排序精排」开关（v0.21.42，默认关闭）。"""
-        return bool(self._cfg("knowledge_rerank", False))
+        return self._cfg_bool("knowledge_rerank", False)
 
     # ---- 模型挑选（v0.21.43：可手动指定嵌入 / 重排序模型）----
     # 在此之前固定取「已加载的第一个」，多模型用户没得选。现在两条通道各自支持
@@ -1561,7 +1589,7 @@ class McControlPlugin(Star):
                 except Exception:                                     # noqa: BLE001
                     pass
                 self._watcher = None
-            if not self._cfg("enable_event_listener", False):
+            if not self._cfg_bool("enable_event_listener", False):
                 return "服务器事件转发已关闭"
             if self.is_remote_mode():
                 return (
@@ -1625,7 +1653,7 @@ class McControlPlugin(Star):
             )
 
         # ---------- 1) 整合包指纹（mod ID 集合哈希，带 jar 解析缓存） ----------
-        if not self._cfg("knowledge_enabled", True):
+        if not self._cfg_bool("knowledge_enabled", True):
             self._kbman = None
             self._knowledge = None
             parts.append("知识库已在配置层停用")
@@ -1706,7 +1734,7 @@ class McControlPlugin(Star):
                     )
 
         # ---------- 2) 物品词典（整包特化，换服务端必须重建） ----------
-        if not self._cfg("dictionary_enabled", True):
+        if not self._cfg_bool("dictionary_enabled", True):
             self._dictionary = None
             parts.append("物品词典已在配置层停用")
         elif remote_mode:
@@ -1754,7 +1782,7 @@ class McControlPlugin(Star):
 
     def is_remote_mode(self) -> bool:
         """是否处于「异地 RCON 模式」：AstrBot 与服务端不同机、只映射了 RCON 端口。"""
-        return bool(self._cfg("remote_rcon_mode", False))
+        return self._cfg_bool("remote_rcon_mode", False)
 
     def server_dir_check(self, *, max_age: float = 30.0) -> dict:
         """当前 server_dir 的结构校验结果（默认带 30 秒缓存，避免每次工具调用都扫盘）。"""
@@ -1864,6 +1892,17 @@ class McControlPlugin(Star):
 
     async def _get_rcon(self) -> AsyncRcon:
         async with self._rcon_lock:
+            # v0.24.6（GPT 第二轮复核 P1）：**终止态门禁**。
+            # 插件 terminate 之后，迟到的旧工具调用仍会走到这里 —— 旧实现会照常
+            # 建一条新连接并把命令发出去：插件已经卸载了，副作用却真的发生了，
+            # 且没有任何地方再为它负责（用户看到的是「明明停用了怎么还发」）。
+            # 与日志监听器同一口径（见 _is_terminated）：终止是**不可逆**的事实，
+            # 迟到的调用一律拒绝，绝不「复活」一条连接。
+            if _is_terminated(self):
+                raise RconError(
+                    "插件已终止（已卸载 / 正在重载）：拒绝重建 RCON 连接，本次命令未发送。",
+                    phase=RconError.PHASE_CONNECT,
+                )
             if self._rcon is None:
                 self._rcon = self._build_rcon()
             return self._rcon
@@ -1910,7 +1949,7 @@ class McControlPlugin(Star):
         return latch
 
     def _latch_enabled(self) -> bool:
-        return bool(self._cfg("permission_latch", True))
+        return self._cfg_bool("permission_latch", True)
 
     def _latch_key(self, event: AstrMessageEvent) -> str:
         """闩锁键：会话 + 请求者（同一个人在同一会话里被拦过才算数）。"""
@@ -1968,6 +2007,13 @@ class McControlPlugin(Star):
     #    原版命令的理论上限远大于此，这里挡的是「明显不是一条命令」的输入。
     #  · 广播 / 反馈 500 —— 游戏内聊天栏一行约 256 字符，全屏标题更短；
     #    再长的内容玩家根本看不到，只会白占一个 RCON 报文。
+    #
+    # v0.24.6（GPT 第二轮复核 P1）：8000 是**字符**数，不是**字节**数。中文一字 3 字节、
+    # 长 NBT 里全是 ASCII 但动辄上千字符 —— 8000 字符最坏 ≈ 24000 字节，而原版 RCON
+    # 单包读取缓冲只有 1460 字节（命令体 1446 字节，1.8.9~1.21.11 十版同构），超了
+    # 服务端**静默拔线**：命令不送达、无回执，插件侧只看到「结果未知」。
+    # 所以：字符上限保留（挡「明显不是一条命令」的输入、文案对 LLM 友好），
+    # 真正的硬边界是下面的 RCON_SAFE_BYTES（字节）—— 两者都必须过。
     MAX_COMMAND_CHARS = 8000
     MAX_MESSAGE_CHARS = 500
 
@@ -2037,6 +2083,20 @@ class McControlPlugin(Star):
             cd = self._say_cd = Cooldown()
         return cd
 
+    #: 命令类工具的字节闸门（v0.24.6）。值 = 哨兵 `None` 表示「已放行」。
+    _BYTE_GATE_OK = None
+
+    @staticmethod
+    def _byte_gate(
+        command: str, label: str = "命令", budget: int = RCON_SAFE_BYTES
+    ) -> str | None:
+        """命令体字节粗筛：超限返回给 LLM 的拒绝文案，否则 None（v0.24.6）。
+
+        与 :meth:`_too_long`（字符数）互补 —— 两者都要过。放在权限闸门与
+        ``_get_rcon()`` 之前：被拦的命令不占 RCON 往返，也不会建连。
+        """
+        return command_budget_error(command, label, budget)
+
     @staticmethod
     def _too_long(value: str, limit: int, label: str) -> str | None:
         """入参超长则返回给 LLM 的拒绝文案，否则返回 None（v0.23.5）。
@@ -2097,7 +2157,8 @@ class McControlPlugin(Star):
         mode = str(self._cfg("permission_hint_mode", "") or "").strip().lower()
         if mode in HINT_MODES:
             return mode
-        if self._cfg("permission_hint_injection", None) is False:
+        # v0.24.6：旧键改用严格解析（字符串 "false" 也算关），缺省 = 不干预
+        if not self._cfg_bool("permission_hint_injection", True):
             return "off"
         return "on_demand"
 
@@ -2346,7 +2407,7 @@ class McControlPlugin(Star):
 
     async def _send_feedback(self, rcon: AsyncRcon, text: str) -> None:
         """用 tellraw 向服务器内玩家发送署名（feedback_name）的反馈消息。"""
-        if not self._cfg("feedback_tellraw", True):
+        if not self._cfg_bool("feedback_tellraw", True):
             self.logger.warning("反馈被跳过：feedback_tellraw 配置为关闭")
             return
         name = str(self._cfg("feedback_name", "RCON") or "RCON")
@@ -2572,6 +2633,10 @@ class McControlPlugin(Star):
         too_long = self._too_long(feedback, self.MAX_MESSAGE_CHARS, "反馈文案")
         if too_long:
             return too_long
+        # v0.24.6（P1）：字符数过了还不够 —— 命令体还必须过**字节**闸门
+        over_bytes = self._byte_gate(command, "命令")
+        if over_bytes:
+            return over_bytes
         denied = await self._safe_command(event, command, tool="mc_execute_command")
         if denied:
             return denied
@@ -2672,6 +2737,13 @@ class McControlPlugin(Star):
         too_long = self._too_long(message, self.MAX_MESSAGE_CHARS, "广播内容")
         if too_long:
             return too_long
+        # v0.24.6（P1）：标题 / 动作栏**不切段**（多段会互相顶掉），只有截断兜底 ——
+        # 与其发一条被悄悄截断的标题、让用户以为「插件吞了半句话」，不如提前说清。
+        # 聊天栏不需要这一步：它走 _build_text_cmds 的字节预算 + 自动切段。
+        if str(mode or "chat").strip().lower() in ("title", "actionbar"):
+            over_bytes = self._byte_gate(message, "标题内容")
+            if over_bytes:
+                return over_bytes
         if not self._is_admin(event):
             latched = self._latch_hit(event, "mc_broadcast")
             if latched:
@@ -2748,6 +2820,12 @@ class McControlPlugin(Star):
         )
         if too_long:
             return too_long
+        # v0.24.6（P1）：同上，补字节闸门（长 NBT 物品参数同样会撑爆单包）
+        over_bytes = self._byte_gate(
+            f"give {player or 'player'} {item} {count}", "命令"
+        )
+        if over_bytes:
+            return over_bytes
         # v0.23.2（GPT 续单裁决 Q4）：已知服务端 < 1.13 时，带数据的物品命令不自动构造。
         # 「拦截即终局」口径不变（先判定、再折腾绑定）。
         # B5（2026-10-07 真机实证）：<1.13 不再一律拒绝 —— 改走**预扁平化生成器**
@@ -2798,6 +2876,9 @@ class McControlPlugin(Star):
         too_long = self._too_long(cmd, self.MAX_COMMAND_CHARS, "命令")
         if too_long:
             return too_long
+        over_bytes = self._byte_gate(cmd, "命令")
+        if over_bytes:
+            return over_bytes
         try:
             rcon = await self._get_rcon()
             r = await self._exec_checked(rcon, cmd)
@@ -2838,7 +2919,7 @@ class McControlPlugin(Star):
     @mcs.command("绑定", alias={"bind"})
     async def mcs_bind(self, event: AstrMessageEvent, player: str):
         """绑定当前账号到你的MC游戏名，例如 mcs 绑定 Steve"""
-        if not self._cfg("enable_bind_command", True):
+        if not self._cfg_bool("enable_bind_command", True):
             yield event.plain_result("绑定指令已在插件配置中停用。")
             return
         if not player or not str(player).strip():
@@ -2854,7 +2935,7 @@ class McControlPlugin(Star):
     @mcs.command("解绑", alias={"unbind"})
     async def mcs_unbind(self, event: AstrMessageEvent):
         """解除当前账号与MC游戏名的绑定，例如 mcs 解绑"""
-        if not self._cfg("enable_bind_command", True):
+        if not self._cfg_bool("enable_bind_command", True):
             yield event.plain_result("绑定指令已在插件配置中停用。")
             return
         if self._bindings is None:
@@ -2867,7 +2948,7 @@ class McControlPlugin(Star):
     @mcs.command("查询", alias={"show", "info"})
     async def mcs_show(self, event: AstrMessageEvent):
         """查询当前账号已绑定的MC游戏名，例如 mcs 查询"""
-        if not self._cfg("enable_bind_command", True):
+        if not self._cfg_bool("enable_bind_command", True):
             yield event.plain_result("绑定指令已在插件配置中停用。")
             return
         if self._bindings is None:
@@ -2896,7 +2977,7 @@ class McControlPlugin(Star):
         targets = [str(t) for t in (self._cfg("chat_bridge_targets", []) or [])]
         if umo in targets:
             turned_on = False
-            if not self._cfg("chat_bridge_enabled", False):
+            if not self._cfg_bool("chat_bridge_enabled", False):
                 self._apply_config({"chat_bridge_enabled": True})
                 turned_on = True
             yield event.plain_result(
@@ -2937,13 +3018,13 @@ class McControlPlugin(Star):
     @mcs.command("喊话", alias={"say"})
     async def mcs_say(self, event: AstrMessageEvent, content: GreedyStr):
         """将群内消息转发到服务器聊天栏（自动带上QQ发送者昵称，而非插件署名），例如 mcs 喊话 大家好呀"""
-        if not self._cfg("enable_say_command", True):
+        if not self._cfg_bool("enable_say_command", True):
             yield event.plain_result("喊话指令已在插件配置中停用。")
             return
         if not content or not str(content).strip():
             yield event.plain_result(f"用法：{self._wake_prefix()}mcs 喊话 <内容>，例如 {self._wake_prefix()}mcs 喊话 大家好呀")
             return
-        if not self._cfg("say_command_public", True) and not self._is_admin(event):
+        if not self._cfg_bool("say_command_public", True) and not self._is_admin(event):
             yield event.plain_result("喊话指令已设为仅管理员可用。")
             return
         # 喊话属于「插件自带功能」：不受白/黑名单策略影响（想限制就关掉上面的开关）。
@@ -2983,7 +3064,7 @@ class McControlPlugin(Star):
     @mcs.command("全屏喊话", alias={"title", "titleraw"})
     async def mcs_title_cmd(self, event: AstrMessageEvent, content: GreedyStr):
         """用全屏 title 向服务器所有人喊话（仅管理员可调用），例如 mcs 全屏喊话 全体集合！"""
-        if not self._cfg("enable_title_command", True):
+        if not self._cfg_bool("enable_title_command", True):
             yield event.plain_result("全屏喊话指令已在插件配置中停用。")
             return
         if not self._is_admin(event):
@@ -3019,7 +3100,7 @@ class McControlPlugin(Star):
     @mcs.command("状态", alias={"status"})
     async def mcs_status(self, event: AstrMessageEvent):
         """查询服务器 mspt/tps/在线人数/运行时长/内存/CPU 状态，例如 mcs 状态"""
-        if not self._cfg("enable_status_command", True):
+        if not self._cfg_bool("enable_status_command", True):
             yield event.plain_result("状态指令已在插件配置中停用。")
             return
         lines = ["📊 服务器状态"]
@@ -3073,7 +3154,7 @@ class McControlPlugin(Star):
     @mcs.command("踢人", alias={"kick"})
     async def mcs_kick_cmd(self, event: AstrMessageEvent, player: str, reason: str = ""):
         """将指定玩家踢出服务器（仅管理员可调用），例如 mcs 踢人 Steve 违规刷物品"""
-        if not self._cfg("enable_kick_command", True):
+        if not self._cfg_bool("enable_kick_command", True):
             yield event.plain_result("踢人指令已在插件配置中停用。")
             return
         if not self._is_admin(event):
@@ -3109,7 +3190,7 @@ class McControlPlugin(Star):
     @mcs.command("封禁", alias={"ban"})
     async def mcs_ban_cmd(self, event: AstrMessageEvent, player: str, reason: str = ""):
         """封禁指定玩家（仅管理员可调用），理由可省略（使用配置的默认理由），例如 mcs 封禁 Steve 恶意破坏"""
-        if not self._cfg("enable_ban_command", True):
+        if not self._cfg_bool("enable_ban_command", True):
             yield event.plain_result("封禁指令已在插件配置中停用。")
             return
         if not self._is_admin(event):
@@ -3148,7 +3229,7 @@ class McControlPlugin(Star):
     @mcs.command("解封", alias={"unban", "pardon"})
     async def mcs_unban_cmd(self, event: AstrMessageEvent, player: str):
         """解封指定玩家（仅管理员可调用），例如 mcs 解封 Steve"""
-        if not self._cfg("enable_unban_command", True):
+        if not self._cfg_bool("enable_unban_command", True):
             yield event.plain_result("解封指令已在插件配置中停用。")
             return
         if not self._is_admin(event):
@@ -3184,7 +3265,7 @@ class McControlPlugin(Star):
     @mcs.command("封禁列表", alias={"banlist"})
     async def mcs_banlist_cmd(self, event: AstrMessageEvent):
         """查看当前被封禁的玩家名单（仅管理员可调用），例如 mcs 封禁列表"""
-        if not self._cfg("enable_banlist_command", True):
+        if not self._cfg_bool("enable_banlist_command", True):
             yield event.plain_result("封禁列表指令已在插件配置中停用。")
             return
         if not self._is_admin(event):
@@ -3202,25 +3283,25 @@ class McControlPlugin(Star):
     @mcs.command("帮助", alias={"help"})
     async def mcs_help_cmd(self, event: AstrMessageEvent):
         """查看 mcs 指令组的全部用法（AstrBot 聊天平台指令），例如 mcs 帮助"""
-        if not self._cfg("enable_help_command", True):
+        if not self._cfg_bool("enable_help_command", True):
             yield event.plain_result("帮助指令已在插件配置中停用。")
             return
         p = self._wake_prefix()
         lines = [f"🛠 {p}mcs 指令帮助（Minecraft Server 智控台 · 聊天平台指令）", ""]
         # ---- 全员可用指令 ----
         public = []
-        if self._cfg("enable_bind_command", True):
+        if self._cfg_bool("enable_bind_command", True):
             public += [
                 f"{p}mcs 绑定 <MC玩家ID>：把当前账号绑定到你的MC游戏名",
                 f"{p}mcs 解绑：解除账号绑定",
                 f"{p}mcs 查询：查看当前绑定状态",
             ]
-        if self._cfg("enable_say_command", True):
+        if self._cfg_bool("enable_say_command", True):
             say_flag = ""
-            if not self._cfg("say_command_public", True):
+            if not self._cfg_bool("say_command_public", True):
                 say_flag = "（仅管理员）"
             public.append(f"{p}mcs 喊话 <内容>：把群内消息转发到服务器聊天栏{say_flag}")
-        if self._cfg("enable_status_command", True):
+        if self._cfg_bool("enable_status_command", True):
             public.append(f"{p}mcs 状态：查询服务器 TPS/在线/内存/CPU")
         public.append(f"{p}mcs 帮助：查看本帮助")
         # ---- 仅管理员指令 ----
@@ -3228,15 +3309,15 @@ class McControlPlugin(Star):
             f"{p}mcs 桥接：把当前会话设为聊天桥接目标（游戏内「!群 xxx」转发到这里）",
             f"{p}mcs 取消桥接：解除当前会话的桥接绑定",
         ]
-        if self._cfg("enable_banlist_command", True):
+        if self._cfg_bool("enable_banlist_command", True):
             admin.append(f"{p}mcs 封禁列表：查看当前被封禁的玩家（仅管理员）")
-        if self._cfg("enable_kick_command", True):
+        if self._cfg_bool("enable_kick_command", True):
             admin.append(f"{p}mcs 踢人 <MC玩家ID> [理由]：把玩家踢出服务器（仅管理员）")
-        if self._cfg("enable_ban_command", True):
+        if self._cfg_bool("enable_ban_command", True):
             admin.append(f"{p}mcs 封禁 <MC玩家ID> [理由]：封禁玩家（仅管理员）")
-        if self._cfg("enable_unban_command", True):
+        if self._cfg_bool("enable_unban_command", True):
             admin.append(f"{p}mcs 解封 <MC玩家ID>：解除玩家封禁（仅管理员）")
-        if self._cfg("enable_title_command", True):
+        if self._cfg_bool("enable_title_command", True):
             admin.append(f"{p}mcs 全屏喊话 <内容>：向全服发送全屏 title 喊话（仅管理员）")
         if public:
             lines.append("【全员可用】")
@@ -3589,7 +3670,7 @@ class McControlPlugin(Star):
         base = self._parse_color(self._cfg(base_key, default), default)
         base = self._single_color_for_server(base)  # v0.23.7（B2③/B2④）：单色格式 + 版本门控
         use_gradient = (
-            bool(self._cfg("gradient_enabled", False))
+            self._cfg_bool("gradient_enabled", False)
             if gradient is None else bool(gradient)
         )
         fmt = str(self._cfg("gradient_format", "json") or "json").strip().lower()
@@ -3694,7 +3775,7 @@ class McControlPlugin(Star):
         """B6：旧版字符洗白（已知 <1.9 或版本未知时生效；``legacy_text_wash`` 可关）。"""
         if not text:
             return text
-        if not bool(self._cfg("legacy_text_wash", True)):
+        if not self._cfg_bool("legacy_text_wash", True):
             return text
         if not needs_legacy_wash(self._server_mc_cached()):
             return text
@@ -4198,6 +4279,10 @@ class McControlPlugin(Star):
     async def mc_connection_status(self, event: AstrMessageEvent):
         """测试与 Minecraft 服务器的 RCON 连接是否正常。
         """
+        # v0.24.6（P2）：本工具的配置开关此前**空转** —— 关掉它照样能连能查，
+        # 与其它工具的口径不一致（其余工具进门第一句都是 _tool_enabled）。
+        if not self._tool_enabled("mc_connection_status"):
+            return "该功能已在插件配置中停用。"
         try:
             rcon = await self._get_rcon()
             out = await rcon.command("list")
@@ -4502,7 +4587,7 @@ class McControlPlugin(Star):
 
     def _bridge_case_sensitive(self) -> bool:
         """是否区分大小写（默认 False：不区分）。"""
-        return bool(self._cfg("chat_bridge_case_sensitive", False))
+        return self._cfg_bool("chat_bridge_case_sensitive", False)
 
     def _prefix_len_in_text(self, text: str, norm_prefix: str, ignore_case: bool) -> int:
         """返回原文中「实际占用」的字符数，使切片不会因 NFKC/casefold 变形而切歪。
@@ -4563,7 +4648,7 @@ class McControlPlugin(Star):
         """
         if etype not in self._BRIDGE_SOURCES:
             return False
-        if not self._cfg("chat_bridge_enabled", False):
+        if not self._cfg_bool("chat_bridge_enabled", False):
             return False
         hit, message = self._match_bridge_prefix(detail)
         if not hit:
@@ -4625,7 +4710,7 @@ class McControlPlugin(Star):
         except Exception as e:
             self.logger.warning("聊天桥接处理异常: %s", e)
         targets = self._cfg("notify_targets", [])
-        if not targets or not self._cfg("enable_event_listener", False):
+        if not targets or not self._cfg_bool("enable_event_listener", False):
             return
         text = ""
         group = self.EVENT_TO_NOTIFY_GROUP.get(etype, "")

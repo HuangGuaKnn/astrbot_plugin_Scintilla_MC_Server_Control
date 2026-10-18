@@ -37,6 +37,10 @@ def _metadata_version(fallback: str = "0.21.40") -> str:
             return m.group(1).strip().lstrip("v")
     except Exception:
         pass
+    # v0.24.6（P3）：兜底分支此前**没有 return** —— 声明了 fallback 形参却用不上，
+    # metadata.yaml 缺失 / 读不动 / 正则没命中时函数返回 None，顶栏版本号变成
+    # 「vNone」。现在如实返回 fallback（并与「读到了 v 前缀」同口径剥掉 v）。
+    return str(fallback or "").strip().lstrip("v")
 # ================= `version` 命令回包的可用性判定（v0.23.8） =================
 
 #: `version` 命令回包里**属于占位符 / 报错、不是版本原文**的形态（v0.23.8）。

@@ -135,6 +135,13 @@ class HintSelf:
         # 真身是 Star 子类，self.logger 由 AstrBot 提供；替身补一个即可
         self.logger = logging.getLogger("HintSelf")
 
+    def _cfg_bool(self, key, default=False):
+        """替身版严格布尔解析（v0.24.6：生产侧把布尔配置收口到 _cfg_bool）。"""
+        value = self._cfg(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")
+        return bool(value)
+
     def _cfg(self, key, default=None):
         box = self.config.get(self._cfg_index.get(key, ""), {})
         if isinstance(box, dict) and key in box:
