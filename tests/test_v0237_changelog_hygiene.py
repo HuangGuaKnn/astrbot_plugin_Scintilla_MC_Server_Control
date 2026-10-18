@@ -32,7 +32,7 @@ $sec = $cl.Substring(...); [regex]::Matches($sec, <中文人格名>).Count   # �
 连它自己的日志都会把名字印到 CI 输出里。所以下面的 `PERSONA` / `PRIVATE_CALL`
 按**码位**拼出来，正文里看不到原字，判据却照旧生效。
 
-本测试钉死六件事（前身 50 项 → 现在 60 项）
+本测试钉死的判据（前身 50 项 → 现在 70 项）
 =========================================
 1. **现役小节**（CHANGELOG 第一个 `## [vX.Y.Z]`）里不得出现人格名（中文 / 拉丁写法）与私有称呼；
 2. **发布包内的全部对外文本**（CHANGELOG / README / docs/*.md）不得出现人格名（不分大小写）；
@@ -41,6 +41,13 @@ $sec = $cl.Substring(...); [regex]::Matches($sec, <中文人格名>).Count   # �
 5. **代码与 CI 里不许有角色名的变量前缀**；会话 id（`<昵称>:FriendMessage:…`）里也藏着
    运行时机器人昵称，正文与代码都不该粘它 —— **会话 id 形式同样算违规**（夹具改用中性占位名）；
 6. 守卫**有牙**：拿「历史病灶」样本喂进去必须报错 —— 否则这就是一条永远绿的摆设。
+
+7. **前言区**（AstrBot 面板把 `CHANGELOG.md` **全文**原样渲染给访客）不许出现引用块，
+   也不许出现「对人下指令」的流程措辞 —— 2026-10-18 主人截图发现前言区那段
+   「写作约定」被渲染到了插件市场的更新日志页，且它**不**在 Release 正文里，
+   所以自 2026-09-15 起一直安静地泄漏着。**这条约定的正身现在就在本文件**：
+   `tests/` 被 `.gitattributes` 的 `export-ignore` 挡在发布包外 —— 进版本库、不进用户包，
+   规则与执行同处，不会再被写回对外文本。
 
 外加一条元检查：CHANGELOG 必须是合法 UTF-8，且**按 GBK 误读时判据会整体失效** ——
 把那次假阴性本身写成回归用例，省得下一个人再用错编码自证清白。
@@ -78,6 +85,14 @@ GUARDED = (("人格名", PERSONA), ("人格名（拉丁写法）", PERSONA_LATIN
 PERSONA_RE = re.compile(PERSONA_LATIN, re.IGNORECASE)
 #: 一句话摘要上限（字）。先用 255 字否掉过一版，66 字那版才过。
 SUMMARY_LIMIT = 120
+#: 前言区不许出现的「对人下指令」措辞（按码位存放，与 PERSONA 同一套规矩）。
+#: 只收**强指向**写法：宁可窄一点也不误伤「约定俗成 / 遵循格式约定」这类正常句子。
+PREAMBLE_GUIDE = (
+    _cjk(0x5199, 0x4F5C, 0x7EA6, 0x5B9A),  # 写作约定
+    _cjk(0x8BF7, 0x7528),                  # 请用
+    _cjk(0x8BF7, 0x4EE5),                  # 请以
+    _cjk(0x81EA, 0x5BA1),                  # 自审
+)
 #: 本机痕迹（发布物在别人机器上读着不该出现这些）。
 LOCAL_PATH_PATTERNS = (r"C:\\+Users\\+", r"C:\\+AstrBotOps", r"file:///")
 #: 环境变量前缀体检范围：仓库根与 .github 下的代码 / 配置。
@@ -152,8 +167,38 @@ def code_files() -> list[Path]:
     return [Path(p) for p in out if "__pycache__" not in p.parts]
 
 
-def audit(text: str) -> list[str]:
-    """CHANGELOG 一条判据走完：返回违规清单（空清单 = 干净）。真实文件与病灶样本共用。"""
+def preamble(text: str) -> str:
+    """取**第一个版本小节之前**的前言区。
+
+    面板读的是 CHANGELOG 全文（`plugin_service.py` 里 `read_text()` 后原样回给前端），
+    所以这段等于「市场更新日志页的页头」—— 只有中性说明能站在这儿。
+    """
+    m = re.search(r"^## \[", text, re.M)
+    return text[: m.start()] if m else text
+
+
+def preamble_problems(text: str) -> list[str]:
+    """前言区体检：返回违规清单（空清单 = 干净）。真实文件与病灶样本共用。"""
+    head = preamble(text)
+    problems: list[str] = []
+    quotes = [ln for ln in head.splitlines() if ln.lstrip().startswith(">")]
+    if quotes:
+        problems.append(
+            f"前言区出现引用块 ×{len(quotes)}（引用块是版本小节的语法，前言区只放中性说明）"
+        )
+    for w in PREAMBLE_GUIDE:
+        n = head.count(w)
+        if n:
+            problems.append(f"前言区出现内部指引措辞 ×{n}（这是写给维护者的流程约定）")
+    return problems
+
+
+def audit(text: str, preamble_guard: bool = True) -> list[str]:
+    """CHANGELOG 一条判据走完：返回违规清单（空清单 = 干净）。真实文件与病灶样本共用。
+
+    `preamble_guard=False` 供变异用例使用：拆掉前言判据后，病灶样本必须变绿 ——
+    否则无法证明那些红真的来自它，而不是别处顺带命中。
+    """
     problems: list[str] = []
     sec = latest_section(text)
     if not sec:
@@ -172,6 +217,8 @@ def audit(text: str) -> list[str]:
     for pat in LOCAL_PATH_PATTERNS:
         if re.search(pat, text):
             problems.append(f"含本机路径痕迹：{pat}")
+    if preamble_guard:
+        problems += preamble_problems(text)
     return problems
 
 
@@ -275,6 +322,24 @@ GOOD_SAMPLE = (
 )
 
 
+#: 2026-10-18 的真实病灶：前言区那段「写作约定」（面板原样渲染给访客看过）。
+BAD_PREAMBLE_SAMPLE = (
+    "# 更新日志\n\n"
+    "本项目的所有重要变更都记录在这里。\n\n"
+    f"> **{PREAMBLE_GUIDE[0]}**：每个版本小节的第一行{PREAMBLE_GUIDE[1]}一行引用块写「本版一句话」摘要。\n\n"
+    "## [v9.9.9] - 2026-01-01\n"
+    "> 一句话：正文照旧。\n"
+)
+#: A 修好之后的前言区：标题 + 说明 + 链接，没有引用块、没有指令。
+GOOD_PREAMBLE_SAMPLE = (
+    "# 更新日志\n\n"
+    "本项目的所有重要变更都记录在这里。格式参考\n"
+    "[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。\n\n"
+    "## [v9.9.9] - 2026-01-01\n"
+    "> 一句话：前言区只放中性说明。\n"
+)
+
+
 def _sample_with_summary(n: int) -> str:
     return (
         "# 更新日志\n\n"
@@ -344,11 +409,38 @@ def part_eight() -> None:
           (PRIVATE_CALL in text) == (PRIVATE_CALL in gbk) or (PRIVATE_CALL not in gbk))
 
 
+# ============================ 九、前言区 ============================
+
+def part_nine() -> None:
+    print("---- 九、前言区：面板会原样渲染，不许出现内部指引 ----")
+    text = CHANGELOG.read_text(encoding="utf-8")
+    head = preamble(text)
+    print(f"       前言区 {len(head.splitlines())} 行 / {len(head.encode('utf-8'))} 字节")
+    check("真实 CHANGELOG 前言区无引用块",
+          not [ln for ln in head.splitlines() if ln.lstrip().startswith(">")],
+          "前言区还有 `>` 行（面板会把它当正文渲染）")
+    real = preamble_problems(text)
+    check("真实 CHANGELOG 前言区无内部指引措辞", real == [], "；".join(real))
+    bad = preamble_problems(BAD_PREAMBLE_SAMPLE)
+    print("       病灶前言样本命中：" + ("；".join(bad) if bad else "（无 —— 守卫是摆设！）"))
+    check("病灶前言样本被抓出引用块", any("引用块" in q for q in bad))
+    check("病灶前言样本被抓出指引措辞", any("指引措辞" in q for q in bad))
+    check("病灶前言样本走整篇 audit 同样报红", audit(BAD_PREAMBLE_SAMPLE) != [])
+    check("变异：拆掉前言判据后病灶样本变绿（证明确实来自它）",
+          audit(BAD_PREAMBLE_SAMPLE, preamble_guard=False) == [],
+          str(audit(BAD_PREAMBLE_SAMPLE, preamble_guard=False)))
+    check("好前言样本零违规（不误伤 Keep a Changelog 链接行）",
+          audit(GOOD_PREAMBLE_SAMPLE) == [], str(audit(GOOD_PREAMBLE_SAMPLE)))
+    check("版本小节里的 `> 一句话：` 不算前言违规",
+          not any("前言区" in q for q in audit(GOOD_SAMPLE)))
+
+
 def main() -> int:
     part_one()
     part_two()
     part_seven()
     part_eight()
+    part_nine()
     print("\n==========================================")
     print(f"通过 {_pass} 项，失败 {len(_fail)} 项")
     if _fail:
