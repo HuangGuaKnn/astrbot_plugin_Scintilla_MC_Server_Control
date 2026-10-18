@@ -120,6 +120,16 @@ class FakeSelf:
         self._deny_latch = tg.DenyLatch(ttl=300)
         self._mc_tool_recent = {}  # v0.23.3：按需提示注入的会话记忆表
         self._enabled = {t: True for t in COMMAND_TOOLS}
+        # v0.24.6：mc_give_item 的长度闸门要读这个类属性（替身照着备一份，
+        # 值取自生产类，改了上限这里自动跟着走）。
+        self.MAX_COMMAND_CHARS = main.McControlPlugin.MAX_COMMAND_CHARS
+
+    def _cfg_bool(self, key, default=False):
+        """替身版严格布尔解析（v0.24.6：生产侧把布尔配置收口到 _cfg_bool）。"""
+        value = self._cfg(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")
+        return bool(value)
 
     def _cfg(self, key, default=None):
         box = self.config.get(self._cfg_index.get(key, ""), {})
@@ -163,6 +173,15 @@ for _name in ("_latch", "_latch_enabled", "_latch_key", "_latch_hit", "_deny",
     _fn = getattr(main.McControlPlugin, _name, None)
     if _fn is not None:
         setattr(FakeSelf, _name, _fn)
+
+# v0.24.6：``_too_long`` / ``_byte_gate`` 是 @staticmethod —— 必须用 ``staticmethod()``
+# 原样包回来绑定。写成 ``setattr(cls, name, getattr(cls, name))`` 会把它变成普通方法，
+# self 顶掉第一个形参（value / command），调用直接 AttributeError / TypeError。
+# 这两个闸门就在 mc_give_item / mc_execute_command 的调用链上（CI 回归红点即此）。
+for _name in ("_too_long", "_byte_gate"):
+    _sm = main.McControlPlugin.__dict__.get(_name)
+    if isinstance(_sm, staticmethod):
+        setattr(FakeSelf, _name, staticmethod(_sm.__func__))
 
 
 P = main.McControlPlugin
