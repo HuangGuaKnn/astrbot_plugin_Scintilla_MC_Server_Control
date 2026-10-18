@@ -7,6 +7,54 @@
 > （`> 一句话：…`）。发布 Release 时会自动把小节正文当作说明，
 > 这句摘要就会出现在最外层，访客不展开细节也能看懂这一版干了什么。
 
+## [v0.24.7] - 2026-10-18
+
+> 一句话：**GPT 第二轮复核收口（P1-5 + P2）** —— 工作流发送三道资源闸门、广播逐条如实判定、回调加超时与在飞上限、阻塞 IO 不再占默认线程池；并一并发布此前未发版的 v0.24.6 安全批次。
+
+### 修复（GPT 第二轮复核 · P1-5 / P2 批次）
+
+- **工作流发送资源闸门 (P1-5)**（`core/workflow.py`）：两条发送路径此前**没有任何上限** —— 一次任务能朝服务端灌进任意条命令、任意字节。新增 `SendBudget`：**单批条数 / 单任务累计条数 / 单任务累计字节** 三类上限，实现轮与纠错轮共用同一本账；被拒的那一条**不占额度**，一旦用尽即**整体停发**（fail-closed，绝不「剩下的接着发」）；配置写成 `"abc"` / `null` / 负数时回默认值或夹回合法下限，**绝不变成 0**（0 等于把闸门整个拆掉）。
+- **广播不再谎报成功 (P2-1)**（`core/web_api.py`）：此前「已发送」只代表 RCON 没抛异常 —— 服务端回 `Unknown command` / `No player was found` 也照样弹绿字。现在逐条按 `classify_command_output()` 判定，只有 `success` / `inferred_success` / `dispatched_unconfirmed` 才算送达，其余**第一条就停下**，并如实回错误体与中文提示（「服务端里可能没有玩家在线 —— 这句话没有被任何人收到」）。
+- **知识写入：状态回落如实回报 + 写接口字段结构化校验 (P2-5)**（`core/knowledge_base.py` / `core/web_api.py`）：界面选了个不认识的状态值时，条目会静默变成 untested、界面显示与库内不一致 —— 现在判定收敛到 `normalize_status()`，回包带 `status_note` 把「已回落」原样说清；`topic` / `content` / `old_topic` 收到数字 / 对象 / 数组时，旧写法会 `AttributeError` 冲出成 500，现改为**结构化拒绝**（`ok:False` + 点名字段 + 收到什么类型），也不再 `str()` 静默造出 `{'a': 1}` 这种主题。
+- **预设转移 / 删除：先验 id、再碰文件系统 (P2-6)**（`core/knowledge_base.py` / `core/web_api.py`）：`../../x` 这类 id 此前会一路穿到 `preset_path()` 抛 `ValueError`、冲出成 HTTP 500，用户只看到「请求失败」。现在非法 id 直接返回 `{"ok": False, "error": …}`，**不抛异常、不落盘**；`preset_path()` 自身仍保持「非法即抛」的防穿越语义（两层约定不同，已在用例里分开断言）。
+- **阻塞调用全面改走 daemon 执行器 (P2-9)**（`core/log_watcher.py` / `main.py`）：此前阻塞调用走 `asyncio.to_thread`，用的是事件循环**默认线程池**（全进程共享、线程**非 daemon**）—— 一次卡在系统调用里的 IO 既抢别人线程，又在退出时被解释器 join（表现就是「停用之后进程迟迟不退」）。现在统一走自有的 daemon 执行器（主路径与兜底路径语义一致）；`main.py` 的进程表遍历同理改成「daemon 线程 + 等待上限」。物品词典构建、整合包指纹扫描等最慢的调用也一并改走。
+- **事件回调：超时 + 在飞上限 + 四笔账 (P2)**（`core/log_watcher.py`）：`on_event` 是裸 `await`，回调里做平台发送 / 桥接推送时，平台侧一卡（网络不通 / 会话不存在 / 限流）就永不返回 —— 整个轮询停摆、`stop()` 只能干等，健康度上还什么都看不见。现在回调跑成**独立任务**并带 10 秒超时（刻意用 `asyncio.wait` 而非 `wait_for`：子任务吞掉取消时 `wait_for` 会一直等，超时形同虚设），在飞数达上限则丢弃并记账；`health()` 新增 delivered / timeouts / dropped / stale 四笔账；`stop()` 真取消在飞回调（否则一次「停用 / 重载」后还会有一条回调继续往会话里推消息）。
+- **指纹缓存键改纳秒 (P2)**（`core/mod_fingerprint.py`）：「删掉旧 jar、立刻拷入同名同大小新 jar」若落在同一秒内，秒级 `int(st.st_mtime)` 三元组完全相同 → 命中**旧 jar 的 ID**。模组 ID 是预设绑定与词典重建的判据，认错等于整库串台。现在缓存键用 `st_mtime_ns`，老的秒级键不再被认。
+
+### 配置与界面（P1-5 收尾）
+
+- **发送预算三键接入设置页**（`_conf_schema.json` / `core/web_api.py` / `pages/mc_control/index.html`）：三条闸门此前只存在于代码里，配置文件手改才生效 —— 现在同时出现在插件配置页（`workflow` 分组）与插件 WebUI「自动化 · 多Agent 工作流」卡片，页内标注取值范围与语义（留空 = 用内置默认值）。上下限在三处**同源**：与 `workflow.py` 的 `_cfg_int(...)` 参数逐条对齐，避免「界面能填、后端不认」或「后端收了、界面看不见」这两种半通状态。
+
+### 随本版一并发布：v0.24.6 批次（此前未单独发版）
+
+- **向量缓存拆掉 pickle 回退 (P1-1)**（`core/knowledge_base.py`）：`SemanticIndex.load()` 原先用**无差别**的 `except ValueError` 兜住一种旧格式，再以 `allow_pickle=True` 重读 —— 任何被做成「首读抛 ValueError」的 `.vec.npz` 都会把控制流送进 pickle 反序列化，而 pickle 能执行代码，等于把纯数据缓存变成**任意代码执行入口**。现固定 `allow_pickle=False`：旧格式读取失败即按结构校验未过处理，清空 + 留 `cache_error`，由 `build_vectors()` 全量重算 —— 代价是一次重算，收益是拆掉一个 RCE 入口。
+- **命令体补字节闸门 (P1-2)**（`core/text_outbound.py` / `main.py` / `core/workflow.py`）：此前只按**字符**数筛（8000），而中文一字 3 字节、长 NBT 动辄上千字符，最坏 ≈ 24000 字节，远超原版 RCON 单包 1446 字节命令体预算 —— 超限是服务端**静默拔线**（命令不送达、无回执）。新增 `over_budget()` / `command_budget_error()` / `fit_command_to_budget()`：交互式工具直接给可照改的中文提示（**不替 LLM 改命令**）；工作流两条发送路径按字符边界截断后照发并留日志（发得出去、必然报错，比静默断连好排查）；广播的 title / actionbar **不切段**，所以提前拦、说清楚。
+- **`_get_rcon()` 终止态门禁 (P1-3)**（`main.py`）：插件 terminate 后迟到的旧工具调用仍会走到 `_get_rcon()`，旧实现照常建新连接并**真的把命令发出去** —— 插件已卸载、副作用却发生了。现在与日志监听器同一口径，终止是不可逆事实，迟到调用一律拒绝。
+- **兜底与严格解析 (P3)**（`core/web_api.py` / `main.py`）：`_metadata_version()` 的兜底分支原本**没有 return**（声明了 fallback 形参却用不上），metadata 缺失时顶栏会显示「vNone」；新增 `_cfg_bool()` 严格解析布尔配置（只认真布尔 / `0`·`1` / `true`·`false` 词表，读不出结论回落 default 并留 WARNING）—— 旧写法 `bool(self._cfg(...))` 有 fail-open 陷阱，手工编辑配置或脚本写进来的字符串 `"false"` / `"0"` / `"no"` 在 Python 里**都是真值**，会把开关打开，受影响最重的恰好是 `remote_rcon_mode`。注意工具开关 `_tool_enabled()` **保持 parse_bool fail-closed**（读不出结论必须关），方向相反、不可互换，已在代码里写明理由。
+
+### 测试
+
+- 新增 `tests/test_v0247_review_round2_p2.py`：八组共 **113 项**判据，逐条走真实代码路径 —— 状态口径收敛、写接口输入硬化、预设 id 先验后碰盘、daemon 线程与「默认线程池从未被建立」、回调超时 / 在飞上限 / `stop()` 真取消、发送预算三类上限与坏配置、指纹纳秒键、以及发送预算三键在 schema / 后端 / 设置页三处的**同源对账**。
+- 本批 7 处修复点各注入一次退化做**变异自检**（删白名单项、改错上限、schema 默认值脱钩、键改名、网页 min/max 脱钩、控件不进 `CFG_FIELDS`、键混进 `S_DEFAULTS`），全部变红 ✓ —— 判据不是空转的。
+- `tests/test_v0235_review_round8.py` 夹具按新口径适配：回调独立任务化后，原注入点落在轮询里已不复存在；原判据逐条保留，并新增「生产路径不再拖出孤儿」一条。
+- **顺带修掉一支被静默打残的老判据**：新增的发送预算白名单条目一度把上限写成 `64 * 1024 * 1024` —— 而 `ast.literal_eval` 不认乘法表达式，会让**整张** `INT_RANGES` 解析失败、静默退化成空字典（受影响的正是 v0.23.5 round2 的 `say_max_chars` 闭环判据：它不报错、直接 `KeyError` 崩掉，等于这支判据在无人察觉时失效）。现已改成纯字面量 `67108864`，并在代码里写明「这张表是数据表，不许写表达式，外部审查脚本要用 `literal_eval` 静态读它」；变异自检（把 67108864 改成 999999999）确认前后端同源判据仍有牙 ✓。
+- 本机全量门禁（`run_release_verify.py`）退出码 0。
+
+## [v0.24.6] - 2026-10-18 (未发布 Release)
+
+> 一句话：GPT 第二轮复核 **P1 / P3 批次**收口 —— 拆掉向量缓存的 pickle 反序列化入口（RCE）、给命令体补字节闸门、给 RCON 连接加终止态门禁，并把布尔配置改成严格解析。该版本因物料未收口未单独发版，**成果已全量并入 v0.24.7**。
+
+### 修复
+
+- **向量缓存拆掉 pickle 回退 (P1-1)**（`core/knowledge_base.py`）：`SemanticIndex.load()` 的 `except ValueError` 兜底是无差别的，配上 `allow_pickle=True` 重读，等于把一个纯数据缓存文件变成任意代码执行入口（缓存目录可被任何能写 `plugin_data` 的进程改写）。现固定 `allow_pickle=False`，旧格式按「结构校验未通过」处理并全量重算。
+- **命令体补字节闸门 (P1-2)**（`core/text_outbound.py` / `main.py` / `core/workflow.py`）：字符数（8000）挡不住字节 —— 原版 RCON 单包读取缓冲只有 1460 字节（命令体 1446 字节，1.8.9~1.21.11 十版同构），超限是服务端静默拔线。交互式工具走 warn 模式给中文提示、工作流走 truncate 模式截断后照发并留日志；广播 title / actionbar 不切段，提前拦。
+- **`_get_rcon()` 终止态门禁 (P1-3)**（`main.py`）：终止是不可逆事实，迟到的旧工具调用一律拒绝，绝不「复活」连接。
+- **兜底与严格解析 (P3)**（`core/web_api.py` / `main.py`）：`_metadata_version()` 兜底分支补上缺失的 `return`；新增 `_cfg_bool()` 修掉 `bool(self._cfg(...))` 的 fail-open 陷阱（字符串 `"false"` / `"0"` / `"no"` 都是真值）；工具开关保持 fail-closed，两者方向相反不可互换。
+
+### 测试
+
+- `tests/test_v0235_review_round7.py` 夹具从 object 数组改回当前落盘格式（pickle 回退拆除后，「旧格式读得动」这条路径本就不该存在）；`tests/test_v0236_postreview.py` 等按新口径更新断言；替身类统一补 `_cfg_bool`，避免生产改动一动就 `AttributeError` 而不是断言失败。
+
 ## [v0.24.5] - 2026-10-15
 
 > 一句话：**Issue #9 全面收口、全新打磨 WebUI 与 RCON 交互加固** —— 修复语法解包、未知命令熔断等核心安全漏洞；支持全新 WebUI、RCON 高级参数折叠与平滑对焦。
