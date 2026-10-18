@@ -40,6 +40,7 @@ from .command_result import (
     looks_like_complex_task,
 )
 from .rcon import RconError, RconTimeoutError
+from .text_outbound import RCON_SAFE_BYTES, fit_command_to_budget
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, preflatten_block_reason
 
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
@@ -301,6 +302,12 @@ class MCWorkflow:
                     command=cmd, status="skipped", reason=_pf,
                 ))
                 continue
+            # v0.24.6（P1）：同 _exec_commands —— 先按字节压进单包预算再发
+            cmd, _byte_note = fit_command_to_budget(
+                cmd, RCON_SAFE_BYTES, mode="truncate", log=self.logger
+            )
+            if _byte_note:
+                self.logger.warning("[字节闸门] %s", _byte_note)
             try:
                 out = await rcon.command(cmd)
                 reports.append(classify_command_output(
@@ -801,6 +808,14 @@ class MCWorkflow:
                     ),
                 })
                 continue
+            # v0.24.6（P1）：命令体按**字节**压进 RCON 单包预算。
+            # 流水线的命令是 Agent 现编的，没法回头问用户 → 截断后照发（发得出去、
+            # 且必然报错，比服务端静默拔线留下「结果未知」更好排查），并把说明写进日志。
+            cmd, _byte_note = fit_command_to_budget(
+                cmd, RCON_SAFE_BYTES, mode="truncate", log=self.logger
+            )
+            if _byte_note:
+                self.logger.warning("[字节闸门] %s", _byte_note)
             try:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()

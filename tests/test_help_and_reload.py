@@ -78,6 +78,14 @@ def build(cls_src, globs=None):
 def fake_self():
     f = globals()["FAKE_SELF"]()
     f._cfg = lambda key, default=None: (LIVE or {}).get(key, default)
+    # v0.24.6：生产侧把布尔配置收口到 _cfg_bool（严格解析、fail-open 陷阱），
+    # 替身按同一口径补一个，否则帮助渲染走到布尔开关就 AttributeError。
+    def _cfg_bool(key, default=False):
+        value = f._cfg(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")
+        return bool(value)
+    f._cfg_bool = _cfg_bool
     return f
 
 

@@ -8,8 +8,14 @@
      解析），旧位置存量文件在读取时一次性迁移（迁移后清理旧文件）。
   B. `core/knowledge_base.py` 的 `np.load(..., allow_pickle=True)`：旧存档把
      topics/hashes 存成 object 数组，读它必须开 pickle。本批新存档改用
-     unicode 定长 dtype（无 pickle），旧缓存由兜底分支一次性读取后立即重写；
-     结构校验照旧，不因迁移分支被绕过。
+     unicode 定长 dtype（无 pickle）。
+
+  B2（v0.24.6 · GPT 第二轮复核 P1）**推翻 B 的兜底分支**：`except ValueError`
+     是无差别的 —— 任何 .vec.npz 只要让首次读取抛 ValueError，控制流就会进
+     `allow_pickle=True` 的 `np.load`，而 pickle 反序列化本身可执行代码：等于把
+     纯数据缓存变成任意代码执行入口。现在**全仓不再有 allow_pickle=True**；
+     旧格式缓存结构校验不通过 → 按「没加载」处理（load() 返回 False、
+     load_error 留痕、原地清空），由普通 build_vectors() 全量重算。
 
 运行：
   <AstrBot python> tests\test_v0236_postreview.py
@@ -23,7 +29,7 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ -> _paths
-from _paths import add_sys_paths  # noqa: E402
+from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
 
 add_sys_paths()
 
@@ -70,19 +76,41 @@ def part_a() -> None:
         np.savez_compressed(legacy, matrix=np.zeros((2, 3), dtype="float32"),
                             topics=np.array(["a", "b"], dtype=object),
                             hashes=np.array(["h1", "h2"], dtype=object))
+        before = legacy.read_bytes()
         sem = SemanticIndex()
         ok = sem.load(legacy)
-        check("旧格式（object 数组、需 pickle）照常可加载",
-              ok is True and sem.topics == ["a", "b"], f"ok={ok}")
+        check("旧格式（object 数组）不再被 pickle 兜底读取 —— 一律判「没加载」",
+              ok is False and sem.matrix is None and sem.topics == [], f"ok={ok}")
+        check("拒绝理由留在 load_error（供上层摊进诊断）",
+              bool(sem.load_error), sem.load_error)
 
         try:
             with np.load(legacy, allow_pickle=False) as z:
                 migrated = [str(x) for x in z["topics"]]
-            check("加载即迁移：重写后的文件 allow_pickle=False 直读通畅",
-                  migrated == ["a", "b"], str(migrated))
+            check("旧文件**未被重写**（没有走 pickle 读→写回那条路）",
+                  False, f"竟然读到了 {migrated}")
+        except ValueError:
+            check("旧文件**未被重写**（没有走 pickle 读→写回那条路）",
+                  legacy.read_bytes() == before)
         except Exception as e:                       # noqa: BLE001
-            check("加载即迁移：重写后的文件 allow_pickle=False 直读通畅",
+            check("旧文件**未被重写**（没有走 pickle 读→写回那条路）",
                   False, f"{type(e).__name__}: {e}")
+
+        # 真·源码级守卫：**全插件**（含 core / main，排除 tests 自身）不得再出现
+        # 真正开启 pickle 的**调用形态** `allow_pickle=True)` / `allow_pickle=True,`。
+        # 注释与 docstring 里提到这个词（说明历史）不算 —— 所以按调用形态匹配。
+        offenders: list[str] = []
+        for py in sorted(PLUGIN_DIR.rglob("*.py")):
+            if "tests" in py.parts:
+                continue
+            src_py = py.read_text(encoding="utf-8", errors="replace")
+            if "allow_pickle=True)" in src_py or "allow_pickle=True," in src_py:
+                offenders.append(str(py.relative_to(PLUGIN_DIR)))
+        check("全插件源码中不再有 allow_pickle=True 的调用（任意代码执行入口）",
+              not offenders, str(offenders))
+        kb_src = (PLUGIN_DIR / "core" / "knowledge_base.py").read_text(encoding="utf-8")
+        check("读盘仍固定 allow_pickle=False",
+              kb_src.count("allow_pickle=False") >= 1)
 
         idx = SemanticIndex(dim=2)
         idx.set_vectors(["t1"], {"t1": {"content": "x", "enabled": True}}, [[1.0, 0.0]])

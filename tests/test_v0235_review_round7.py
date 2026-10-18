@@ -162,8 +162,8 @@ def part_a() -> None:
         np.savez_compressed(
             kb.vec_path,
             matrix=np.zeros((n, 4), dtype="float32"),
-            topics=np.array(keys, dtype=object),
-            hashes=np.array(["h1", "h2"], dtype=object),      # 少一个 → 结构坏
+            topics=np.array(keys, dtype=str),
+            hashes=np.array(["h1", "h2"], dtype=str),      # 少一个 → 结构坏
         )
 
         kb.set_semantic_enabled(True)
@@ -212,8 +212,8 @@ def part_a() -> None:
         np.savez_compressed(
             kb2.vec_path,
             matrix=np.zeros((1, 4), dtype="float32"),
-            topics=np.array(keys2, dtype=object),
-            hashes=np.array(["h1", "h2"], dtype=object),
+            topics=np.array(keys2, dtype=str),
+            hashes=np.array(["h1", "h2"], dtype=str),
         )
         try:
             kb2.set_semantic_enabled(True)
@@ -229,8 +229,8 @@ def part_a() -> None:
         bad3 = td / "dup.npz"
         np.savez_compressed(bad3,
                             matrix=np.zeros((2, 3), dtype="float32"),
-                            topics=np.array(["a", "a"], dtype=object),
-                            hashes=np.array(["h1", "h2"], dtype=object))
+                            topics=np.array(["a", "a"], dtype=str),
+                            hashes=np.array(["h1", "h2"], dtype=str))
         check("★主题重复 → 拒绝", sem3.load(bad3) is False and sem3.matrix is None)
 
         # —— 坏缓存样本 4：含 NaN（有限数值校验）——
@@ -239,16 +239,20 @@ def part_a() -> None:
         m = np.zeros((2, 3), dtype="float32")
         m[0, 0] = float("nan")
         np.savez_compressed(bad4, matrix=m,
-                            topics=np.array(["a", "b"], dtype=object),
-                            hashes=np.array(["h1", "h2"], dtype=object))
+                            topics=np.array(["a", "b"], dtype=str),
+                            hashes=np.array(["h1", "h2"], dtype=str))
         check("★含 NaN → 拒绝", sem4.load(bad4) is False and sem4.matrix is None)
 
         # —— 对照：结构完整的小文件照常加载（校验不误杀）——
+        # v0.24.6：夹具一律按**当前落盘格式**（unicode 定长，`dtype=str`）写。
+        # 这里以前写 object 数组 —— 那是 v0.23.6 之前的旧格式，读它必须开 pickle；
+        # 而 pickle 回退分支已在 v0.24.6 删除（任意代码执行入口，见 SemanticIndex.load
+        # docstring）。夹具继续用 object 只会测「旧格式被拒」，测不到结构校验本身。
         sem5 = SemanticIndex()
         ok5 = td / "good.npz"
         np.savez_compressed(ok5, matrix=np.zeros((2, 3), dtype="float32"),
-                            topics=np.array(["a", "b"], dtype=object),
-                            hashes=np.array(["h1", "h2"], dtype=object))
+                            topics=np.array(["a", "b"], dtype=str),
+                            hashes=np.array(["h1", "h2"], dtype=str))
         check("对照：结构完整照常加载", sem5.load(ok5) is True and len(sem5.topics) == 2)
 
 

@@ -434,26 +434,29 @@ class SemanticIndex:
 
         v0.23.6 市场审核后（收紧）：读盘固定 ``allow_pickle=False``；旧版 object
         数组缓存经兜底分支一次性读取后按新格式重写，此后与 pickle 无关。
+
+        v0.24.6（GPT 第二轮复核 P1）：那条兜底分支**已删除**。它只该接住「旧版
+        object 数组」这一种情况，但 ``except ValueError`` 是无差别的 —— 任何
+        ``.vec.npz`` 只要被做成让首次读取抛 ValueError，就会把控制流送进
+        ``allow_pickle=True`` 的 ``np.load``：而 pickle 反序列化本身就能执行代码，
+        等于把一个纯数据缓存文件变成了任意代码执行入口（缓存目录可被任何能写
+        plugin_data 的进程/用户改写）。旧格式缓存本就只存在于 v0.23.6 之前，
+        结构校验失败一律按「没加载」处理、由普通 build_vectors() 全量重算即可，
+        代价是重算一次向量，远小于留一个 RCE 入口。
         """
         self.load_error = ""
         if _np is None or not path.exists():
             return False
         try:
-            legacy_pickle = False
-            try:
-                with _np.load(path, allow_pickle=False) as z:
-                    matrix = _np.asarray(z["matrix"], dtype="float32")
-                    topics = [str(x) for x in z["topics"]]
-                    hashes = [str(x) for x in z["hashes"]]
-            except ValueError:
-                # v0.23.6 市场审核后：旧版把 topics/hashes 存成 object 数组，
-                # 读它必须开 pickle；此处仅做**存量缓存一次性迁移**的兜底读取
-                # （读完立即按新格式重写），新写的缓存永远走不着这条分支。
-                with _np.load(path, allow_pickle=True) as z:
-                    matrix = _np.asarray(z["matrix"], dtype="float32")
-                    topics = [str(x) for x in z["topics"]]
-                    hashes = [str(x) for x in z["hashes"]]
-                legacy_pickle = True
+            # v0.24.6：固定 allow_pickle=False —— **不再有任何 pickle 回退分支**
+            # （理由见上方 docstring：那是任意代码执行入口）。
+            # 旧格式（object 数组）缓存会在这里抛 ValueError，被外层统一按
+            # 「结构校验未通过 → 清空 + 留 load_error」处理，随后由普通
+            # build_vectors() 全量重算。
+            with _np.load(path, allow_pickle=False) as z:
+                matrix = _np.asarray(z["matrix"], dtype="float32")
+                topics = [str(x) for x in z["topics"]]
+                hashes = [str(x) for x in z["hashes"]]
             if (matrix.ndim != 2 or matrix.shape[1] <= 0
                     or matrix.shape[0] != len(topics)
                     or len(topics) != len(hashes)
@@ -471,9 +474,6 @@ class SemanticIndex:
         self.matrix, self.topics, self.hashes = matrix, topics, hashes
         self.dim = int(matrix.shape[1])
         self._pos = {t: i for i, t in enumerate(topics)}
-        if legacy_pickle:
-            # 迁移重写：失败也不影响本次加载（save() 自会留痕；下次读取还会再试）
-            self.save(path)
         return True
 
 

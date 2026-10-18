@@ -185,7 +185,8 @@ def main() -> int:
     check("后端保存后触发热生效（切换 + 注入 rerank 调用）",
           "set_rerank_enabled" in web and "_inject_rerank_fn" in web)
     main_src = (root / "main.py").read_text(encoding="utf-8")
-    check("main.py 读配置 knowledge_rerank", '_cfg("knowledge_rerank", False)' in main_src)
+    # v0.24.6：布尔配置统一走 _cfg_bool（严格解析），不再是 bool(self._cfg(...))
+    check("main.py 读配置 knowledge_rerank", '_cfg_bool("knowledge_rerank", False)' in main_src)
     check("main.py 下发到 KnowledgePresetManager",
           "rerank_enabled=self._kb_rerank()" in main_src)
     check("main.py 启动时注入（_inject_rerank_fn 定义 + 调用）",

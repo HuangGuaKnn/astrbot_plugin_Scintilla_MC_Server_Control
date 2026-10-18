@@ -108,6 +108,65 @@ def split_text_by_bytes(text: str, budget: int) -> list[str]:
     return chunks
 
 
+def over_budget(text: str, budget: int = RCON_SAFE_BYTES) -> int:
+    """超出预算的字节数；未超返回 0（v0.24.6）。"""
+    return max(0, utf8_len(text) - int(budget))
+
+
+def command_budget_error(
+    command: str, label: str = "命令", budget: int = RCON_SAFE_BYTES
+) -> str | None:
+    """命令体的**字节**粗筛（v0.24.6）；未超预算返回 None。
+
+    面向 LLM 的文案：说清「是字节超限、会被服务端静默断连」，并给出可执行的改法。
+    """
+    n = utf8_len(command or "")
+    if n <= int(budget):
+        return None
+    return (
+        f"{label}过长（{n} 字节，单条上限 {int(budget)} 字节）。"
+        "RCON 单包超过原版 1460 字节读取缓冲会被服务端**静默断连**（命令不送达、无回执）。"
+        "请缩短后重试：精简 NBT / 去掉多余描述文字，或拆成多条分步下发。"
+    )
+
+
+def fit_command_to_budget(
+    command: str,
+    budget: int = RCON_SAFE_BYTES,
+    *,
+    label: str = "命令",
+    mode: str = "warn",
+    log=None,
+) -> tuple[str, str]:
+    """把**整条命令**压进字节预算，返回 ``(命令, 说明)``；说明为空 = 原样放行。
+
+    v0.24.6（GPT 第二轮复核 P1）：命令体此前只按**字符数**筛（8000）——中文 / 长 NBT
+    下 8000 字符 ≈ 24000 字节，远超原版单包 1460B 读取缓冲，服务端静默拔线，插件侧
+    只看到「结果未知」。这里按字节兜底，两种处置：
+
+      * ``truncate`` —— 工作流：命令由流水线生成、没法回头问用户，截断到完整字符
+        边界后照发（发得出去、且必然报错，比静默断连更好排查）；
+      * ``warn`` —— 交互式工具：命令是 LLM 现编的，**不替它改命令**，
+        直接返回一条能照着改的提示。
+    """
+    text = str(command or "")
+    limit = int(budget)
+    if utf8_len(text) <= limit:
+        return text, ""
+    if mode == "truncate":
+        keep = clip_text_to_bytes(text, limit)
+        note = (
+            f"{label}超过单包字节上限（{utf8_len(text)} > {limit} 字节），"
+            "已按字符边界截断后发送；这条命令大概率不会生效，请改用更短的写法重试。"
+        )
+    else:
+        note = command_budget_error(text, label, limit) or ""
+        keep = text
+    if log is not None:
+        log.warning("[字节闸门] %s", note.replace(chr(10), " "))
+    return keep, note
+
+
 def clip_text_to_bytes(text: str, budget: int) -> str:
     """截断到不超过预算的**完整字符边界**（budget ≤ 0 → 空串）。
 

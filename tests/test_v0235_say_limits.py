@@ -75,6 +75,13 @@ class StubPlugin:
         self.admin = admin
         self._say_cd = Cooldown(clock=clock or FakeClock())
 
+    def _cfg_bool(self, key, default=False):
+        """替身版严格布尔解析（v0.24.6：生产侧把布尔配置收口到 _cfg_bool）。"""
+        value = self._cfg(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")
+        return bool(value)
+
     def _cfg(self, key, default=None):
         return self.cfg.get(key, default)
 
