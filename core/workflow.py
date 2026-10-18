@@ -47,6 +47,14 @@ MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
 KB_RESULT_LIMIT = 6           # 知识库检索条数
 
+# ---- v0.24.7（GPT 第二轮复核 P1-5）：工作流资源边界默认值 ----
+#: 单批（实现器一次返回）命令数上限。挡住「一口气返回几百条命令」的批次。
+DEFAULT_MAX_BATCH_COMMANDS = 40
+#: 单任务累计**发送**条数上限（跨实现轮 + 纠错轮一起算）。
+DEFAULT_MAX_TASK_COMMANDS = 120
+#: 单任务累计**发送**字节上限（UTF-8）。条数少但每条都是巨型 NBT 的场合靠它兜。
+DEFAULT_MAX_TASK_BYTES = 256 * 1024
+
 #: v0.22.8（核验 P1）：**结果不确定**的判定状态 —— 命令可能已经在服务器上生效了。
 #:
 #: 出现其中任何一种，工作流就必须停下来问人：既不进下一轮实现（实现器会重新生成同一条
@@ -58,6 +66,100 @@ UNCERTAIN_STATUSES = frozenset({"unknown", "inferred_success", "dispatched_uncon
 
 # v0.22.6：非幂等命令清单已迁到 core/command_result.py（唯一实现），此处仅转发引用。
 # 不要再在本文件里维护第二份 —— 两份清单迟早会分叉，而分叉的代价是重复副作用。
+
+
+def _cmd_text(item: Any) -> str:
+    """从「命令条目」（dict 或纯字符串）里取出要发送的命令原文。"""
+    if isinstance(item, dict):
+        return str(item.get("command", "") or "")
+    return str(item or "")
+
+
+class SendBudget:
+    """单任务发送预算（v0.24.7 · GPT 第二轮复核 P1-5）。
+
+    为什么要有它：命令是 LLM 现编的，**条数与体积此前没有任何上限** ——
+    一句「把这片地铺满 600 个方块」「给全服每人发一套装备」就足以让流水线连着
+    跑几百次 RCON 往返，把共享连接和任务资源一起占满（RCON 是单连接串行的，
+    期间所有人的指令都排在后面）。三类上限缺一不可：
+
+      · **单批条数** —— 挡住「实现器一次返回几百条命令」的批次；
+      · **单任务累计条数** —— 挡住「每轮都合法、轮数叠起来失控」；
+      · **单任务累计字节** —— 条数不多但每条都是巨型 NBT 的场合，只有字节数看得见。
+
+    动作口径：**超限的命令一条都不发**（fail-closed），并把原因原样回传给实现器 /
+    用户。故意不做「截断到上限就发」—— 截断会让实现器以为「已经做完了」，
+    那是最坏的一种「成功」；而明确报错能让人把任务拆小再来。
+    """
+
+    def __init__(
+        self,
+        *,
+        max_batch: int = DEFAULT_MAX_BATCH_COMMANDS,
+        max_commands: int = DEFAULT_MAX_TASK_COMMANDS,
+        max_bytes: int = DEFAULT_MAX_TASK_BYTES,
+    ) -> None:
+        self.max_batch = max(1, int(max_batch))
+        self.max_commands = max(1, int(max_commands))
+        self.max_bytes = max(1, int(max_bytes))
+        self.used_commands = 0
+        self.used_bytes = 0
+        #: 用尽原因（非空 = 之后一条都不再放行）
+        self.exhausted = ""
+
+    # ---- 单批：整批要么全放行、要么一条都不发 ----
+
+    def check_batch(self, commands: list) -> str:
+        """本轮命令数超上限则返回拒绝文案（调用方必须**一条都不发**），否则返回空串。"""
+        n = 0
+        for item in commands or []:
+            text = _cmd_text(item).strip()
+            if text.startswith("/"):
+                text = text[1:]
+            if text.strip():
+                n += 1
+        if n > self.max_batch:
+            return (
+                f"本轮命令数 {n} 条，超过单批上限 {self.max_batch} 条 —— 为避免把共享 RCON "
+                f"连接和任务资源占满，这一批**一条都没有发送**。"
+                f"请拆成多次任务（每次不超过 {self.max_batch} 条）后重试。"
+            )
+        return ""
+
+    # ---- 单条：逐条记账，用尽后一律拒发 ----
+
+    def take(self, cmd: str) -> str:
+        """为一条命令申请发送额度：返回空串 = 放行，否则返回**拒发原因**。"""
+        if self.exhausted:
+            return f"未发送：{self.exhausted}。"
+        nbytes = len(str(cmd).encode("utf-8"))
+        if self.used_commands + 1 > self.max_commands:
+            self.exhausted = f"本任务累计发送已达 {self.max_commands} 条上限"
+            return (
+                f"未发送：{self.exhausted}（把任务拆小，或调高「工作流 · 单任务命令条数上限」）。"
+            )
+        if self.used_bytes + nbytes > self.max_bytes:
+            self.exhausted = (
+                f"本任务累计命令体积已达 {self.max_bytes} 字节上限（这一条 {nbytes} 字节）"
+            )
+            return (
+                f"未发送：{self.exhausted}（巨型 NBT / 批量命令请拆成多次任务，"
+                "或调高「工作流 · 单任务命令字节上限」）。"
+            )
+        self.used_commands += 1
+        self.used_bytes += nbytes
+        return ""
+
+    def snapshot(self) -> dict:
+        """预算用量（日志 / 回执用）。"""
+        return {
+            "commands": int(self.used_commands),
+            "max_commands": int(self.max_commands),
+            "bytes": int(self.used_bytes),
+            "max_bytes": int(self.max_bytes),
+            "max_batch": int(self.max_batch),
+            "exhausted": self.exhausted,
+        }
 
 
 class MCWorkflow:
@@ -86,11 +188,48 @@ class MCWorkflow:
     # =============== 配置 ===============
 
     def _cfg(self, key: str, default: Any = None) -> Any:
-        return self.plugin._cfg(key, default)
+        """读一条插件配置；**读不到就回默认值**，绝不让配置读取炸掉执行路径。
+
+        v0.24.7（GPT 第二轮复核 P1-5 的连带）：`_send_budget()` 让**命令执行路径**
+        第一次依赖配置读取，而 `tests/test_simple_workflow_result.py` 用 `__new__`
+        造了个只带 rcon 的替身宿主（配置不在它的判据范围内）—— 于是「读配置」这件
+        小事的失败面被放大成「连命令都执行不了」。默认值本身就是安全边界，回落即可。
+        """
+        getter = getattr(self.plugin, "_cfg", None)
+        if getter is None:
+            return default
+        try:
+            return getter(key, default)
+        except Exception:                                        # noqa: BLE001
+            return default
 
     @property
     def enabled(self) -> bool:
         return bool(self._cfg("agent_workflow_enabled", True))
+
+    def _cfg_int(self, key: str, default: int, lo: int, hi: int) -> int:
+        """读一个整数配置项，坏值 fail-closed 回落到默认值并夹在 [lo, hi] 内。
+
+        v0.24.7（GPT 第二轮复核 P1-5）：手工编辑的配置文件里写 ``"abc"`` / ``null``
+        / 负数都很常见，而这三个上限是**安全边界** —— 解析不出来时只能回默认值，
+        绝不能因为「值是坏的就变成 0」，那等于把闸门整个拆掉。
+        """
+        try:
+            value = int(self._cfg(key, default))
+        except (TypeError, ValueError):
+            value = int(default)
+        return max(lo, min(hi, value))
+
+    def _send_budget(self) -> SendBudget:
+        """按配置创建一个**单任务**发送预算（v0.24.7）。"""
+        return SendBudget(
+            max_batch=self._cfg_int("agent_max_batch_commands",
+                                    DEFAULT_MAX_BATCH_COMMANDS, 1, 1000),
+            max_commands=self._cfg_int("agent_max_task_commands",
+                                       DEFAULT_MAX_TASK_COMMANDS, 1, 10000),
+            max_bytes=self._cfg_int("agent_max_task_bytes",
+                                    DEFAULT_MAX_TASK_BYTES, 512, 64 * 1024 * 1024),
+        )
 
     # =============== 工具入口（主 LLM 调用） ===============
 
@@ -272,6 +411,15 @@ class MCWorkflow:
         # v0.9.0：把命令中的玩家目标替换为决策后的玩家名（绑定兜底/@选择器除外）
         commands = self._apply_player_to_commands(commands, player)
 
+        # v0.24.7（GPT 第二轮复核 P1-5）：simple 路径与本文件复杂路径**同一套资源边界**。
+        # 分类器也是 LLM，「一口气给出几百条命令」在这里同样可能发生；旧实现只按
+        # 单条长度把关，对**条数**与**累计体积**完全没有闸门。
+        budget = self._send_budget()
+        batch_deny = budget.check_batch(commands)
+        if batch_deny:
+            self.logger.warning("[资源边界] simple 路径拒绝整批：%s", batch_deny)
+            return batch_deny, "failed"
+
         rcon = await self.plugin._get_rcon()
         reports: list[CommandResult] = []
         for cmd in commands:
@@ -308,6 +456,14 @@ class MCWorkflow:
             )
             if _byte_note:
                 self.logger.warning("[字节闸门] %s", _byte_note)
+            # v0.24.7（GPT 第二轮复核 P1-5）：单任务累计条数 / 字节预算。
+            # 超出即在**本地拒发**并如实上报（skipped），绝不放宽成「发一半」。
+            _deny = budget.take(cmd)
+            if _deny:
+                reports.append(CommandResult(
+                    command=cmd, status="skipped", reason=_deny,
+                ))
+                continue
             try:
                 out = await rcon.command(cmd)
                 reports.append(classify_command_output(
@@ -502,6 +658,9 @@ class MCWorkflow:
         # ---- Agent#4 实现器循环 ----
         max_impl = max(1, int(self._cfg("agent_max_implement_rounds", MAX_IMPLEMENT_ROUNDS)))
         max_corr = max(0, int(self._cfg("agent_max_correct_rounds", MAX_CORRECT_ROUNDS)))
+        # v0.24.7（GPT 第二轮复核 P1-5）：**单任务**发送预算。实现轮与纠错轮共用同一本账
+        # —— 分开记账的话，纠错循环每轮都能把额度重新拿满，等于没有上限。
+        budget = self._send_budget()
         failures = ""
         retry_hint = ""
         last_out = None
@@ -533,7 +692,13 @@ class MCWorkflow:
                 self.logger.info(
                     "跳过已确认生效的命令 %d 条（避免重复副作用）：%s", len(dups), dups
                 )
-            exec_reports = await self._exec_commands(fresh, player, online_players)
+            # v0.24.7（P1-5）：整批超上限 → **一条都不发**，把原因回给实现器让它拆小
+            batch_deny = budget.check_batch(fresh)
+            if batch_deny:
+                self.logger.warning("[资源边界] 实现器第 %d 轮整批拒绝：%s", rnd, batch_deny)
+                failures = batch_deny
+                continue
+            exec_reports = await self._exec_commands(fresh, player, online_players, budget)
             # v0.22.10：记账同样 fail-closed —— 报告与命令对不上就停手，不拿半截账往下跑
             newly, contract_err = self._newly_confirmed(fresh, exec_reports)
             if contract_err:
@@ -573,7 +738,7 @@ class MCWorkflow:
                 )
             # 用修正后的模板重试实现
             retry_hint = str(corr.get("retry_hint", ""))
-            for rnd in range(1, MAX_IMPLEMENT_ROUNDS + 1):
+            for rnd in range(1, max_impl + 1):
                 out = await self.agent.implement(
                     request, player, kb_text, failures, retry_hint, umo=umo,
                     online_players=online_text,
@@ -594,7 +759,15 @@ class MCWorkflow:
                         "跳过已确认生效的命令 %d 条（避免重复副作用）：%s",
                         len(dups), dups,
                     )
-                exec_reports = await self._exec_commands(fresh, player, online_players)
+                # v0.24.7（P1-5）：纠错轮同样受单批上限约束（不许用「换个写法重发」绕过）
+                batch_deny = budget.check_batch(fresh)
+                if batch_deny:
+                    self.logger.warning(
+                        "[资源边界] 纠错第 %d 轮整批拒绝：%s", cnd, batch_deny
+                    )
+                    failures = batch_deny
+                    continue
+                exec_reports = await self._exec_commands(fresh, player, online_players, budget)
                 # v0.22.10：纠错循环同样 fail-closed 记账
                 newly, contract_err = self._newly_confirmed(fresh, exec_reports)
                 if contract_err:
@@ -614,6 +787,14 @@ class MCWorkflow:
         detail = ""
         if last_out:
             detail = f" 实现器最后说明：{str(last_out.get('reasoning',''))[:100]}"
+        # v0.24.7（P1-5）：把这次任务的资源用量一并说出来 —— 上限到底有没有撞上，
+        # 不能只留在日志里（用户看回执才知道该不该把任务拆小）。
+        _snap = budget.snapshot()
+        if _snap["commands"]:
+            detail += (
+                f" 本次任务已实际发送 {_snap['commands']} 条 / {_snap['bytes']} 字节"
+                f"（上限 {_snap['max_commands']} 条 / {_snap['max_bytes']} 字节）。"
+            )
         return f"复杂任务未能完成（已尝试实现{max_impl}轮+纠错{max_corr}轮）。{detail}", False
 
     # =============== 工具方法 ===============
@@ -757,9 +938,19 @@ class MCWorkflow:
         return (player or "").strip(), online
 
     async def _exec_commands(
-        self, commands: list[dict], player: str, online_players: list[str] | None = None
+        self,
+        commands: list[dict],
+        player: str,
+        online_players: list[str] | None = None,
+        budget: "SendBudget | None" = None,
     ) -> list[dict]:
-        """执行命令列表（复杂流水线专用；入口 mc_workflow 已限管理员，故此处不重复判定策略）。"""
+        """执行命令列表（复杂流水线专用；入口 mc_workflow 已限管理员，故此处不重复判定策略）。
+
+        ``budget``（v0.24.7 · P1-5）：单任务发送预算。传了就在**真正下发前**逐条申请额度
+        —— 超限的命令本地拒发，并补一份 ``skipped`` 报告（**报告与命令保持一一对应**，
+        否则 ``_newly_confirmed`` 的等长校验会把整笔账判为不可信而停手）。
+        默认 ``None`` = 不设预算（老调用方 / 单测直调行为不变）。
+        """
         rcon = await self.plugin._get_rcon()
         if online_players is None:
             online_players = await self._online_players()
@@ -816,6 +1007,19 @@ class MCWorkflow:
             )
             if _byte_note:
                 self.logger.warning("[字节闸门] %s", _byte_note)
+            # v0.24.7（GPT 第二轮复核 P1-5）：单任务累计条数 / 字节预算。
+            # 位置选在**真正下发之前**、单条字节闸门之后：只记「实际会发出去的东西」，
+            # 本地就被拦下的命令（目标不在线 / B5 拒绝 / 预扁平化拦）不占额度。
+            if budget is not None:
+                deny = budget.take(cmd)
+                if deny:
+                    reports.append({
+                        "command": cmd, "ok": False, "status": "skipped",
+                        # 一个字节都没发出去 → 重试安全（与其它本地校验口径一致）
+                        "retry_safe": True,
+                        "output": deny,
+                    })
+                    continue
             try:
                 out = await rcon.command(cmd)
                 out_s = str(out).strip()

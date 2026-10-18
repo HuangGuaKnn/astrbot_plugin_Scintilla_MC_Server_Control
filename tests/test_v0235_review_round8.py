@@ -112,6 +112,27 @@ def _swallowing_callback():
     return on_event, calls, swallowed, gate
 
 
+def _force_inline_dispatch(w):
+    """把「带超时的独立任务派发」换回 **v0.24.7 之前的内联 await**。
+
+    为什么本文件要主动退回旧写法：第八轮钉的是**代际隔离**，而它要防的那条路径是
+    「`_poll` 里内联 `await` 的用户代码吞掉 `CancelledError` ⇒ 轮询任务在 `stop()`
+    超时后仍然活着」。v0.24.7（GPT 第二轮复核 P2）把回调改成独立任务之后，轮询任务
+    不再内联用户代码、取消能准时送达，这条路径**不再由生产代码产生**（本文件新增的
+    「生产路径」那条判据正是在钉这一点）。
+
+    但代际隔离仍是必须的防御纵深：跨事件循环的旧任务、卡在系统调用里不理会取消的
+    IO、以及将来任何把回调改回内联的改动 —— 都只有代际检查点能封住。所以这里显式
+    复刻该形态，**判据本身一个字不改**。
+    """
+    async def _dispatch(etype, player, detail):
+        await w.on_event(etype, player, detail)      # 历史写法：内联 await、没有超时
+        return True
+
+    w._dispatch_event = _dispatch
+    return w
+
+
 def _prepare_log(root: Path) -> Path:
     (root / "logs").mkdir()
     log = root / "logs" / "latest.log"
@@ -167,6 +188,7 @@ def part_g1_restart_after_swallowed_cancel() -> None:
             on_event, calls, swallowed, gate = _swallowing_callback()
 
             w = LW.LogWatcher(str(root), on_event, poll_interval=0.05)
+            _force_inline_dispatch(w)            # 复刻「轮询里内联 await 用户回调」
             old_to = LW.STOP_TIMEOUT
             LW.STOP_TIMEOUT = 0.2                # 缩到 0.2s：保证走「超时 + 孤儿」路径
             old_task = None
@@ -215,6 +237,48 @@ def part_g1_restart_after_swallowed_cancel() -> None:
     asyncio.run(scenario())
 
 
+# ==================== G 生产路径：回调吞取消也不再拖出孤儿（v0.24.7） ====================
+def part_g1b_production_dispatch_no_orphan() -> None:
+    print("========== [G] 生产路径（独立任务派发）：吞取消的回调不再把轮询拖成孤儿 ==========")
+
+    async def scenario():
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = _prepare_log(root)
+            on_event, calls, swallowed, gate = _swallowing_callback()
+
+            # 注意：**不注入**内联派发 —— 走的就是线上真实的 _dispatch_event
+            w = LW.LogWatcher(str(root), on_event, poll_interval=0.05)
+            old_to = LW.STOP_TIMEOUT
+            LW.STOP_TIMEOUT = 0.2
+            try:
+                await w.start()
+                with open(log, "ab") as fh:
+                    fh.write(LINE1)
+                try:
+                    await asyncio.wait_for(gate.wait(), timeout=5.0)
+                    entered = True
+                except asyncio.TimeoutError:
+                    entered = False
+                check("前置：回调已进入（正在 30s 长睡）", entered)
+                if not entered:
+                    return
+                task = w._task
+                await w.stop()
+                check("★stop() 准时收口：轮询任务没有变成孤儿（回调已独立成任务，取消能送达）",
+                      task.done() and task not in getattr(w, "_orphaned", set()),
+                      f"done={task.done()} orphaned={len(getattr(w, '_orphaned', set()))}")
+                check("健康度里在飞 / 僵尸账都归零（停用后不留尾巴）",
+                      w.health().get("callbacks_inflight") == 0
+                      and w.health().get("callbacks_stale") == 0,
+                      str(w.health())[:160])
+            finally:
+                LW.STOP_TIMEOUT = old_to
+                await w.stop()
+
+    asyncio.run(scenario())
+
+
 # ==================== G 行为 2：_running 置回 True 的窗口里不得再读文件 ====================
 def part_g2_orphan_must_not_resume_polling() -> None:
     print("========== [G] 行为 2：_running 置回 True 的窗口里，旧任务不得再读文件 ==========")
@@ -226,6 +290,7 @@ def part_g2_orphan_must_not_resume_polling() -> None:
             on_event, calls, swallowed, gate = _swallowing_callback()
 
             w = LW.LogWatcher(str(root), on_event, poll_interval=0.05)
+            _force_inline_dispatch(w)            # 同上：复刻内联派发以造出「活着的旧任务」
             old_to = LW.STOP_TIMEOUT
             LW.STOP_TIMEOUT = 0.2
             old_task = None
@@ -327,6 +392,7 @@ def main() -> int:
     print("=" * 72)
     part_g_static()
     part_g1_restart_after_swallowed_cancel()
+    part_g1b_production_dispatch_no_orphan()
     part_g2_orphan_must_not_resume_polling()
     part_g3_control_normal_stop()
     part_g4_control_reuse_and_gen_monotonic()

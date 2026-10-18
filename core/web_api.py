@@ -14,10 +14,22 @@ from pathlib import Path
 from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
+from .command_result import classify_command_output
+from .knowledge_base import normalize_status
 from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
 from .tool_guard import HINT_MODES, HINT_TOPIC_KEYWORDS
 from .version_caps import ITEM_SYNTAX_CHOICES
+
+#: v0.24.7（GPT 第二轮复核 P2-1）：广播**算送达**的判定状态。
+#:
+#: 界面上的「已发送」以前只代表「RCON 没抛异常」—— 服务端回 `Unknown command` /
+#: `No player was found` 也照样弹绿字成功。这里改成看统一判定（`command_result`）：
+#: `success` = 有明确成功证据（tellraw 属静默命令，空响应即成功）；
+#: `inferred_success` = 没证据也没错误标记（不冒充成功，但也不该拿它当失败）；
+#: `dispatched_unconfirmed` = 已发出、结束边界没确认（idle 降级模式下的合法结果）。
+#: 其余（failed / syntax_error / unknown / skipped）一律视为**没送达**。
+_BROADCAST_OK_STATUSES = frozenset({"success", "inferred_success", "dispatched_unconfirmed"})
 
 PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
 
@@ -129,6 +141,23 @@ class McControlWebApi:
 
     def __init__(self, plugin) -> None:
         self.plugin = plugin
+
+    @staticmethod
+    def _str_field(data: dict, key: str) -> tuple[str, str]:
+        """取一个字符串字段，返回 ``(值, 错误)``（v0.24.7 · GPT 第二轮复核 P2-5）。
+
+        旧写法 ``(data.get("topic") or "").strip()`` 在字段是数字 / 对象 / 数组时
+        直接抛 ``AttributeError``（没有 .strip）—— 异常冲出路由，界面只看到
+        「请求失败」，日志里也没说清哪个字段。这里改为：非字符串**直接说清楚**，
+        不静默 ``str()`` 转换后当成有效主题入库（那会造出 `{'a': 1}` 这种主题）。
+        缺省 / null 视为空串（由调用方按「必填」处理）。
+        """
+        if key not in data or data.get(key) is None:
+            return "", ""
+        raw = data.get(key)
+        if not isinstance(raw, str):
+            return "", f"{key} 需要字符串（收到 {type(raw).__name__}）"
+        return raw.strip(), ""
 
     # ================= 注册 =================
 
@@ -456,6 +485,17 @@ class McControlWebApi:
         # 否则前端每次都提交、后端每次都判成「不认识」，界面长期误报「后端未接受」，
         # 而设置其实压根没保存。0 = 不限（见 _conf_schema.json 的 commands 分组）。
         "say_max_chars": (0, 10000),
+        # v0.24.7（P1-5）：工作流发送预算的三条闸门 —— 上下限与 core/workflow.py
+        # `_send_budget()` 里 `_cfg_int(key, default, lo, hi)` 的参数**同源**
+        # （tests/test_v0247_review_round2_p2.py [8] 会拿源码逐条对账）。
+        # 这些是安全边界：它们不是「越大越好」的旋钮，调高就是放大一次任务能灌给
+        # 服务端的量，所以上限刻意留着（要放宽得改代码，不是随手拖滑块）。
+        # 注意：这里一律写**字面量**（不要写 64 * 1024 * 1024）—— 这张表是数据表，
+        # 外部审查脚本 / 老判据会用 ast.literal_eval 静态读它，带表达式的值会让整张表
+        # 解析失败、静默退化成空字典（v0.23.5 round2 的 `say_max_chars` 判据就是这么炸的）。
+        "agent_max_batch_commands": (1, 1000),
+        "agent_max_task_commands": (1, 10000),
+        "agent_max_task_bytes": (512, 67108864),   # = 64 * 1024 * 1024（64 MB）
     }
     FLOAT_RANGES = {
         "rcon_timeout": (0.1, 300.0),
@@ -1344,9 +1384,40 @@ class McControlWebApi:
                     f"[{say_name}] {message}", "tellraw @a ",
                     "color_say", "gradient_colors_say", "white",
                 )
-            for c in cmds:
-                await rcon.command(c)
-            return json_response({"ok": True, "mode": mode, "message": message})
+            # v0.24.7（GPT 第二轮复核 P2-1）：**逐条判定**服务端回包，不再「没抛异常就算发送成功」。
+            # 旧写法把 `Unknown command` / `No player was found` 也报成 ok=true（界面绿字「已发送」），
+            # 而那句提示恰恰是「谁都没收到」的证据。现在第一条非送达就停下并如实回错误体
+            # —— 继续发后面的段落只会让「半句消息」更难解释。
+            results = []
+            for idx, c in enumerate(cmds, start=1):
+                out = await rcon.command(c)
+                verdict = classify_command_output(c, out, response_received=True)
+                results.append({
+                    "command": c,
+                    "status": verdict.status,
+                    "output": str(out).strip(),
+                })
+                if verdict.status in _BROADCAST_OK_STATUSES:
+                    continue
+                raw = str(out).strip()[:200] or "（服务端无输出）"
+                hint = ""
+                low = raw.lower()
+                if "no player was found" in low or "no entity was found" in low:
+                    hint = "服务端里可能没有玩家在线 —— 这句话没有被任何人收到。"
+                return json_response({
+                    "ok": False,
+                    "mode": mode,
+                    "results": results,
+                    "failed_command": c,
+                    "error": (
+                        f"第 {idx}/{len(cmds)} 条广播命令没有送达（判定 {verdict.status}）：{raw}"
+                        + (("\n" + hint) if hint else "")
+                    ),
+                })
+            return json_response({
+                "ok": True, "mode": mode, "message": message,
+                "results": results,
+            })
         except Exception as e:
             return json_response({"ok": False, "error": str(e)})
 
@@ -1623,10 +1694,21 @@ class McControlWebApi:
         if kb is None:
             return json_response(self._kb_uninit())
         data = await request.json() or {}
-        topic = (data.get("topic") or "").strip()
-        content = (data.get("content") or "").strip()
-        old_topic = (data.get("old_topic") or "").strip() or topic
-        status = data.get("status") or "untested"
+        # v0.24.7（GPT 第二轮复核 P2-5）：字段校验收敛在一处 ——
+        #   · topic / content / old_topic 必须是字符串（收到数字 / 对象时旧写法
+        #     `.strip()` 直接 AttributeError → 接口 500，界面只显示「请求失败」）；
+        #   · status 走白名单收敛，并把「已回落」这件事回给界面（不再静默改档）。
+        topic, err = self._str_field(data, "topic")
+        if err:
+            return json_response({"ok": False, "error": err})
+        content, err = self._str_field(data, "content")
+        if err:
+            return json_response({"ok": False, "error": err})
+        old_topic, err = self._str_field(data, "old_topic")
+        if err:
+            return json_response({"ok": False, "error": err})
+        old_topic = old_topic or topic
+        status, status_note = normalize_status(data.get("status"))
         if not topic or not content:
             return json_response({"ok": False, "error": "topic 与 content 必填"})
         # v0.21.11：详情弹窗支持「改名 + 改内容」；改名撞到已有主题就拒绝，避免静默覆盖别人的条目
@@ -1641,6 +1723,8 @@ class McControlWebApi:
                               rename_from=old_topic if renaming else "", manual=True)
         return json_response({"ok": True, "entry": entry,
                               "renamed_from": old_topic if renaming else "",
+                              # v0.24.7（P2-5）：状态被回落时说清楚（空串 = 一切照原样）
+                              "status_note": status_note,
                               "save_warning": self._kb_save_warning(kb)})
 
     async def toggle_entry(self):
@@ -1880,6 +1964,11 @@ class McControlWebApi:
         data = await request.json() or {}
         src, dst = data.get("from", ""), data.get("to", "")
         mode = "move" if data.get("mode") == "move" else "copy"
+        # v0.24.7（GPT 第二轮复核 P2-6）：id 必须是字符串再往下走 —— 收到数字 / 对象时
+        # 此前会一路穿到 preset_path() 里抛 ValueError，接口直接 500。
+        if not isinstance(src, str) or not isinstance(dst, str):
+            return json_response({"ok": False, "error": "from / to 需要字符串"})
+        src, dst = src.strip(), dst.strip()
         if not src or not dst:
             return json_response({"ok": False, "error": "from / to 必填"})
         r = man.transfer(src, dst, mode)

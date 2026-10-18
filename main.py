@@ -68,6 +68,8 @@ from .core.log_watcher import (
     EVENT_ME,
     EVENT_WHISPER,
     LogWatcher,
+    run_blocking,
+    run_blocking_or_raise,
 )
 from .core.rcon import AsyncRcon, RconError, RconTimeoutError
 from .core.server_dir_check import format_check, inspect_server_dir
@@ -114,6 +116,17 @@ from .core.hot_reload import (
 # 插件配置文件（AstrBot 侧）与 schema 文件名
 PLUGIN_CONF_FNAME = "astrbot_plugin_Scintilla_MC_Server_Control_config.json"
 CFG_SCHEMA_FNAME = "_conf_schema.json"
+
+# ---- v0.24.7（GPT 第二轮复核 P2-9）：阻塞调用的等待上限 ----
+# 这些活儿（物品词典构建、整合包指纹扫描）以前走 `asyncio.to_thread`：默认线程池
+# **全进程共享、线程非 daemon**。大整合包上它们要跑很久，一旦卡在系统调用里
+# （慢盘 / 网络盘 / 文件被占用），既占着共享池，又会在退出时被解释器 join。
+# 现在统一走 `run_blocking_or_raise`（daemon 线程 + 等待上限）。
+# 上限取「宽松但有限」—— 它的用途是**兜住永不返回**，不是给正常慢盘设死线；
+# 真超时也只会把这一次构建按失败处理（界面照旧显示原因），不会留下半成品对象。
+DICT_BUILD_TIMEOUT = 600.0        # 物品词典构建（185+ jar 的大包实测数十秒）
+IDENTITY_SCAN_TIMEOUT = 300.0     # 整合包指纹 / 服务端形态扫描
+PROC_SAMPLE_TIMEOUT = 8.0         # 进程表遍历采样（概览接口用，必须快）
 
 
 def load_cfg_group_index(schema_path: Path) -> dict:
@@ -608,7 +621,9 @@ class McControlPlugin(Star):
             except Exception:  # noqa: BLE001
                 pass
             try:
-                stats = await asyncio.to_thread(self._dictionary.build)
+                stats = await run_blocking_or_raise(
+                    self._dictionary.build, timeout=DICT_BUILD_TIMEOUT, what="物品词典构建"
+                )
                 self.logger.info("物品词典构建完成: %s", stats)
             except Exception as e:
                 self.logger.warning("物品词典构建失败: %s", e)
@@ -619,8 +634,10 @@ class McControlPlugin(Star):
                 kdir = StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control")
                 cache = kdir / "mod_ids_cache.json"
                 # v0.21.20：指纹来源分层 —— mods/ → plugins/（Paper 系）→ 服务端形态
-                ident = await asyncio.to_thread(
-                    compute_server_identity, str(server_dir), str(cache)
+                # v0.24.7（P2-9）：改走 daemon 线程 + 等待上限（见 main.py 顶部常量说明）
+                ident = await run_blocking_or_raise(
+                    compute_server_identity, str(server_dir), str(cache),
+                    timeout=IDENTITY_SCAN_TIMEOUT, what="整合包指纹扫描",
                 )
                 self._server_identity = ident
                 kid = ident["fingerprint"]
@@ -1667,8 +1684,9 @@ class McControlPlugin(Star):
             parts.append("服务端指纹未刷新（server_dir 未配置或不是有效目录）")
         else:
             try:
-                ident = await asyncio.to_thread(
-                    compute_server_identity, str(server_dir), str(kdir / "mod_ids_cache.json")
+                ident = await run_blocking_or_raise(
+                    compute_server_identity, str(server_dir), str(kdir / "mod_ids_cache.json"),
+                    timeout=IDENTITY_SCAN_TIMEOUT, what="整合包指纹扫描",
                 )
             except Exception as e:
                 self.logger.warning("服务端指纹重算失败: %s", e)
@@ -1754,7 +1772,9 @@ class McControlPlugin(Star):
                     dic.mc_hint = tuple(_vi.mc) if _vi.mc else None
                 except Exception:  # noqa: BLE001
                     pass
-                stats = await asyncio.to_thread(dic.build)
+                stats = await run_blocking_or_raise(
+                    dic.build, timeout=DICT_BUILD_TIMEOUT, what="物品词典构建"
+                )
                 stale = _stale_note(self, sig, gen)
                 if stale:
                     parts.append(stale)
@@ -4170,8 +4190,12 @@ class McControlPlugin(Star):
             return None
         if psutil is None:
             return None
-        proc = await asyncio.to_thread(self._find_server_process)
-        if proc is None:
+        # v0.24.7（GPT 第二轮复核 P2-9）：进程表遍历走 **daemon 线程 + 等待上限**。
+        # 此前是 `asyncio.to_thread`（默认线程池：全进程共享、线程非 daemon）——
+        # psutil 在个别机器上遍历进程会很慢甚至卡住，那会让「概览」接口一直转圈，
+        # 还会在退出时被解释器 join。超时按「采样不可用」处理（返回 None，界面显示原因）。
+        ok, proc = await run_blocking(self._find_server_process, timeout=8.0)
+        if not ok or proc is None:
             return None
         try:
             with proc.oneshot():
@@ -4419,7 +4443,9 @@ class McControlPlugin(Star):
             return _gate
         if not self._dictionary:
             return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
-        stats = await asyncio.to_thread(self._dictionary.build)
+        stats = await run_blocking_or_raise(
+            self._dictionary.build, timeout=DICT_BUILD_TIMEOUT, what="物品词典构建"
+        )
         self.logger.info("[词典重建] %s", stats)
         return (
             f"词典重建完成：{stats['mods']} 个 Mod，{stats['items']} 个物品，"

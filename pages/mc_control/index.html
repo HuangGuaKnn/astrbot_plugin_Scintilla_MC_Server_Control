@@ -1694,6 +1694,15 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div style="flex:1"><label class="f">实现器最大尝试轮数</label><input type="number" id="cfg_wf_rounds_impl" min="1" max="10" placeholder="3"></div>
       <div style="flex:1"><label class="f">纠错循环最大轮数</label><input type="number" id="cfg_wf_rounds_correct" min="0" max="10" placeholder="2"></div>
     </div>
+    <!-- v0.24.7（P1-5）：单次任务能往服务端灌多少命令，此前写死在代码里。
+         现在可调，但请当成**安全闸门**看：条数 / 字节一旦用尽，工作流会整体停发
+         （fail-closed，不会「剩下的接着发」）。留空 = 用插件内置默认值。 -->
+    <div class="frow" style="margin-top:6px;max-width:690px">
+      <div style="flex:1"><label class="f">单批条数上限</label><input type="number" id="cfg_wf_max_batch" min="1" max="1000" placeholder="40"></div>
+      <div style="flex:1"><label class="f">单任务累计条数上限</label><input type="number" id="cfg_wf_max_cmds" min="1" max="10000" placeholder="120"></div>
+      <div style="flex:1"><label class="f">单任务累计字节上限</label><input type="number" id="cfg_wf_max_bytes" min="512" max="67108864" placeholder="262144"></div>
+    </div>
+    <div class="hint" style="margin-top:6px">发送闸门：单批条数 / 单任务累计条数 / 累计字节三类上限，超出即整批拒发并停止后续；原版 RCON 单包缓冲仅 1460 字节，「累计字节」是长 NBT 命令灌爆服务端的防线</div>
     <div class="hint" style="margin-top:8px">开关与「工作流」页状态同步；各 Agent Provider 留空则沿用主 Provider / 会话默认</div>
     <div class="hint" id="wf_model_tip" style="margin-top:6px"></div>
   </div>
@@ -2917,6 +2926,13 @@ const CFG_FIELDS = [
   ["cfg_wf_p_corrector","agent_corrector_provider_id","s"],
   ["cfg_wf_rounds_impl","agent_max_implement_rounds","n"],
   ["cfg_wf_rounds_correct","agent_max_correct_rounds","n"],
+  // v0.24.7（P1-5）：发送预算三条闸门（单批条数 / 单任务累计条数 / 累计字节）。
+  // "n" 类型留空即不提交 —— 后端保留原值，未配置时由 core/workflow.py 的
+  // DEFAULT_MAX_* 兜底。上下限必须与后端 INT_RANGES 一致，否则保存时会被判
+  // 「后端未接受」（契约见 tests/test_settings_whitelist_contract.py）。
+  ["cfg_wf_max_batch","agent_max_batch_commands","n"],
+  ["cfg_wf_max_cmds","agent_max_task_commands","n"],
+  ["cfg_wf_max_bytes","agent_max_task_bytes","n"],
 ];
 
 // 空值兜底：这些字段留空会「无意义」或无法通过后端校验，展示与提交时都补默认值

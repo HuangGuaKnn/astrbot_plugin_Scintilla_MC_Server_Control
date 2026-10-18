@@ -49,6 +49,33 @@ except Exception:         # pragma: no cover
 
 VALID_STATUS = ("verified", "untested", "corrected", "pending")
 
+
+def normalize_status(status) -> tuple[str, str]:
+    """把外部（WebUI / LLM / 配置文件）给的 status 收敛成合法取值。
+
+    返回 ``(status, note)``。note 非空 = **对方给的值不合法、已被回落**，调用方
+    应当如实告诉用户（界面上显示一个和实际入库不一样的状态，也是一种说谎）。
+
+    v0.24.7（GPT 第二轮复核 P2-5）：`save_entry` 内部一直有这层兜底，但调用方
+    （WebAPI）此前是「照原样传进来、什么都不说」—— 管理员在界面选了个没见过的
+    状态值，条目会静默变成 untested。这里把判定收敛到一处，写入路径共用。
+    """
+    if status is None:
+        return "untested", ""
+    if isinstance(status, str):
+        s = status.strip().lower()
+        if s in VALID_STATUS:
+            return s, ""
+        if not s:
+            return "untested", ""
+        return "untested", (
+            f"status「{status}」不是合法取值（合法：{' / '.join(VALID_STATUS)}）"
+            "，已按 untested 处理"
+        )
+    return "untested", (
+        f"status 需要字符串（收到 {type(status).__name__}），已按 untested 处理"
+    )
+
 # ================= 检索引擎 =================
 # v0.21.40：检索引擎双轨制（配置项 knowledge.search_engine）。
 #
@@ -1362,6 +1389,8 @@ class ModKnowledgeBase:
             self._data["entries"].pop(old_key, None)
             self._tombstone(old_key)
         if status not in VALID_STATUS:
+            # v0.24.7（P2-5）：口径与 `normalize_status()` 一致（这里只保留兜底，
+            # 因为残留的调用方可能仍直传原始值；status 已收敛成 untested）。
             status = "untested"
         # 待审批状态：旧条目若已应用，降级为 pending 等待重新审批（用户手动编辑除外）
         if not manual and not self.state.auto_apply and old.get("status") not in ("pending",):
@@ -2282,6 +2311,15 @@ class KnowledgePresetManager:
         """把 src 预设的条目整体复制/移动到 dst 预设（冲突 topic 默认保留目标版本）。"""
         if src_id == dst_id:
             return {"ok": False, "error": "源与目标不能是同一个预设"}
+        # v0.24.7（GPT 第二轮复核 P2-6）：**先验 id 再碰文件系统**。
+        # `preset_path()` 对非法 id 是**抛 ValueError**（防路径穿越），而这里此前是
+        # 「先 preset_path、后查注册表」—— 一个 `from="../../config"` 的 WebUI 请求
+        # 会让异常直接冲出 transfer()、冲出 WebAPI 变成 500，用户只看到「请求失败」。
+        # 其余预设接口（switch / remove / bind）都是先用 get() 过注册表，天然安全。
+        if not isinstance(src_id, str) or not isinstance(dst_id, str):
+            return {"ok": False, "error": "预设 ID 必须是字符串"}
+        if not self._safe_preset_id(src_id) or not self._safe_preset_id(dst_id):
+            return {"ok": False, "error": "预设 ID 无效（只能是单个文件名片段）"}
         src_p, dst_p = self.preset_path(src_id), self.preset_path(dst_id)
         sp, dp = self.get(src_id), self.get(dst_id)
         if sp is None or dp is None or not src_p.exists() or not dst_p.exists():

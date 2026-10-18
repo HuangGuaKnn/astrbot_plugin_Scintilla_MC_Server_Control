@@ -317,8 +317,14 @@ def _scan_dir_ids(
     """扫描一个目录里的 jar，解析出 ID 集合。
 
     返回 ``(排序去重后的 ID 列表, jar 数量, 解析不出 ID 的 jar 数量)``。
-    缓存键 = ``prefix + "jar名|大小|mtime"``（mods 的 prefix 为空串，
-    与老版本缓存格式保持一致，老缓存继续命中）。
+    缓存键 = ``prefix + "jar名|大小|mtime_ns"``（mods 的 prefix 仍是空串，
+    与老版本的前缀规则一致；时间戳口径见下）。
+
+    v0.24.7（GPT 第二轮复核 P2）：时间戳**换成纳秒**。旧键用的是 ``int(st.st_mtime)``
+    （秒级），而「删掉旧 jar、立刻拷入同名同大小新 jar」在同一个秒内完成时，
+    三元组完全相同 → 直接命中**旧 jar 的 ID**，指纹与词典集体认错（模组 ID 是知识库
+    预设绑定、词典重建的判据，认错等于整库串台）。纳秒级 mtime 能把这窗口压到
+    文件系统本身的写时间戳精度以下；代价只是老缓存第一轮全部 miss、重算一次。
     """
     ids: set[str] = set()
     jars = 0
@@ -335,7 +341,10 @@ def _scan_dir_ids(
         except Exception:
             continue
         jars += 1
-        key = f"{prefix}{p.name}|{st.st_size}|{int(st.st_mtime)}"
+        # v0.24.7（P2）：纳秒级 mtime —— 秒级会出现「同一秒内换掉同名同大小 jar 仍命中
+        # 旧指纹」的窗口（见本函数 docstring）。老缓存键（秒级）从此不再命中，
+        # 第一轮会全量重算一次，之后照旧命中。
+        key = f"{prefix}{p.name}|{st.st_size}|{st.st_mtime_ns}"
         if key in cache:
             got = cache[key]
         else:

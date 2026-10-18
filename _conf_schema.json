@@ -655,6 +655,34 @@
           "max": 10,
           "step": 1
         }
+      },
+      "agent_max_batch_commands": {
+        "description": "单批命令条数上限",
+        "hint": "工作流一次任务里，单批最多下发多少条命令；超出则整批拒发（不会只发一半）。1 ~ 1000",
+        "type": "int",
+        "default": 40,
+        "slider": {
+          "min": 1,
+          "max": 1000,
+          "step": 1
+        }
+      },
+      "agent_max_task_commands": {
+        "description": "单任务累计命令条数上限",
+        "hint": "单次任务累计下发条数上限（实现轮与纠错轮共用同一本账），用尽后整体停发。1 ~ 10000",
+        "type": "int",
+        "default": 120,
+        "slider": {
+          "min": 1,
+          "max": 10000,
+          "step": 1
+        }
+      },
+      "agent_max_task_bytes": {
+        "description": "单任务累计字节上限",
+        "hint": "单次任务累计字节上限，防止长 NBT 命令灌爆服务端（原版 RCON 单包缓冲仅 1460 字节）。512 ~ 67108864（64 MiB）",
+        "type": "int",
+        "default": 262144
       }
     }
   },

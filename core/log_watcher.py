@@ -26,7 +26,7 @@ import hashlib
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -51,6 +51,154 @@ HEAD_BYTES = 256
 #: v0.23.5 第三轮：内容锚点长度（见 `__init__` 的 `_anchor`）。太小容易偶合，
 #: 太大则每轮多读几个字节 —— 64 字节足够，且必然覆盖到换行边界。
 ANCHOR_BYTES = 64
+
+# ---- v0.24.7（GPT 第二轮复核 P2）：事件回调的超时与在飞上限 ----
+#: 单次 `on_event` 回调的等待上限（秒）。回调里是平台发送 / 聊天桥接推送，
+#: 平台侧一卡（网络不通 / 会话不存在 / 限流）就永不返回 —— 旧实现直接 await，
+#: 于是**整个轮询停摆**，`stop()` 也只能干等。
+CALLBACK_TIMEOUT = 10.0
+#: 同时在飞的回调任务上限。超时只是「不再等」：Python 杀不掉已经在跑的协程
+#: （它可能吞掉取消），所以必须有硬上限，否则卡住的回调会无限堆积。
+MAX_CALLBACK_INFLIGHT = 4
+#: 超时回调的「僵尸宽限期」（秒）：超过它仍未结束的回调**不再占用在飞额度**
+#: —— 否则一个永久卡死的回调会把后续事件全部饿死（轮询还在跑，事件一条都不派发）。
+#: 它仍会被记账（`callbacks_stale`）并保留引用，卡死这件事必须留痕。
+CALLBACK_STUCK_GRACE = 60.0
+#: 卡死回调的引用上限（只用于留痕；到顶就丢最旧的一条并告警，防止集合无界增长）。
+MAX_STUCK_CALLBACKS = 32
+
+
+class _DaemonThreadExecutor:
+    """单线程 **daemon** 执行器（v0.24.7 · GPT 第二轮复核 P2）。
+
+    为什么不再用 ``concurrent.futures.ThreadPoolExecutor``：它的工作线程是**非 daemon**
+    的，解释器退出时会走 ``threading._register_atexit`` 去 join 它们。日志 IO 一旦卡在
+    系统调用里（慢盘 / 网络盘 / 文件被别的进程独占），Python 杀不掉那个线程，
+    ``shutdown(wait=False)`` 也拦不住退出流程 —— 表现为「停用它之后进程迟迟不退」。
+
+    换成 daemon 线程 + 自建 ``Future``，对调用方语义保持一致：
+
+      * ``submit()`` 仍然返回 ``concurrent.futures.Future``（``run_in_executor``
+        只要求这个类型）；
+      * 关闭之后再 ``submit()`` 抛 ``RuntimeError``（与线程池同一句话，调用方
+        现有的 ``except RuntimeError`` 分支原样有效）；
+      * 单飞仍由 LogWatcher 自己的在飞闸门负责 —— 这里不做排队，只保证
+        「卡住的线程不许拖住进程退出」。
+    """
+
+    #: 回归用例按线程池的口径断言过这个属性（``_max_workers == 1``），保留它。
+    _max_workers = 1
+
+    def __init__(self, thread_name_prefix: str = "logwatch") -> None:
+        self._prefix = thread_name_prefix
+        self._shutdown = False
+        self._lock = threading.Lock()
+        self._threads: set = set()
+
+    def submit(self, fn, *args, **kwargs) -> Future:
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+        fut: Future = Future()
+
+        def _runner() -> None:
+            if not fut.set_running_or_notify_cancel():
+                return
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except BaseException as e:                       # noqa: BLE001
+                try:
+                    fut.set_exception(e)
+                except Exception:                            # noqa: BLE001
+                    pass
+            finally:
+                with self._lock:
+                    self._threads.discard(threading.current_thread())
+
+        t = threading.Thread(target=_runner, name=self._prefix, daemon=True)
+        with self._lock:
+            self._threads.add(t)
+            t.start()
+        return fut
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
+        """只做「不再接收新任务」的标记，**刻意不 join**。
+
+        ``wait=True`` 会把这里唯一的改进毁掉：卡在系统调用里的那笔 IO 是 daemon 线程，
+        进程退出时由解释器直接回收，这正是我们要的行为。
+        """
+        with self._lock:
+            self._shutdown = True
+
+
+#: v0.24.7：进程级 daemon 执行器（懒建）。给「**可能卡住的阻塞调用**」用 ——
+#: 这类调用绝不该跑在事件循环的默认线程池上（那是全进程共享、且线程非 daemon）。
+_DAEMON_RUNNER: "_DaemonThreadExecutor | None" = None
+_DAEMON_RUNNER_LOCK = threading.Lock()
+
+
+def daemon_executor() -> "_DaemonThreadExecutor":
+    """进程级、单线程的 daemon 执行器（懒建，v0.24.7）。"""
+    global _DAEMON_RUNNER
+    if _DAEMON_RUNNER is None:
+        with _DAEMON_RUNNER_LOCK:
+            if _DAEMON_RUNNER is None:
+                _DAEMON_RUNNER = _DaemonThreadExecutor(thread_name_prefix="blocking-io")
+    return _DAEMON_RUNNER
+
+
+async def run_blocking(fn, *args, timeout: float = 8.0, what: str = ""):
+    """把**可能卡住的阻塞调用**丢进 daemon 线程，并给它一个等待上限。
+
+    v0.24.7（GPT 第二轮复核 P2-9）：`asyncio.to_thread` 用的是事件循环的默认线程池
+    （线程**非 daemon**）—— 一次卡在系统调用里的阻塞调用，既会和知识库 / 词典构建
+    抢那几条共享线程，又会在退出时被解释器 join（进程迟迟不退）。这里统一改走
+    daemon 线程，并返回 ``(ok, value)``：
+
+      * 正常完成 → ``(True, 返回值)``；
+      * 超时 / 抛错 → ``(False, None)``，并记一条 warn（线程杀不掉，只能不再等）。
+
+    注意：超时**不代表**那个调用已经结束，调用方必须能接受「结果永远不回来」。
+
+    ``what``（v0.24.7 补）：给日志用的中文名 —— 调用方是 ``functools.partial`` /
+    lambda 时 ``fn.__name__`` 说不清是什么活儿，日志里得点名（例如「物品词典构建」）。
+    """
+    loop = asyncio.get_running_loop()
+    name = what or getattr(fn, "__name__", str(fn))
+    try:
+        fut = loop.run_in_executor(daemon_executor(), fn, *args)
+    except RuntimeError as e:                                # 执行器已关（理论上不会）
+        logger.warning("阻塞调用 %s 无法提交（%s）", name, e)
+        return False, None
+    try:
+        return True, await asyncio.wait_for(asyncio.shield(fut), timeout)
+    except asyncio.TimeoutError:
+        logger.warning("阻塞调用 %s 超过 %g 秒未返回，本次按「不可用」处理"
+                       "（它跑在 daemon 线程里，不会拖住进程退出）", name, timeout)
+        return False, None
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("阻塞调用 %s 失败：%s: %s", name, type(e).__name__, e)
+        return False, None
+
+
+async def run_blocking_or_raise(fn, *args, timeout: float = 8.0, what: str = "阻塞调用"):
+    """`run_blocking` 的「要结果、要异常」版本（v0.24.7）。
+
+    v0.24.7 收口：仓库里最后几处 ``asyncio.to_thread``（物品词典构建、整合包指纹
+    扫描）也一并改走 daemon 线程 —— 否则「阻塞调用一律不占默认线程池、线程一律
+    daemon」这条承诺还留着口子，而那些正是**最慢、最该防卡住**的调用。
+
+    与 `run_blocking` 的区别只在失败时：这里**抛 RuntimeError**，让调用方原来那套
+    ``except Exception as e: 记进 results / parts`` 的诊断语句原样有效（信息不降级）；
+    真正的异常类型与原因由 `run_blocking` 记进日志。
+    """
+    ok, value = await run_blocking(fn, *args, timeout=timeout, what=what)
+    if not ok:
+        raise RuntimeError(
+            f"{what}未在 {timeout:g} 秒内返回（超时或执行出错，详见插件日志）"
+        )
+    return value
+
 
 # 事件类型常量
 EVENT_CHAT = "chat"
@@ -232,7 +380,10 @@ class LogWatcher:
         self._io_gen: int = 0                 # 当前代（每次 start() +1）
         self._io_inflight_gen: int = 0        # 在飞计数属于哪一代
         self._io_task: asyncio.Future | None = None
-        self._executor: ThreadPoolExecutor | None = None
+        # v0.24.7：daemon 线程执行器（见 `_DaemonThreadExecutor`）—— 对外语义与
+        # 单线程的 ThreadPoolExecutor 一致，但不会拖着进程退出。
+        self._executor: "_DaemonThreadExecutor | None" = None
+        self._fallback_ex: "_DaemonThreadExecutor | None" = None
         #: 生命周期锁（第七轮）：start / stop 互斥；惰性创建 + 跨事件循环自动换新
         self._life_lk: asyncio.Lock | None = None
         #: 生命周期方法的 owner loop（第九轮）：**显式记录** start / stop 归属哪个
@@ -254,6 +405,17 @@ class LogWatcher:
         #: （只动尾巴）不会误报。
         self._short_sig: str = ""
         self._short_len: int = 0
+        # ---- v0.24.7（GPT 第二轮复核 P2）：事件回调的超时 / 在飞账本 ----
+        #: 在飞回调任务 → 宽限期截止时刻（monotonic）
+        self._callback_inflight: dict = {}
+        #: 超时后仍不结束的「僵尸回调」（保留引用留痕，不占发放额度）
+        self._callback_stuck: set = set()
+        #: 已成功交付（回调正常返回）的条数
+        self.callbacks_delivered: int = 0
+        #: 超时放弃等待的条数
+        self.callback_timeouts: int = 0
+        #: 在飞额度满而**丢弃**的条数（事件没派发出去，只记账）
+        self.callbacks_dropped: int = 0
 
     def _stale(self, gen: "int | None") -> bool:
         """这个监听任务代号是否已过期（v0.23.5 第八轮，GPT 第七轮 P2）。
@@ -355,9 +517,12 @@ class LogWatcher:
             self._io_gen += 1
             # v0.23.5 第六轮（GPT 第五轮 P2）：IO 走**专属、有界**的执行器（1 个线程）——
             # 卡住的线程只占它自己的池，不再占默认线程池（那是全进程共享的）。
+            # v0.24.7（GPT 第二轮复核 P2）：换成 **daemon 线程**版实现 —— 线程池的
+            # 工作线程是非 daemon 的，卡在系统调用里时解释器退出会一直 join 它们，
+            # 「停用之后进程迟迟不退」就是它。对外语义（返回 Future / 关闭后 RuntimeError）
+            # 与 max_workers=1 完全一致。
             if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=1,
-                                                    thread_name_prefix="logwatch")
+                self._executor = _DaemonThreadExecutor(thread_name_prefix="logwatch")
             # v0.23.5 第十一轮（GPT 第十轮 P2/P3）：本次初始化的**任务代号**先记下 ——
             # 编码探测结果兑现后先复核它仍属当前代，才准许落共享字段。编码改由
             # `_prime_state` **随返回值带出**（不再在线程里直写）：旧代探测线程
@@ -485,8 +650,11 @@ class LogWatcher:
         loop = asyncio.get_running_loop()
         ex = self._executor
         if ex is None:
-            # 兜底：还没 start()（或执行器已关）时走默认线程池，行为与旧版一致
-            fut: asyncio.Future = asyncio.ensure_future(asyncio.to_thread(_run))
+            # 兜底：还没 start()（或执行器已关）时用它自己的兜底执行器。
+            # v0.24.7（GPT 第二轮复核 P2-9）：这里**不再走 `asyncio.to_thread`** ——
+            # 那条路用的是事件循环的默认线程池（全进程共享，线程还**非 daemon**），
+            # 「卡住的 IO 不占默认池、不拖住退出」这条承诺会被兜底路径悄悄绕过。
+            fut: asyncio.Future = loop.run_in_executor(self._get_fallback_executor(), _run)
         else:
             try:
                 fut = loop.run_in_executor(ex, _run)
@@ -519,6 +687,21 @@ class LogWatcher:
                            "在它返回前不再提交新的读取（最多 1 笔在飞）",
                            what or "文件 IO", IO_TIMEOUT)
             return None
+
+    def _get_fallback_executor(self) -> "_DaemonThreadExecutor":
+        """兜底执行器（还没 start() / 执行器刚被 stop() 关掉时用）。
+
+        v0.24.7（GPT 第二轮复核 P2-9）：兜底路径此前是 `asyncio.to_thread` ——
+        它跑在事件循环的**默认线程池**上（全进程共享，线程还**非 daemon**），
+        「卡住的 IO 只占自己的池、不拖住进程退出」这条承诺在这里被绕过了。
+        现在兜底也是一个自有的 daemon 单线程执行器，语义与主执行器完全一致；
+        它随 watcher 实例存活（**不**在 stop() 里关掉 —— 孤儿旧代任务还在用它）。
+        """
+        ex = self._fallback_ex
+        if ex is None:
+            ex = _DaemonThreadExecutor(thread_name_prefix="logwatch-fallback")
+            self._fallback_ex = ex
+        return ex
 
     @property
     def _io_busy(self) -> bool:
@@ -600,6 +783,10 @@ class LogWatcher:
         代际检查点（`_loop` 每轮 / `_poll` 各落点）自行退出。
         """
         self._running = False
+        # v0.24.7（GPT 第二轮复核 P2）：回调现在是**独立任务**（见 _dispatch_event），
+        # 不再挂在轮询任务上 —— 这里必须显式取消，否则「停用 / 重载」之后还会有一条
+        # 回调继续往会话里推消息（活过一个已经停用的插件）。
+        self._cancel_callbacks()
         # v0.23.5 第八轮：先失效旧代、再取消 —— 取消可能被回调吞掉，代际不会。
         self._task_gen += 1
         task, self._task = self._task, None
@@ -684,6 +871,13 @@ class LogWatcher:
             # v0.23.5 第八轮：监听任务代 —— 「第几代在跑」一眼可见（诊断孤儿 /
             # 新旧并发时对照用；每次 start() / stop() 都会前进）
             "task_gen": int(self._task_gen),
+            # v0.24.7（GPT 第二轮复核 P2）：回调派发的四笔账 —— 回调卡住时
+            # 旧实现在这里什么都看不见（轮询停摆、pos 不动、error_count 是 0）。
+            "callbacks_delivered": int(self.callbacks_delivered),
+            "callback_timeouts": int(self.callback_timeouts),
+            "callbacks_dropped": int(self.callbacks_dropped),
+            "callbacks_inflight": len(self._callback_inflight),
+            "callbacks_stale": len(self._callback_stuck),
         }
 
     def _file_sig(self) -> tuple[int, int] | None:
@@ -1076,11 +1270,131 @@ class LogWatcher:
                 # 这里一挡，它再也派发不出下一条（连「下一行」也见不到上面那处检查）。
                 if self._stale(gen):
                     return
-                try:
-                    await self.on_event(etype, player, detail)
-                except Exception:
-                    # 单个事件的回调失败不影响后续事件处理
-                    pass
+                # v0.24.7（GPT 第二轮复核 P2）：改成带**超时 + 在飞上限**的派发。
+                # 旧实现直接 `await self.on_event(...)`：回调里做的是平台发送 / 桥接
+                # 推送，平台侧一卡（网络不通、会话不存在、限流）它就永不返回 ——
+                # 轮询整体停摆、stop() 只能干等，健康度上还什么都看不见。
+                await self._dispatch_event(etype, player, detail)
+
+    # ============ v0.24.7：事件回调的超时与在飞上限 ============
+
+    def _callback_slot_free(self) -> bool:
+        """在飞回调是否还有额度（顺手回收已结束的、以及过了宽限期的僵尸）。
+
+        僵尸（超时后仍不结束）**不再占额度**：一个永久卡死的回调若继续占坑，
+        后续事件会被全部饿死 —— 那等于把「回调卡住」从「卡住轮询」换成
+        「静默丢弃所有事件」，两种都不能要。所以额度只统计还在正常期限内的，
+        卡死的那批改由 `callbacks_stale` 记账、引用保留，卡死这件事必须留痕。
+        """
+        now = time.monotonic()
+        for task, deadline in list(self._callback_inflight.items()):
+            if task.done():
+                self._callback_inflight.pop(task, None)
+                continue
+            if deadline <= now:
+                self._callback_inflight.pop(task, None)
+                self._remember_stuck(task)
+                logger.warning(
+                    "日志监听：一个事件回调超过 %g 秒仍未结束，不再占用在飞额度"
+                    "（它可能吞掉了取消；已记入 callbacks_stale）", CALLBACK_STUCK_GRACE,
+                )
+        return len(self._callback_inflight) < MAX_CALLBACK_INFLIGHT
+
+    def _remember_stuck(self, task) -> None:
+        """把卡死的回调放进留痕集合；集合到顶就丢最旧的一条（防无界增长）。"""
+        self._callback_stuck.add(task)
+        while len(self._callback_stuck) > MAX_STUCK_CALLBACKS:
+            oldest = next(iter(self._callback_stuck))
+            self._callback_stuck.discard(oldest)
+            logger.warning("日志监听：卡死回调留痕已到上限 %d，丢弃最旧的一条引用",
+                           MAX_STUCK_CALLBACKS)
+
+    async def _safe_callback(self, etype: str, player: str, detail: str) -> None:
+        """回调包装：**吞掉**普通异常（单条事件失败不影响后续），但让取消穿透。"""
+        try:
+            await self.on_event(etype, player, detail)
+        except asyncio.CancelledError:
+            raise
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def _reap_callback(self, task) -> None:
+        """回调任务收尾：解除引用并取出异常（免得留一堆 never-retrieved 噪声）。"""
+        self._callback_inflight.pop(task, None)
+        self._callback_stuck.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except Exception:                                        # noqa: BLE001
+            return
+        if exc is not None:
+            logger.warning("日志监听：事件回调以异常收尾：%s: %s",
+                           type(exc).__name__, exc)
+
+    async def _dispatch_event(self, etype: str, player: str, detail: str) -> bool:
+        """派发一条事件给 ``on_event``，**带超时与在飞上限**（v0.24.7 · GPT 第二轮复核 P2）。
+
+        为什么不能直接 await：回调是插件侧的用户代码，里面做平台发送 / 桥接推送，
+        平台侧卡住时它永不返回 —— 日志轮询会连带停摆（事件不再更新），
+        `stop()` 也只能等它，健康度上没有任何指标能看出「是回调卡了」。
+
+        现在的口径：
+
+          * 回调跑成**独立任务**，用 ``asyncio.wait`` 等它 10 秒。刻意**不用**
+            ``wait_for`` —— 子任务若吞掉 ``CancelledError``（本文件反复踩过的形态），
+            ``wait_for`` 会一直等它收尾，超时形同虚设；``asyncio.wait`` 到期即返回。
+          * 超时 → 取消该任务、记账、告警，然后**立刻返回**，轮询继续跑；
+          * 在飞任务数达上限 → 丢弃这条事件并记账（超时杀不掉、重复取消也可能被吞，
+            所以必须有硬上限，否则它们会无限堆积）。
+
+        返回是否已交付（``False`` = 超时或丢弃）。
+        """
+        if not self._callback_slot_free():
+            self.callbacks_dropped += 1
+            logger.warning(
+                "日志监听：事件回调在飞数已达上限 %d，本条事件（%s）不再派发"
+                "（回调卡住时不许无限堆积）", MAX_CALLBACK_INFLIGHT, etype,
+            )
+            return False
+        task = asyncio.ensure_future(self._safe_callback(etype, player, detail))
+        self._callback_inflight[task] = time.monotonic() + CALLBACK_STUCK_GRACE
+        task.add_done_callback(self._reap_callback)
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=CALLBACK_TIMEOUT)
+        except asyncio.CancelledError:
+            # 自己（轮询任务）被取消：把这条回调一起带走，别再往下派发
+            task.cancel()
+            raise
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("日志监听：等待事件回调时出错（已忽略）：%s", e)
+            return False
+        if task in done:
+            self.callbacks_delivered += 1
+            return True
+        self.callback_timeouts += 1
+        logger.warning(
+            "日志监听：事件回调（%s）超过 %g 秒未返回，已放弃等待并取消；轮询继续"
+            "（在飞上限 %d 个）", etype, CALLBACK_TIMEOUT, MAX_CALLBACK_INFLIGHT,
+        )
+        task.cancel()
+        return False
+
+    def _cancel_callbacks(self) -> None:
+        """取消全部在飞回调（stop() 用）。
+
+        v0.24.7：回调已改成独立任务，**不再**挂在轮询任务上 —— 老实现里 stop()
+        取消轮询时回调会随之消失，现在必须显式取消，否则一次「停用 / 重载」之后
+        还会有一条回调继续往会话里推消息（活过一个已停用的插件）。
+        卡死的那批不强杀（取消对它们无效），但解除留痕引用，交给 GC。
+        """
+        for task in list(self._callback_inflight):
+            try:
+                task.cancel()
+            except Exception:                                    # noqa: BLE001
+                pass
+        self._callback_inflight.clear()
+        self._callback_stuck.clear()
 
     # ============ 编码自适应（UTF-8 / GBK） ============
     # Minecraft/Forge 在中文 Windows 下常以 GBK(cp936) 写日志（System.out 默认
