@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -171,8 +172,22 @@ def group_empty() -> None:
 def group_release() -> None:
     print("\n---- 四、发布包卫生：红就是红，别又打 PASS ----")
     src = (ROOT / "run_release_verify.py").read_text(encoding="utf-8")
-    check("★PASS 打印已纳入 data_bad（旧版这里会自相矛盾）",
-          "if not leaked and not missing and not data_bad:" in src)
+    # 第八轮：这一条原来钉的是**上面那一行的字面**（`if not leaked and not missing and not data_bad:`），
+    # 于是「多加一个失败清单」（本轮加了 arch_forensics）就会把它判红 —— 那是判据自己脆，不是代码错。
+    # 改成钉**结构**：PASS 打印的守卫必须覆盖每一个「会被报成 FAIL 的清单」。
+    # 清单名从代码里自动取（`[FAIL] … {名字}` 且该名字在函数里出现多次），新增清单会自动被要求覆盖。
+    body = src[src.find("def check_export_ignore"):]
+    nxt = body.find("\ndef ", 10)
+    if nxt > 0:
+        body = body[:nxt]
+    names = [n for n in dict.fromkeys(re.findall(r"\[FAIL\][^\n]*?\{(\w+)", body))
+             if re.search(rf"^\s*if {n}:", body, re.M)]
+    guard = next((ln.strip() for ln in body.splitlines()
+                  if ln.strip().startswith("if not ") and "leaked" in ln), "")
+    uncovered = [n for n in names if n not in guard]
+    check("★PASS 打印的守卫覆盖每一个失败清单（本轮新增 arch_forensics 也必须在内）",
+          bool(guard) and not uncovered,
+          f"守卫行 {guard!r}；没覆盖 {uncovered}；取到的清单名 {names}")
     check("★该目录的 JSON 要做「是不是运行表」的形状检查",
           "不像世代运行表" in src)
     check("运行表必须随包（must_keep 仍在）",
