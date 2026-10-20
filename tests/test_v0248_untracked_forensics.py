@@ -26,6 +26,14 @@
 外加白名单 `ARCHIVE_FORENSIC_ALLOW`（`_conf_schema.json` / `__init__.py` / `requirements.txt`
 是合法文件但形状像取证物，必须显式登记）。「先误提交、后发布」这条路，只有这层堵得上。
 
+第九轮再补（GPT 第八轮复核 P2-1）
+================================
+归档那条一开始也只扫「根 + `tests/` 一层」（与工作区那条同口径）—— 于是
+`docs/evidence.log` / `tools/_probe.py` 这种**同样不该进包**的形状漏了。
+现在 `is_forensic_artifact(..., deep=True)` 按**任意层级**只看形状，代价用两张显式白名单抵掉：
+文件名白名单（`__init__.py` 这类任意层级都合法）+ 目录前缀白名单（`data/`、`docs/images/`）。
+工作区那条**仍然**只看一层：那里 `data/` 天天在动，扫深了会把正常开发流整个拦住。
+
 运行：
   <AstrBot python> tests\\test_v0248_untracked_forensics.py
 """
@@ -226,6 +234,24 @@ def part_five() -> None:
         check("★把误提交的那个删掉后，同一份归档零误报",
               RV.check_archive_forensics([n for n in files if n != "_r7_probe.py"]) == [],
               str(RV.check_archive_forensics([n for n in files if n != "_r7_probe.py"])))
+
+    # ---- 第九轮（GPT 第八轮复核 P2-1）：扫描范围放宽到**任意层级** ----
+    deep_hits = RV.check_archive_forensics(["docs/evidence.log", "tools/_probe.py",
+                                            "core/_debug.py", "pages/_tmp.json"])
+    check("★任意层级的取证形状也要抓（docs/evidence.log / tools/_probe.py / core/_debug.py）",
+          deep_hits == ["core/_debug.py", "docs/evidence.log", "pages/_tmp.json", "tools/_probe.py"],
+          str(deep_hits))
+    allow = RV.check_archive_forensics(["_conf_schema.json", "requirements.txt", "core/__init__.py",
+                                        "data/legacy_items/1.7.10.json",
+                                        "data/legacy_registry/items_1.12.2.json",
+                                        "docs/images/logo.png", "docs/configure.md",
+                                        "core/knowledge_base.py", "pages/mc_control/index.html"])
+    check("★放宽后白名单（文件名 + 目录前缀）不许误判", allow == [], str(allow))
+    check("★未跟踪那条**仍然**只看根与 tests/ 一层（别把运行资产扫进来）",
+          not RV.is_forensic_artifact("data/legacy_items/1.7.10.json")
+          and not RV.is_forensic_artifact("core/_debug.py")
+          and RV.is_forensic_artifact("core/_debug.py", deep=True),
+          "deep 与默认口径必须分得开")
 
     # 真实仓库：HEAD 的归档里不许有取证产物
     real_files = _archive_files(PLUGIN_DIR)

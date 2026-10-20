@@ -39,6 +39,11 @@ from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
 FAIL: list[str] = []
 
 add_sys_paths()
+# 门禁脚本就在插件根目录下（`add_sys_paths()` 只加了「插件根的上级」）——单独补一条，
+# 这样判据可以直接 import 它、调它真正的实现（不是抄一份逻辑进用例）。
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
+import run_release_verify as RV  # noqa: E402
 try:
     from astrbot_plugin_Scintilla_MC_Server_Control.core.item_dictionary import ItemDictionary
     IMPORT_OK = True
@@ -172,22 +177,24 @@ def group_empty() -> None:
 def group_release() -> None:
     print("\n---- 四、发布包卫生：红就是红，别又打 PASS ----")
     src = (ROOT / "run_release_verify.py").read_text(encoding="utf-8")
-    # 第八轮：这一条原来钉的是**上面那一行的字面**（`if not leaked and not missing and not data_bad:`），
-    # 于是「多加一个失败清单」（本轮加了 arch_forensics）就会把它判红 —— 那是判据自己脆，不是代码错。
-    # 改成钉**结构**：PASS 打印的守卫必须覆盖每一个「会被报成 FAIL 的清单」。
-    # 清单名从代码里自动取（`[FAIL] … {名字}` 且该名字在函数里出现多次），新增清单会自动被要求覆盖。
-    body = src[src.find("def check_export_ignore"):]
-    nxt = body.find("\ndef ", 10)
-    if nxt > 0:
-        body = body[:nxt]
-    names = [n for n in dict.fromkeys(re.findall(r"\[FAIL\][^\n]*?\{(\w+)", body))
-             if re.search(rf"^\s*if {n}:", body, re.M)]
-    guard = next((ln.strip() for ln in body.splitlines()
-                  if ln.strip().startswith("if not ") and "leaked" in ln), "")
-    uncovered = [n for n in names if n not in guard]
-    check("★PASS 打印的守卫覆盖每一个失败清单（本轮新增 arch_forensics 也必须在内）",
-          bool(guard) and not uncovered,
-          f"守卫行 {guard!r}；没覆盖 {uncovered}；取到的清单名 {names}")
+    # 第八轮先钉的是**字面**（`if not leaked and not missing and not data_bad:`）—— 加一个失败维度就误报；
+    # 第八轮末改成「从源码反推清单名」—— 换一种打印方式就取不到名字，那时它会**静默变绿**（比误报更坏）。
+    # 第九轮（GPT 第八轮复核 P2-2）改成**行为判据**：门禁把维度收成唯一一份清单
+    # （`HYGIENE_DIMENSIONS`），守卫统一走 `hygiene_verdict()`，这里按那份表逐条喂 —— 不读文本。
+    dims = RV.HYGIENE_DIMENSIONS
+    check("★任一失败维度非空 → 不许打 PASS（按门禁自己的维度表逐条喂）",
+          all(RV.hygiene_verdict(**{d: ["x"]}) is False for d in dims)
+          and RV.hygiene_verdict(**{d: [] for d in dims}) is True,
+          f"维度表 {dims}")
+    try:
+        RV.hygiene_verdict(leaked=[], 拼错的维度=[])
+        unknown_raised = False
+    except ValueError:
+        unknown_raised = True
+    check("★未知维度名必须抛错（防「维度名写错 → 那个维度永远不被检查」）", unknown_raised)
+    check("★门禁真的用了这份表（不是摆着看的）",
+          src.count("hygiene_verdict(") >= 2 and "HYGIENE_DIMENSIONS" in src,
+          f"hygiene_verdict 出现 {src.count('hygiene_verdict(')} 次")
     check("★该目录的 JSON 要做「是不是运行表」的形状检查",
           "不像世代运行表" in src)
     check("运行表必须随包（must_keep 仍在）",

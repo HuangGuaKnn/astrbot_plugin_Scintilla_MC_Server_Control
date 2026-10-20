@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.24.8 判据变异凭据：24 处关键边界逐条翻错，看专项用例会不会红。
+"""v0.24.8 判据变异凭据：25 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 ------------------
@@ -261,11 +261,18 @@ CASES = [
     ),
     Case(
         "M24", "run_release_verify.py",
-        "    return sorted(n for n in files\n"
-        "                  if is_forensic_artifact(n) and n not in ARCHIVE_FORENSIC_ALLOW)",
+        "    return sorted(bad)",
         "    return []  # 变异：发布包不再看已跟踪的取证产物",
         "tests/test_v0248_untracked_forensics.py",
         "发布包不再看已跟踪取证产物 → 第五节必须发现「误提交的探针跟着进包了」",
+    ),
+    # ---------------- 第九轮（GPT 第八轮复核 P2-1 / P2-2 的靶子） ----------------
+    Case(
+        "M25", "run_release_verify.py",
+        "    return not any(dims.get(k) for k in HYGIENE_DIMENSIONS)",
+        "    return True  # 变异：卫生守卫永远放行",
+        "tests/test_v0243_asset_boundary.py",
+        "卫生守卫永远放行 → v0.24.3 第四节必须发现「有失败维度也照样打 PASS」",
     ),
 ]
 

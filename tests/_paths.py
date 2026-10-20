@@ -67,6 +67,34 @@ def add_sys_paths() -> None:
             sys.path.insert(0, p)
 
 
+def ensure_utf8_console() -> None:
+    """直接手跑用例时的编码兜底（第九轮复核 P2-3）。
+
+    干净 shell 里 Windows 的 stdout 常是 **GBK**，而用例末尾会打 `✅` 这类字符 ——
+    `print` 抛 `UnicodeEncodeError`，结果是「**34 项全过、退出码却是 1**」，看着像坏了。
+    门禁自己设了 `PYTHONIOENCODING=utf-8`，所以它看不见这个坑；人手跑就会撞上。
+
+    只在「当前编码扛不住这些字符」时才动，并且 `errors="replace"` 兜底 ——
+    编码问题绝不该让一条**已经通过**的判据变成失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            enc = getattr(stream, "encoding", None)
+            if not enc:
+                continue
+            "✅→♡".encode(enc)          # 扛得住就什么都不做
+        except (UnicodeEncodeError, LookupError):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+            except Exception:                                            # noqa: BLE001
+                pass
+        except Exception:                                                # noqa: BLE001
+            continue
+
+
+ensure_utf8_console()
+
+
 def require_app() -> Path:
     """需要 AstrBot 运行时的用例用：拿不到就抛带说明的错误。
 

@@ -232,25 +232,44 @@ FORENSIC_SUFFIXES = (".log", ".txt", ".json", ".patch", ".diff")
 FORENSIC_ALLOW = {"_paths.py", "_ui_manifest.py"}
 
 
-def is_forensic_artifact(rel: str) -> bool:
-    """形状判定：这个（未跟踪的）文件是不是「取证产物」。真实仓库与临时仓库共用。"""
+def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
+    """形状判定：这个文件是不是「取证产物」。真实仓库、临时仓库、发布包三处共用。
+
+    `deep=False`（默认，工作区那条用）：只盯**仓库根与 `tests/` 一层** ——
+    工作区里 `data/` 之类的运行资产天天在动，扫深了会把正常开发流整个拦住。
+
+    `deep=True`（发布包那条用，第九轮复核 P2-1）：**任意层级**只看形状。
+    归档是「发出去的东西」，`docs/evidence.log` / `tools/_probe.py` 这种形状
+    一样不该进包 —— 只看一层就会漏掉它们。调用方叠白名单（见
+    `ARCHIVE_FORENSIC_ALLOW` / `ARCHIVE_FORENSIC_ALLOW_PREFIXES`）。
+    """
     parts = [x for x in rel.replace("\\", "/").split("/") if x]
-    if not parts or len(parts) > 2:
-        return False                     # 只盯仓库根与 tests/ 一层，别扫 data/ 之类的运行资产
+    if not parts:
+        return False
     name = parts[-1]
-    if len(parts) == 2:
-        if parts[0] != "tests" or name in FORENSIC_ALLOW:
+    if not deep:
+        if len(parts) > 2:
+            return False                 # 只盯仓库根与 tests/ 一层，别扫 data/ 之类的运行资产
+        if len(parts) == 2 and (parts[0] != "tests" or name in FORENSIC_ALLOW):
             return False
         return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
-    # 仓库根
+    # deep：任意层级只看形状（`tests/` 下的正经辅助模块仍然放行，口径保持同源）
+    if parts[0] == "tests" and name in FORENSIC_ALLOW:
+        return False
     return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
 
 
-#: 归档里「形状像取证产物、但**本来就该随包**」的文件。白名单必须显式列出：
-#: 新增一个长成这种形状的正常文件，要在这里登记 —— 也就是一个人必须过一眼的决定点。
-#: （`_conf_schema.json` / `__init__.py` / `requirements.txt` 三个是本仓库真实存在的：
-#:  前两个以 `_` 开头、第三个是 `.txt`，都命中了「取证形状」，但它们都是用户包里必须有东西。）
+#: 归档里「形状像取证产物、但**本来就该随包**」的**文件名**（任意层级都放行）。
+#: 白名单必须显式列出：新增一个长成这种形状的正常文件，要在这里登记 ——
+#: 也就是一个人必须过一眼的决定点。
+#: （`_conf_schema.json` / `__init__.py` / `requirements.txt` 三个都是本仓库真实存在的：
+#:  前两个以 `_` 开头、第三个是 `.txt`，形状命中取证物，但用户包里必须有它们。）
 ARCHIVE_FORENSIC_ALLOW = {"_conf_schema.json", "__init__.py", "requirements.txt"}
+
+#: 归档里「形状像取证产物、但整个目录本来就该随包」的**前缀**（第九轮复核 P2-1）。
+#: 逐个列目录而不是「凡是 .json 就放行」：运行数据表是发布包的一部分，
+#: 但它们长成 `data/**/*.json` —— 不按前缀放行，就得把十几个文件名一个个抄进来。
+ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/", "docs/images/")
 
 
 def check_archive_forensics(files: list[str]) -> list[str]:
@@ -261,12 +280,21 @@ def check_archive_forensics(files: list[str]) -> list[str]:
     而 `git archive` 会把它原样打进发布包（附件里带着本机绝对路径）。
     「先误提交、后发布」这条路，只有对着**归档清单**再问一遍才堵得上。
 
-    口径与未跟踪那条同源（同一个 `is_forensic_artifact`），差别只在：
-      · 作用对象是 `git archive` 出的**文件清单**（不是工作区状态）；
-      · 多一张白名单 —— 合法文件里也有长成这种形状的，不白名单就会把正常包判红。
+    第九轮（GPT 第八轮复核 P2-1）：扫描范围从「根 + tests/ 一层」放宽到**任意层级**
+    （`deep=True`）—— `docs/evidence.log` / `tools/_probe.py` 这类同样不该进包。
+    放宽的代价用**显式白名单**抵掉：文件名白名单 + 目录前缀白名单，两条都写在上面。
     """
-    return sorted(n for n in files
-                  if is_forensic_artifact(n) and n not in ARCHIVE_FORENSIC_ALLOW)
+    bad: list[str] = []
+    for n in files:
+        norm = n.replace("\\", "/")
+        if not is_forensic_artifact(norm, deep=True):
+            continue
+        if norm.rsplit("/", 1)[-1] in ARCHIVE_FORENSIC_ALLOW:
+            continue
+        if any(norm.startswith(p) for p in ARCHIVE_FORENSIC_ALLOW_PREFIXES):
+            continue
+        bad.append(n)
+    return sorted(bad)
 
 
 def check_untracked_forensics(root: Path | None = None) -> list:
@@ -303,6 +331,31 @@ def check_untracked_forensics(root: Path | None = None) -> list:
         if got.returncode == 0:            # 没有 HEAD（新仓库）时 --cached 会失败：跳过这一路
             names |= {ln.strip() for ln in (got.stdout or "").splitlines() if ln.strip()}
     return sorted(n for n in names if is_forensic_artifact(n))
+
+
+# ================= 发布包卫生的**结构化失败清单**（第九轮复核 P2-2） =================
+#
+# 为什么要有这一份：第八轮之前，「全绿才打 PASS」那条守卫是**手写的一行条件**
+# （`if not leaked and not missing and not data_bad:`）—— 加一个失败维度时，
+# 很容易只加 `if` 判断、忘了把它并进守卫（第八轮就这么发生过一次，被一条**钉字面**的
+# 老判据当场咬住）。而替代它的那条「从源码里反推清单名」的判据又是读文本的：
+# 换一种打印方式（比如统一走 `problems.append`）就取不到名字，
+# 取不到名字时它会**静默变绿** —— 比误报更坏。
+#
+# 现在把维度名收成**唯一一份**：新增维度必须加进 `HYGIENE_DIMENSIONS`，
+# 守卫统一走 `hygiene_verdict()`，判据直接按这份表逐条喂（行为判据，不读文本）。
+HYGIENE_DIMENSIONS = ("leaked", "missing", "data_bad", "arch_forensics")
+
+
+def hygiene_verdict(**dims: object) -> bool:
+    """发布包卫生能不能打 PASS：**任一维度非空就不许**（空清单 = 干净）。
+
+    未知维度名直接抛错 —— 防的是「维度名写错 → 那个维度永远不被检查」这种静默放行。
+    """
+    unknown = sorted(set(dims) - set(HYGIENE_DIMENSIONS))
+    if unknown:
+        raise ValueError(f"未知的卫生维度 {unknown}（清单见 HYGIENE_DIMENSIONS）")
+    return not any(dims.get(k) for k in HYGIENE_DIMENSIONS)
 
 
 def check_export_ignore(strict: bool = False) -> list:
@@ -495,7 +548,8 @@ def check_export_ignore(strict: bool = False) -> list:
     if missing:
         print(f"[FAIL] 发布包里少了用户要的东西：{missing}")
         out.append("发布包卫生：误挡用户可见文件")
-    if not leaked and not missing and not data_bad and not arch_forensics:
+    if hygiene_verdict(leaked=leaked, missing=missing, data_bad=data_bad,
+                       arch_forensics=arch_forensics):
 
         print(f"[PASS] 发布包卫生：实测 git archive 共 {len(files)} 个文件 —— "
               f"测试 / 开发脚本 / 内部核验文档 / 取证产物 0 个，用户可见文件齐全")
