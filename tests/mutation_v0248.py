@@ -11,8 +11,9 @@ v0.24.8 新增的专项断言同样需要证明自己不是摆设 —— 尤其�
 口径
 ----
 * 每处只改一个锚点（``old`` 必须恰好出现 1 次），改完立刻跑指定用例；
-* 期望用例**非 0 退出**（KILLED）；仍然全绿 = SURVIVED，说明判据没牙；
-* 变异写坏（真出现 traceback + 异常名）记 INFRA-ERR，不冒充 KILLED；
+* 期望用例**非 0 退出且输出里有判据失败行**（KILLED）；仍然全绿 = SURVIVED，说明判据没牙；
+* 「非 0 退出」本身不算数：真崩（traceback + 异常名）、或退非 0 却看不到失败行，
+  都记 INFRA-ERR，不冒充 KILLED；
 * 无论结果如何都在 finally 里按原字节还原，并复核 sha256；
 * 每处改动前把「原字节」落一份现场记录（系统临时目录，不落仓库），
   被 Ctrl+C 打断时下次启动自动还原 —— 半改不改的文件留在工作区比跑红更危险；
@@ -304,7 +305,11 @@ def run_case(case: Case) -> tuple[str, str]:
     first = next((ln for ln in lines if ln.startswith("[FAIL]")), "")
     if not first:
         first = next((ln for ln in lines if "失败" in ln or "FAIL" in ln), "")
-    return "KILLED", first[:160] or f"rc={res.returncode}"
+    if not first:
+        # 非 0 退出、也没有 traceback、又看不到任何失败行 —— 可能是静默退出 / 超时 / 环境问题。
+        # 「进程退非 0」本身不是判据红了，不能拿它冒充 KILLED。
+        return "INFRA-ERR", f"非 0 退出（rc={res.returncode}）但输出里没有判据失败行，看不出是哪条判据红的"
+    return "KILLED", first[:160]
 
 
 def main(argv: list[str]) -> int:
