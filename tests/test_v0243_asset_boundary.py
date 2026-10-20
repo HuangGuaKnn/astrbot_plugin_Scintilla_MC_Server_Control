@@ -25,6 +25,8 @@ fail-closed 声明：缺运行依赖（import 失败）判 **FAIL**，不判 SKI
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -182,8 +184,13 @@ def group_release() -> None:
     # 第九轮（GPT 第八轮复核 P2-2）改成**行为判据**：门禁把维度收成唯一一份清单
     # （`HYGIENE_DIMENSIONS`），守卫统一走 `hygiene_verdict()`，这里按那份表逐条喂 —— 不读文本。
     dims = RV.HYGIENE_DIMENSIONS
+
+    def only(d: str) -> dict:
+        """只让某一个维度非空、其余都显式传空 —— 现在**漏传**本身就会抛错（见下一条）。"""
+        return {k: (["x"] if k == d else []) for k in dims}
+
     check("★任一失败维度非空 → 不许打 PASS（按门禁自己的维度表逐条喂）",
-          all(RV.hygiene_verdict(**{d: ["x"]}) is False for d in dims)
+          all(RV.hygiene_verdict(**only(d)) is False for d in dims)
           and RV.hygiene_verdict(**{d: [] for d in dims}) is True,
           f"维度表 {dims}")
     try:
@@ -192,9 +199,35 @@ def group_release() -> None:
     except ValueError:
         unknown_raised = True
     check("★未知维度名必须抛错（防「维度名写错 → 那个维度永远不被检查」）", unknown_raised)
-    check("★门禁真的用了这份表（不是摆着看的）",
-          src.count("hygiene_verdict(") >= 2 and "HYGIENE_DIMENSIONS" in src,
-          f"hygiene_verdict 出现 {src.count('hygiene_verdict(')} 次")
+
+    def raises(fn) -> bool:
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+
+    check("★漏传已知维度也必须抛错（第十轮复核实测：第一版对这里 fail-open，少传一个照样 True）",
+          raises(lambda: RV.hygiene_verdict(leaked=[], missing=[], data_bad=[]))
+          and raises(RV.hygiene_verdict))
+    # 接线检查：**用 spy 实测**（第十轮复核：原先数源码里 `hygiene_verdict(` 出现几次，仍是读文本）
+    real = RV.hygiene_verdict
+    seen: list = []
+
+    def spy(**kw):
+        seen.append(kw)
+        return real(**kw)
+
+    RV.hygiene_verdict = spy
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            RV.check_export_ignore()
+    finally:
+        RV.hygiene_verdict = real
+    check("★门禁真的把四个维度都喂给了结构化守卫（spy 实测，不是数源码）",
+          len(seen) == 1 and set(seen[0]) == set(dims),
+          f"守卫被调用 {len(seen)} 次；维度 {sorted(seen[0]) if seen else None}")
     check("★该目录的 JSON 要做「是不是运行表」的形状检查",
           "不像世代运行表" in src)
     check("运行表必须随包（must_keep 仍在）",

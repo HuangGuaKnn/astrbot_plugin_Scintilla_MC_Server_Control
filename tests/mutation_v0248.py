@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.24.8 判据变异凭据：25 处关键边界逐条翻错，看专项用例会不会红。
+"""v0.24.8 判据变异凭据：27 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 ------------------
@@ -277,6 +277,23 @@ CASES = [
         "    return True  # 变异：卫生守卫永远放行",
         "tests/test_v0243_asset_boundary.py",
         "卫生守卫永远放行 → v0.24.3 第四节必须发现「有失败维度也照样打 PASS」",
+    ),
+    # ---------------- 第十轮（GPT 第九轮复核 P2 残余的靶子） ----------------
+    Case(
+        "M26", "run_release_verify.py",
+        "    if absent:\n"
+        '        raise ValueError(f"漏传的卫生维度 {absent}（清单见 HYGIENE_DIMENSIONS）")',
+        "    if False:  # 变异：漏传维度不再报错\n"
+        '        raise ValueError(f"漏传的卫生维度 {absent}（清单见 HYGIENE_DIMENSIONS）")',
+        "tests/test_v0243_asset_boundary.py",
+        "漏传维度不再报错 → 第四节必须发现「少传一个维度照样放行」",
+    ),
+    Case(
+        "M27", "run_release_verify.py",
+        'ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/legacy_items/", "data/legacy_registry/")',
+        'ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/", "docs/images/")  # 变异：整片放行',
+        "tests/test_v0248_untracked_forensics.py",
+        "归档白名单整片放行 → 第五节必须发现「data/_probe.json 与 docs/images/evidence.log 溜过去」",
     ),
 ]
 

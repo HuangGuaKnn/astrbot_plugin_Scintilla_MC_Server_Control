@@ -247,6 +247,12 @@ def part_five() -> None:
                                         "docs/images/logo.png", "docs/configure.md",
                                         "core/knowledge_base.py", "pages/mc_control/index.html"])
     check("★放宽后白名单（文件名 + 目录前缀）不许误判", allow == [], str(allow))
+    # ---- 第十轮复核：白名单**收窄**（整片放行 data/ 与 docs/images/ 太宽了）----
+    holes = RV.check_archive_forensics(["data/_probe.json", "docs/images/evidence.log",
+                                        "docs/images/_shot.png"])
+    check("★白名单收窄：data/ 与 docs/images/ 下长成取证形状的仍要抓",
+          holes == ["data/_probe.json", "docs/images/_shot.png", "docs/images/evidence.log"],
+          str(holes))
     check("★未跟踪那条**仍然**只看根与 tests/ 一层（别把运行资产扫进来）",
           not RV.is_forensic_artifact("data/legacy_items/1.7.10.json")
           and not RV.is_forensic_artifact("core/_debug.py")

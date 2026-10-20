@@ -266,10 +266,12 @@ def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
 #:  前两个以 `_` 开头、第三个是 `.txt`，形状命中取证物，但用户包里必须有它们。）
 ARCHIVE_FORENSIC_ALLOW = {"_conf_schema.json", "__init__.py", "requirements.txt"}
 
-#: 归档里「形状像取证产物、但整个目录本来就该随包」的**前缀**（第九轮复核 P2-1）。
-#: 逐个列目录而不是「凡是 .json 就放行」：运行数据表是发布包的一部分，
-#: 但它们长成 `data/**/*.json` —— 不按前缀放行，就得把十几个文件名一个个抄进来。
-ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/", "docs/images/")
+#: 归档里「形状像取证产物、但整个目录本来就该随包」的**前缀**（第九/十轮复核）。
+#: 收窄到**实际存在的运行数据目录**，不再整片放行 `data/` ——
+#: 第十轮复核实测：`data/_probe.json` 与 `docs/images/evidence.log` 都能从整片放行里溜过去。
+#: `docs/images/` 也不再整片放行：那里只有 `.png`，本来就不匹配任何取证形状；
+#: 将来真出现合法的取证形状文件，让门禁红一次、由人显式登记，比默默放过强。
+ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/legacy_items/", "data/legacy_registry/")
 
 
 def check_archive_forensics(files: list[str]) -> list[str]:
@@ -350,11 +352,18 @@ HYGIENE_DIMENSIONS = ("leaked", "missing", "data_bad", "arch_forensics")
 def hygiene_verdict(**dims: object) -> bool:
     """发布包卫生能不能打 PASS：**任一维度非空就不许**（空清单 = 干净）。
 
-    未知维度名直接抛错 —— 防的是「维度名写错 → 那个维度永远不被检查」这种静默放行。
+    两种写错方式都必须**抛错**，不许静默放行（第十轮复核把第二条点了出来）：
+
+      · **未知维度名**（拼错）—— 那个维度永远不被检查；
+      · **漏传已知维度** —— 第一版只挡了前者：`hygiene_verdict(leaked=[], missing=[],
+        data_bad=[])` 会返回 True（fail-open）。现在缺一个也抛错。
     """
     unknown = sorted(set(dims) - set(HYGIENE_DIMENSIONS))
     if unknown:
         raise ValueError(f"未知的卫生维度 {unknown}（清单见 HYGIENE_DIMENSIONS）")
+    absent = sorted(set(HYGIENE_DIMENSIONS) - set(dims))
+    if absent:
+        raise ValueError(f"漏传的卫生维度 {absent}（清单见 HYGIENE_DIMENSIONS）")
     return not any(dims.get(k) for k in HYGIENE_DIMENSIONS)
 
 

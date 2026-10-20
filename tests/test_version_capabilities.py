@@ -13,6 +13,14 @@
    异地 RCON 模式探测**必然**失败，没有手动声明出口 = 所有附魔请求被拒且无法解除，
    那是功能性倒退。手动声明是用户**显式提供的事实**，不是猜。
 """
+
+# 直接手跑时的控制台编码兜底（见 tests/_paths.py 的 ensure_utf8_console）：
+# 不 import 它的话，输出里只要出现一个非 GBK 字符（比如 ✅），Windows 干净 shell 下
+# `print` 就会抛 UnicodeEncodeError —— 结果是「全部通过、退出码却是 1」，看着像坏了。
+try:
+    import _paths  # noqa: F401
+except Exception:  # noqa: BLE001 —— 兜底失败也不能拦住用例本身
+    pass
 import os
 import sys
 

@@ -9,6 +9,14 @@
 """
 from __future__ import annotations
 
+# 直接手跑时的控制台编码兜底（见 tests/_paths.py 的 ensure_utf8_console）：
+# 不 import 它的话，输出里只要出现一个非 GBK 字符（比如 ✅），Windows 干净 shell 下
+# `print` 就会抛 UnicodeEncodeError —— 结果是「全部通过、退出码却是 1」，看着像坏了。
+try:
+    import _paths  # noqa: F401
+except Exception:  # noqa: BLE001 —— 兜底失败也不能拦住用例本身
+    pass
+
 import ast
 from pathlib import Path
 
