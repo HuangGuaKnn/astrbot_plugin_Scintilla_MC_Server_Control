@@ -157,10 +157,15 @@ def part_four() -> None:
     check("★当前工作区没有未跟踪的取证产物", cur == [], str(cur))
     st = _git(PLUGIN_DIR, "status", "--porcelain").stdout
     untracked = [ln[3:] for ln in st.replace("\r", "").splitlines() if ln.startswith("??")]
-    check("前置：工作区确实有「未跟踪 / 未提交」的中间状态可判（不是空转）",
-          bool(st.strip()), "git status 是空的 —— 这条判据这次没被测到")
-    print(f"       git status：{len(st.strip().splitlines())} 条；其中未跟踪 {len(untracked)} 个"
-          f"{'：' + str(untracked[:4]) if untracked else ''}")
+    # 「这条判据有没有被测到」是**说明**不是断言：工作区干净（提交之后）本来就没有东西可判，
+    # 而那正是我们要的状态 —— 早先把这里写成断言，提交完再跑就红了，属于判据自己给干净状态判红。
+    if st.strip():
+        print(f"       工作区有中间状态可判：git status {len(st.strip().splitlines())} 条，"
+              f"其中未跟踪 {len(untracked)} 个"
+              f"{'：' + str(untracked[:4]) if untracked else ''}")
+    else:
+        print("       工作区完全干净（已提交）—— 本轮没有「未跟踪产物」可判；"
+              "「判据非空转」由第二节的临时仓库实测覆盖")
 
 
 def main() -> int:

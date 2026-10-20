@@ -1,32 +1,67 @@
 # -*- coding: utf-8 -*-
-"""v0.24.8 判据变异凭据：6 处关键边界逐条翻错，看专项用例会不会红。
+"""v0.24.8 判据变异凭据：22 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 ------------------
 「用例跑绿」不等于「用例能拦」。v0.24.7 的 11 处变异凭据已经证明过一次；
-v0.24.8 新增的 43 项专项断言同样需要证明自己不是摆设 —— 尤其是这轮
-有两处是**判据自己漏扫**才留下的洞（`bool(self.plugin._cfg(`、留空提交 0）。
+v0.24.8 新增的专项断言同样需要证明自己不是摆设 —— 尤其是这轮
+有两处是**判据自己漏扫**才留下的洞（`bool(self.plugin._cfg(`、留空提交 0），
+第七轮又实测出三条**变异存活**的判据（前端 `parseCfgBool` 那三条）。
 
 口径
 ----
 * 每处只改一个锚点（``old`` 必须恰好出现 1 次），改完立刻跑指定用例；
 * 期望用例**非 0 退出**（KILLED）；仍然全绿 = SURVIVED，说明判据没牙；
-* 变异写坏（SyntaxError / ImportError）记 INFRA-ERR，不冒充 KILLED；
+* 变异写坏（真出现 traceback + 异常名）记 INFRA-ERR，不冒充 KILLED；
 * 无论结果如何都在 finally 里按原字节还原，并复核 sha256；
+* 每处改动前把「原字节」落一份现场记录（系统临时目录，不落仓库），
+  被 Ctrl+C 打断时下次启动自动还原 —— 半改不改的文件留在工作区比跑红更危险；
 * 只碰工作区文件，不改版本号 / CHANGELOG / tag。
 
 用法：``python tests/mutation_v0248.py``（可加 ``--only M3`` 单跑一条）
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
+
+
+def _inflight_path() -> Path:
+    """现场记录的位置：系统临时目录（**不落仓库** —— 根目录多一个 .json 会被门禁判红）。"""
+    tag = hashlib.sha1(str(ROOT).encode("utf-8")).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"scintilla_mutation_{tag}.json"
+
+
+def restore_inflight() -> str:
+    """上次被打断（Ctrl+C / 进程被杀）时留下的现场：把文件按原字节放回去。
+
+    没有这一层的话，中断会留下一个**半改不改**的工作区文件：文件是坏的、脚本没跑完、
+    没有任何记录说「这里动过」。实测踩过一次（core/web_api.py 停在被改写的状态），
+    靠 `git status` 才发现 —— 换成没接版本控制的新文件就查不出来了。
+    """
+    p = _inflight_path()
+    if not p.exists():
+        return ""
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        raw = base64.b64decode(rec["raw_b64"])
+        target = ROOT / rec["rel"]
+        target.write_bytes(raw)
+        p.unlink()
+        got = hashlib.sha256(target.read_bytes()).hexdigest()
+        ok = "sha256 与现场一致" if got == rec["sha256"] else "⚠ sha256 与现场不一致，请复核"
+        return f"已还原上次被打断留下的 {rec['rel']}（{ok}）"
+    except Exception as exc:  # noqa: BLE001 —— 现场读不出来也不能拦住整轮
+        return f"⚠ 现场记录 {p} 读不出来（{exc}），已丢弃 —— 请自行 git status 复核"
 
 
 class Case:
@@ -233,6 +268,13 @@ def run_case(case: Case) -> tuple[str, str]:
     if text.count(old) != 1:
         return "INFRA-ERR", f"锚点出现 {text.count(old)} 次（应为 1）"
     before = sha(path)
+    inflight = _inflight_path()
+    inflight.write_text(json.dumps({
+        "rel": case.rel,
+        "cid": case.cid,
+        "sha256": before,
+        "raw_b64": base64.b64encode(raw).decode("ascii"),
+    }, ensure_ascii=False), encoding="utf-8")
     try:
         path.write_bytes(text.replace(old, new).encode("utf-8"))
         res = subprocess.run(
@@ -242,6 +284,7 @@ def run_case(case: Case) -> tuple[str, str]:
         out = (res.stdout + res.stderr).decode("utf-8", "replace")
     finally:
         path.write_bytes(raw)
+        inflight.unlink(missing_ok=True)
     after = sha(path)
     if after != before:
         return "INFRA-ERR", f"还原后 sha256 不一致（{before[:12]} -> {after[:12]}）"
@@ -277,6 +320,9 @@ def main(argv: list[str]) -> int:
     print("=" * 72)
     print(f"v0.24.8 判据变异：{len(picked)} 处，解释器 {PY}")
     print("=" * 72)
+    leftover = restore_inflight()
+    if leftover:
+        print(f"[现场还原] {leftover}")
     bad = 0
     for c in picked:
         verdict, detail = run_case(c)
