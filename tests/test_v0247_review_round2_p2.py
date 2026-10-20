@@ -281,11 +281,28 @@ def part_daemon_threads() -> None:
 
     asyncio.run(scenario())
 
-    # 进程级 daemon 执行器：单例、daemon、有 _max_workers 兼容属性
+    # 进程级 daemon 执行器：单例、daemon、**真实有界**的并发上限
+    # v0.24.8（GPT 第三轮复核 P1）：旧实现每次 submit 新建一条 daemon 线程，
+    # _max_workers 写死 1 却毫无约束力（名字叫单线程、行为是无界）。
     ex = lw.daemon_executor()
     check("daemon_executor() 是进程级单例", lw.daemon_executor() is ex)
-    check("兼容属性 _max_workers 仍在（老判据按线程池口径断言过）",
-          getattr(ex, "_max_workers", None) == 1, repr(getattr(ex, "_max_workers", None)))
+    check("并发上限是真实值（不再是写死 1 的无界实现）",
+          getattr(ex, "_max_workers", None) == lw.MAX_DAEMON_WORKERS,
+          repr(getattr(ex, "_max_workers", None)))
+    gate = threading.Event()
+    futs = [ex.submit(gate.wait, 1.0) for _ in range(24)]
+    time.sleep(0.08)
+    check("提交 24 个阻塞任务后 worker 数仍不超过上限",
+          ex.active_threads <= lw.MAX_DAEMON_WORKERS,
+          f"active={ex.active_threads} max={lw.MAX_DAEMON_WORKERS}")
+    gate.set()
+    for fu in futs:
+        try:
+            fu.result(timeout=5)
+        except Exception:                                      # noqa: BLE001
+            pass
+    check("阻塞解除后 24 个任务全部完成（队列没有丢活）",
+          all(fu.done() for fu in futs))
 
 
 async def _noop_event(etype: str, player: str, detail: str) -> None:
@@ -625,8 +642,11 @@ def part_budget_wiring() -> None:
           set(fields.values()) <= set(ranges),
           str(sorted(set(fields.values()) - set(ranges))))
     s_defaults_blk = html.split("const S_DEFAULTS = {", 1)[-1].split("};", 1)[0]
-    check("三键没有被塞进 S_DEFAULTS —— 留空必须保持「不提交该键」语义，"
-          "由插件内置默认值兜底，而不是被前端写一个假默认值进去",
+    # 注：本段只做**结构**检查（前端有没有把假默认值塞进 S_DEFAULTS）。
+    # 「留空到底提交了什么」由 tests/test_v0248_collect_settings.py 抽取真实
+    # collectSettings() 在 node 里跑 —— 纯字符串判据当年被一条
+    # `isNaN(x) ? 0 : x` 的变异整段绕过（GPT 第三轮复核 B6），行为得靠行为判。
+    check("三键没有被塞进 S_DEFAULTS —— 前端不写假默认值，由插件内置默认值兜底",
           "cfg_wf_max" not in s_defaults_blk, s_defaults_blk[:140])
 
 

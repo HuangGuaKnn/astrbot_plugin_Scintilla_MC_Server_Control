@@ -1,0 +1,340 @@
+# -*- coding: utf-8 -*-
+"""前端 `parseCfgBool` 与后端 `strict_bool` 的**逐格同源**判据（v0.24.8 · 第六轮复核 B6 / B10）。
+
+为什么要有这一支
+================
+第四轮把设置页的布尔渲染从 `!!value` 改成 `parseCfgBool(value, default)`，判据写的是：
+
+    check(…, "parseCfgBool(v, dft)" in html)
+    same_line = [ln for ln in html.splitlines() if ".checked" in ln and "!!v" in ln]
+    check(…, not same_line)
+
+第六轮复核把三条变异喂进去，**三条全存活**（实测）：
+
+| 变异 | 断言①（字符串） | 断言②（同行 `!!v`） |
+|---|---|---|
+| 调用点改回 `!!e.enabled` | 绿 | 绿 |
+| 函数体整段换成 `return !!v;` | 绿 | 绿 |
+| 删掉数字分支 `if(typeof v === "number") …` | 绿 | 绿 |
+
+第二条尤其致命：它的效果就是**把 P4 要修的那个 bug 原样装回去**（字符串 `"false"` 又被画成
+「开」），而两条断言一条都没红 —— 因为 `function parseCfgBool(v, dft)` 这串字**是函数签名
+本身**，函数体怎么换它都在。**读文本的判据证明不了行为。**
+
+本支怎么判
+==========
+照抄仓库里已有的现成范式（`tests/test_v0248_collect_settings.py`）：
+
+* 从 `pages/mc_control/index.html` 里**抽取真实的 `parseCfgBool` 与两份词表常量原文**
+  （不是复制一份到用例里 —— 复制会和实现漂移），在 node 里真的跑；
+* **输入表从后端词表生成**（`core/strict_bool.py` 的 `_TRUE_TOKENS` / `_FALSE_TOKENS`），
+  不是人手列 —— 第六轮实测的 12 格分叉里，`y`/`t`/`n`/`f` 那一族就是「人列表」漏掉的：
+  后端词表里有、前端词表里没有，人列必漏格；
+* **每一格跑两档默认值**：空串族只在「默认值 = True」的字段上露头、非 0/1 数字族只在
+  「默认值 = False」的字段上露头 —— 两族的露头条件正好相反，**只跑一档会漏掉一半**
+  （这正是「看起来对账了、其实只对了一半」的那种假绿）；
+* 逐格与 Python 侧 `strict_bool(value, default)` 比对，**0 格分叉**才算过；
+* 外加一条**调用点哨兵**：两个条目级渲染点必须走 `parseCfgBool`，设置页任何把配置值
+  画到开关上的行都不许出现 `!!`。
+
+判据自己有没有牙
+================
+`audit()` 同时用于真实页面与**内存里变异过的页面**：五种变异各自必须让 `audit()` 报红，
+一条等价改写（阳性对照）必须照样绿 —— 否则「有牙」这句话本身就是没牙的。
+
+依赖：node（GitHub Actions 的 ubuntu-latest 自带；本机亦已装）。
+node 缺席时**显式失败**，不静默跳过 —— 「跑不动」不能伪装成「通过了」。
+"""
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
+# 抽取函数的工具**复用**现成实现（`tests/test_v0248_collect_settings.py` 里那一支），
+# 不再抄第二份 —— 抄一份就多一处会和实现漂移的地方。
+from test_v0248_collect_settings import _extract_function  # noqa: E402
+
+add_sys_paths()
+from astrbot_plugin_Scintilla_MC_Server_Control.core import strict_bool as sb  # noqa: E402
+
+PAGE = PLUGIN_DIR / "pages" / "mc_control" / "index.html"
+
+_PASS = 0
+_FAIL = 0
+_FAILED: list[str] = []
+
+
+class _Quiet:
+    """静音桩：逐格比对会故意喂一堆读不懂的值，WARNING 由后端实现去留，
+    判据这里不需要它们刷屏（真实页面的行为不受影响）。"""
+
+    def warning(self, *a, **k) -> None:      # noqa: D102
+        pass
+
+    def info(self, *a, **k) -> None:         # noqa: D102
+        pass
+
+
+_QUIET = _Quiet()
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global _PASS, _FAIL
+    if ok:
+        _PASS += 1
+        print(f"[PASS] {name}")
+    else:
+        _FAIL += 1
+        _FAILED.append(name)
+        print(f"[FAIL] {name}" + (f"  →  {detail}" if detail else ""))
+
+
+# ============================ 抽取 ============================
+
+def extract_tokens(html: str) -> tuple[set, set]:
+    """从 index.html 里读出 `CFG_TRUE_TOKENS` / `CFG_FALSE_TOKENS` 的字面量。
+
+    抽不出来直接抛错（宁可红，也不许拿空集合去判绿 —— 空集合对空集合最容易假绿）。
+    """
+    out = []
+    for name in ("CFG_TRUE_TOKENS", "CFG_FALSE_TOKENS"):
+        m = re.search(r"const\s+" + name + r"\s*=\s*new Set\(\[(.*?)\]\)", html, re.S)
+        if not m:
+            raise AssertionError(f"index.html 里找不到 `const {name} = new Set([...])`")
+        out.append(set(json.loads("[" + m.group(1) + "]")))
+    return out[0], out[1]
+
+
+def extract_bool_source(html: str) -> str:
+    """词表 + `parseCfgBool` 本体（node 侧要一起 eval）。"""
+    start = html.find("const CFG_TRUE_TOKENS")
+    end = html.find("function parseCfgBool(")
+    if start < 0 or end < 0 or end < start:
+        raise AssertionError("index.html 里找不到 CFG_TRUE_TOKENS / parseCfgBool 的原文")
+    return html[start:end] + _extract_function(html, "parseCfgBool")
+
+
+#: 输入表：**从后端词表生成** + 边界值。每格都带两档默认值（见模块说明）。
+def build_cells() -> list[dict]:
+    cells: list[dict] = []
+
+    def add(kind: str, value, label: str) -> None:
+        for dft in (True, False):
+            cells.append({"kind": kind, "v": value, "dft": dft, "label": label})
+
+    add("null", None, "None / null")
+    add("undefined", None, "undefined（键不存在）")
+    add("value", True, "JSON 布尔 true")
+    add("value", False, "JSON 布尔 false")
+    for n in (0, 1, 2, 3.5, -1, 0.0, 1.0, 100):
+        add("value", n, f"数字 {n}")
+    tokens = sorted(sb._TRUE_TOKENS | sb._FALSE_TOKENS)          # ← 词表来自后端，不是人列
+    for t in tokens:
+        add("value", t, f"词表原样 {t!r}")
+    for t in sorted(sb._TRUE_TOKENS | sb._FALSE_TOKENS):
+        if t:
+            add("value", t.upper(), f"大写 {t.upper()!r}")
+            add("value", f" {t} ", f"带首尾空白 {t!r}")
+    for s in ("", "   ", "maybe", "2", "-1", "null", "yesno", "ON "):
+        add("value", s, f"字符串 {s!r}")
+    add("value", [], "空数组")
+    add("value", {}, "空对象")
+    add("value", [1], "非空数组")
+    add("value", {"a": 1}, "非空对象")
+    return cells
+
+
+_HARNESS = r"""
+const fs = require("fs");
+const boolSrc = fs.readFileSync(process.argv[2], "utf8");      // 词表 + parseCfgBool 原文
+const cells = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+eval(boolSrc + "\n;globalThis.__pcb = parseCfgBool;");
+const arg = (c) => (c.kind === "undefined" ? undefined : c.v);
+const out = cells.map((c) => globalThis.__pcb(arg(c), c.dft));
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def run_node(bool_src: str, cells: list[dict], node: str) -> list:
+    with tempfile.TemporaryDirectory() as td:
+        js = Path(td) / "harness.js"
+        src = Path(td) / "bool.js"
+        data = Path(td) / "cells.json"
+        js.write_text(_HARNESS, encoding="utf-8")
+        src.write_text(bool_src, encoding="utf-8")
+        data.write_text(json.dumps(cells, ensure_ascii=False), encoding="utf-8")
+        r = subprocess.run([node, str(js), str(src), str(data)],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+    if r.returncode != 0:
+        raise AssertionError("node 跑 parseCfgBool 失败：" + (r.stderr or r.stdout or "")[-400:])
+    return json.loads(r.stdout)
+
+
+# ============================ 判据本体（真实页面与变异页面共用） ============================
+
+_CALLSITE_RE = re.compile(r"parseCfgBool\(\s*e\.enabled\s*,\s*true\s*\)")
+
+
+def audit(html: str, node: str) -> list[str]:
+    """返回问题清单（空清单 = 干净）。真实页面与病灶样本共用同一套判定。"""
+    problems: list[str] = []
+    # ① 词表逐字同源（顺序无关：Set 语义）
+    try:
+        f_true, f_false = extract_tokens(html)
+    except AssertionError as exc:
+        return [str(exc)]
+    if f_true != set(sb._TRUE_TOKENS):
+        problems.append(f"真值词表不同源：前端多 {sorted(f_true - set(sb._TRUE_TOKENS))} / "
+                        f"少 {sorted(set(sb._TRUE_TOKENS) - f_true)}")
+    if f_false != set(sb._FALSE_TOKENS):
+        problems.append(f"假值词表不同源：前端多 {sorted(f_false - set(sb._FALSE_TOKENS))} / "
+                        f"少 {sorted(set(sb._FALSE_TOKENS) - f_false)}")
+    # ② 调用点哨兵：两个条目级渲染点必须走 parseCfgBool（`!!e.enabled` 是变异靶子）
+    if len(_CALLSITE_RE.findall(html)) < 2:
+        problems.append("条目级开关的渲染点没走 parseCfgBool（`parseCfgBool(e.enabled, true)` 少于 2 处）")
+    if "parseCfgBool(v, dft)" not in html:
+        problems.append("设置页的布尔渲染没走 parseCfgBool")
+    bad = [ln.strip() for ln in html.splitlines()
+           if ".checked" in ln and "!!" in ln
+           and re.search(r"(cfg\[|e\.enabled|g\.enabled)", ln)]
+    if bad:
+        problems.append(f"仍有对配置值直接取两次非的行：{bad[:2]}")
+    # ③ 行为：抽取真实函数，在 node 里逐格跑，与后端 strict_bool 比
+    try:
+        bool_src = extract_bool_source(html)
+    except AssertionError as exc:
+        return problems + [str(exc)]
+    cells = build_cells()
+    got = run_node(bool_src, cells, node)
+    if len(got) != len(cells):
+        return problems + [f"node 返回 {len(got)} 格，输入表是 {len(cells)} 格（形状不对）"]
+    diff = []
+    for c, g in zip(cells, got):
+        want = sb.strict_bool(c["v"], c["dft"], logger=_QUIET)
+        if bool(g) is not want or (g is not True and g is not False):
+            diff.append(f"默认值={c['dft']} / {c['label']}：前端 {g!r} vs 后端 {want!r}")
+    if diff:
+        problems.append(f"逐格比对 {len(diff)}/{len(cells)} 格分叉：" + "；".join(diff[:4]))
+    return problems
+
+
+# ============================ 一、真实页面 ============================
+
+def part_one(node: str) -> None:
+    print("=" * 74)
+    print("① 真实页面：抽取 parseCfgBool 原文，在 node 里与后端 strict_bool 逐格比对")
+    print("=" * 74)
+    html = PAGE.read_text(encoding="utf-8")
+    cells = build_cells()
+    print(f"       输入表 {len(cells)} 格（{len(cells) // 2} 种输入 × 两档默认值；"
+          f"词表来自后端 {sorted(sb._TRUE_TOKENS | sb._FALSE_TOKENS)}）")
+    try:
+        f_true, f_false = extract_tokens(html)
+    except AssertionError as exc:
+        check("能从 index.html 抽出两份词表", False, str(exc))
+        return
+    check("能从 index.html 抽出两份词表", True)
+    check("★真值词表与后端 _TRUE_TOKENS 逐字同源", f_true == set(sb._TRUE_TOKENS),
+          f"前端 {sorted(f_true)} / 后端 {sorted(sb._TRUE_TOKENS)}")
+    check("★假值词表与后端 _FALSE_TOKENS 逐字同源", f_false == set(sb._FALSE_TOKENS),
+          f"前端 {sorted(f_false)} / 后端 {sorted(sb._FALSE_TOKENS)}")
+    try:
+        bool_src = extract_bool_source(html)
+    except AssertionError as exc:
+        check("能抽出 parseCfgBool 原文", False, str(exc))
+        return
+    check("能抽出 parseCfgBool 原文（含词表常量）",
+          "function parseCfgBool(" in bool_src and "typeof v === \"number\"" in bool_src,
+          bool_src[:120])
+
+    problems = audit(html, node)
+    check("★真实页面零问题（词表同源 + 调用点 + 逐格行为全对）", not problems,
+          "；".join(problems[:3]))
+    # 单列一条「逐格」的正面证据：两族各挑一格，把数字摆出来
+    got = run_node(bool_src, cells, node)
+    pairs = {(c["label"], c["dft"]): bool(g) for c, g in zip(cells, got)}
+    for label, dft, want in (("字符串 ''", True, False), ("字符串 ''", False, False),
+                             ("数字 2", True, True), ("数字 2", False, False),
+                             ("词表原样 'y'", True, True), ("带首尾空白 'false'", True, False)):
+        check(f"  逐格：{label}（默认值={dft}）→ {want}",
+              pairs.get((label, dft)) is want, f"实际 {pairs.get((label, dft))!r}")
+    print(f"       共比对 {len(cells)} 格，0 格分叉")
+
+
+# ============================ 二、判据有牙 ============================
+
+#: 变异 → （改法, 说明）。改法作用在**页面原文**上，改完再走同一套 audit()。
+MUTATIONS = [
+    ("调用点改回 `!!e.enabled`",
+     lambda h: h.replace("const on = parseCfgBool(e.enabled, true);",
+                         "const on = !!e.enabled;"),
+     "条目列表的开关又按真值画 → 哨兵必须红"),
+    ("函数体整段换成 `return !!v;`",
+     lambda h: re.sub(r"function parseCfgBool\(v, dft\)\{.*?\n\}",
+                      "function parseCfgBool(v, dft){\n  return !!v;\n}", h, count=1, flags=re.S),
+     "P4 要修的 bug 原样装回来 → 逐格必须红"),
+    ("删掉数字分支",
+     lambda h: h.replace('  if(typeof v === "number") return (v === 0 || v === 1) ? !!v : !!dft;'
+                         '   // 数字只认 0 / 1（含 0.0 / 1.0）\n', ""),
+     "非 0/1 数字一律 true → 逐格必须红"),
+    ("前端词表删掉单字母 `y` / `t`",
+     lambda h: h.replace('const CFG_TRUE_TOKENS = new Set(["true", "1", "yes", "on", "y", "t"]);',
+                         'const CFG_TRUE_TOKENS = new Set(["true", "1", "yes", "on"]);'),
+     "词表靠人列就会漏格 → 对账 + 逐格必须红"),
+    ("前端词表删掉空串",
+     lambda h: h.replace('const CFG_FALSE_TOKENS = new Set(["false", "0", "no", "off", "n", "f", ""]);',
+                         'const CFG_FALSE_TOKENS = new Set(["false", "0", "no", "off", "n", "f"]);'),
+     "空串不再按「关」→ 默认值=True 那一档必须红"),
+]
+
+
+def part_two(node: str) -> None:
+    print("\n" + "=" * 74)
+    print("② 判据有牙：五种变异必须各自报红，等价改写必须照样绿（阳性对照）")
+    print("=" * 74)
+    html = PAGE.read_text(encoding="utf-8")
+    for name, mutate, why in MUTATIONS:
+        mutated = mutate(html)
+        check(f"变异真的改到了原文：{name}", mutated != html, "锚点没命中（用例本身要维护）")
+        problems = audit(mutated, node)
+        check(f"★{name} → 判据报红", bool(problems), f"（{why}）但 audit() 说没问题")
+        if problems:
+            print(f"       └ 命中：{problems[0][:110]}")
+    # 阳性对照：等价改写（`!!dft` → `dft ? true : false`）不许被误判
+    same = html.replace("  if(v === null || v === undefined) return !!dft;",
+                        "  if(v === null || v === undefined) return dft ? true : false;")
+    check("阳性对照：等价改写（`!!dft` → 三元）照样绿", same != html and audit(same, node) == [],
+          str(audit(same, node)))
+
+
+def main() -> int:
+    node = shutil.which("node")
+    check("node 可用（缺席即失败，不静默跳过）", bool(node), "PATH 里找不到 node")
+    if not node:
+        print(f"\n结果：{_PASS} 通过 / {_FAIL} 失败")
+        return 1
+    print(f"       node = {node}")
+    part_one(node)
+    part_two(node)
+    print("\n" + "=" * 74)
+    print(f"通过 {_PASS} 项，失败 {_FAIL} 项")
+    if _FAILED:
+        print("失败项：")
+        for n in _FAILED:
+            print("  -", n)
+        return 1
+    print("全部通过 ✅ （前端 parseCfgBool 与后端 strict_bool 逐格同源，且判据有牙）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -33,6 +33,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .strict_bool import parse_bool, strict_bool
+
 # 规范要求：插件的日志器必须来自 astrbot.api（不得使用标准库 logging）——
 # 与 core/hot_reload.py、core/agent_llm.py 一致，也由 tests/test_review_compliance.py 钉住。
 from astrbot.api import logger
@@ -48,6 +50,42 @@ except Exception:         # pragma: no cover
     _np = None
 
 VALID_STATUS = ("verified", "untested", "corrected", "pending")
+
+
+# ================= 长度上限（v0.24.8 · GPT 第四轮复核 P5） =================
+#
+# 知识库整体是一个 JSON：**每次写入都要全量序列化并落盘**（save() 走 tmp → replace），
+# 同时超长正文会被切段逐段算嵌入（`_kb_touch_vectors` 那条链）。两条路都随正文字数
+# 线性变差，而一条几十万字的「知识」本身也不会是可复用的方案 —— 它只会把 WebUI
+# 保存按钮卡住、把嵌入队列堵住，最后以「保存失败 / 界面转圈」收场。
+#
+# 所以这里给两个**明面上**的上限：超限时**当场说清楚**，而不是静默入库或静默截断
+# （截断更坏：用户以为存进去了）。上限刻意放得比任何真实方案都宽 ——
+# 正常的知识条目（物品 ID、NBT 键名、命令示例）通常不到 1/10。
+MAX_TOPIC_CHARS = 200
+MAX_CONTENT_CHARS = 20000
+
+
+def knowledge_length_error(topic: str, content: str) -> str:
+    """知识条目超长时的**用户可读**说明；未超长返回空串。
+
+    只回答「超没超、超了多少、上限是多少」—— 不做静默截断，也不抛异常
+    （调用方是 WebUI 写接口与两个 LLM 工具，都该拿到一句话而不是 500）。
+    """
+    t_len = len(topic or "")
+    c_len = len(content or "")
+    over = []
+    if t_len > MAX_TOPIC_CHARS:
+        over.append(f"主题 {t_len} 字符（上限 {MAX_TOPIC_CHARS}）")
+    if c_len > MAX_CONTENT_CHARS:
+        over.append(f"正文 {c_len} 字符（上限 {MAX_CONTENT_CHARS}）")
+    if not over:
+        return ""
+    return (
+        "知识条目过长，已拒绝写入：" + "、".join(over) + "。"
+        "请把内容拆成「一条方案一条知识」，或先精简到可复用的要点"
+        "（超长正文会让每次落盘与向量嵌入都变得很慢）。"
+    )
 
 
 def normalize_status(status) -> tuple[str, str]:
@@ -75,6 +113,70 @@ def normalize_status(status) -> tuple[str, str]:
     return "untested", (
         f"status 需要字符串（收到 {type(status).__name__}），已按 untested 处理"
     )
+
+
+# ================= 条目级 enabled 的唯一口径（v0.24.8 · 第六轮复核 B7） =================
+#
+# 为什么必须抽成**一个函数**，而不是让每个读点自己写 `e.get("enabled", True)`：
+# 条目级 enabled 来自**持久化文件**（手工编辑 / 旧版插件写坏 / 脚本写入），
+# 于是「这个值该按什么处理」这个判断会散到每一处读点里 —— 而它们的答案并不一致：
+#   · `load()` 的收敛点：读不懂 → 按 default 处理；
+#   · `_searchable()` / `list_entries()` / `stats()` / `_entry_view()` / `_public_entry()`
+#     各写各的默认值，方向还能相反。
+# 结果就是同一个文件能读出互相矛盾的结论：界面列表显示「已禁用」、检索照样命中，
+# 统计里 disabled 是 0 而检索把它排除在外。**一处实现、其余只准查它**，分叉就没有立足点。
+#
+# 两条规则必须分开，因为来路不同：
+#   · 字段**不存在** → True（历史兼容）：v0.24.8 之前的文件里没有这个字段，
+#     按「未禁用」处理才不会一夜之间把老库全禁掉；
+#   · 字段**存在但读不懂**（`"maybe"` / 数字 2 / 列表…）→ False（保守关闭）：
+#     与写路径 `set_enabled()` 的方向一致 —— 宁可少开一个条目，也不要让一个
+#     手改坏的值照常生效。
+#
+# 关于「同一坏值只警告一次」：读点在**热路径**上（`_searchable()` 每次检索都跑），
+# 不设闸的话一个坏值能刷满日志。这里按（作用域, 原值）去重。
+_warned_enabled: set[tuple[str, str]] = set()
+
+
+def flag_enabled(container: dict, key: str, scope: str, *, warn: bool = True) -> bool:
+    """「缺失 → True / 存在但读不懂 → False」的**唯一实现**（条目级与库级共用）。
+
+    `scope` 只用于日志（指出是谁的哪个字段坏了）。`warn=False` 给调用方自己
+    准备更完整文案时用（例如 `_normalize_enabled_flags()` 要同时说明「已落盘」）。
+    """
+    if not isinstance(container, dict):
+        return False                       # 结构被外力弄坏：按「关」处理，保守
+    if key not in container:
+        return True                        # 缺失 = 历史兼容值
+    raw = container[key]
+    if isinstance(raw, bool):
+        return raw
+    try:
+        return parse_bool(raw)
+    except ValueError:
+        token = (scope, repr(raw))
+        if warn and token not in _warned_enabled:
+            _warned_enabled.add(token)
+            _log.warning(
+                "配置/条目 %s 的值无法解析为布尔（%r），已按「关」处理（方向保守）",
+                scope, raw,
+            )
+        return False
+
+
+def entry_enabled(e: dict) -> bool:
+    """**条目级** `enabled` 的唯一口径（7 处读点共用，见文件顶部说明）。
+
+    为什么读点不直接信内存里的值：`load()` 的收敛只在加载时跑一次，之后仍有可能有
+    非布尔值绕过它进内存 ——
+      · `save_entry()` 的旧条目继承路径（把上一个条目的原始值原样搬过来）；
+      · 绕过 `set_enabled()` 直写 `_data["entries"][k]` 的调用方（脚本 / 旧插件代码）；
+      · 外部改完文件却没重新 `load()` 的场景。
+    这些情况下若读点自己写 `e.get("enabled", True)`，默认值又回到 fail-open，
+    病根只是从「load 与 set 分叉」变成「load 与读点分叉」。
+    """
+    return flag_enabled(e, "enabled", "knowledge.entry.enabled")
+
 
 # ================= 检索引擎 =================
 # v0.21.40：检索引擎双轨制（配置项 knowledge.search_engine）。
@@ -291,7 +393,7 @@ class SemanticIndex:
         禁用/待审批条目不该留在向量池里（BM25 侧同样排除），所以状态进哈希，
         重启条目的开关会触发这一条重算，不用整库重建。
         """
-        raw = f"{topic}\x00{entry.get('content', '')}\x00{int(bool(entry.get('enabled', True)))}"
+        raw = f"{topic}\x00{entry.get('content', '')}\x00{int(entry_enabled(entry))}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     def needs(self, topic: str, entry: dict) -> bool:
@@ -546,9 +648,11 @@ class KnowledgeState:
         if self.file_path.exists():
             try:
                 data = json.loads(self.file_path.read_text(encoding="utf-8"))
-                self.enabled = bool(data.get("enabled", True))
-                self.learning = bool(data.get("learning", True))
-                self.auto_apply = bool(data.get("auto_apply", True))
+                # v0.24.8（GPT 第三轮复核 P4）：文件里写成字符串 "false" 时
+                # 以前 bool() 会读成 True —— 「关」关不掉，且 WebUI 显示与生效相反。
+                self.enabled = strict_bool(data.get("enabled", True), True, key="knowledge.enabled")
+                self.learning = strict_bool(data.get("learning", True), True, key="knowledge.learning")
+                self.auto_apply = strict_bool(data.get("auto_apply", True), True, key="knowledge.auto_apply")
             except Exception:
                 pass
 
@@ -580,14 +684,20 @@ class KnowledgeState:
         v0.23.5 外部复核：三个参数**必须**已经是布尔值 —— WebUI 侧统一走
         `web_api.parse_bool()` 严格解析后才传进来（此前直传原始 JSON 值，
         而这里是裸 `bool()`：`bool("false")` 仍是 True，「关」会被读成「开」）。
-        保留 `bool()` 只为兜住内部调用方传 0/1 的老习惯，不再是外部输入的入口。
+
+        v0.24.8（GPT 第四轮复核 P4 收尾）：上一版这里留了一句「保留 bool() 只为
+        兜住内部调用方传 0/1 的老习惯，不再是外部输入的入口」——**这句话是反的**：
+        真正的入口是 `load()`（读持久化文件），而 `set()` 自己也可能被脚本 / 旧插件
+        代码直接调用。既然 `core/strict_bool.py` 已经有唯一一套判定，这里就不要再
+        留第二种语义：非布尔先严格解析，读不出结论时**按「关」处理**（方向保守，
+        宁可少开一个能力），落盘的永远是 JSON 真布尔。
         """
         if enabled is not None:
-            self.enabled = bool(enabled)
+            self.enabled = strict_bool(enabled, False, key="knowledge.set.enabled")
         if learning is not None:
-            self.learning = bool(learning)
+            self.learning = strict_bool(learning, False, key="knowledge.set.learning")
         if auto_apply is not None:
-            self.auto_apply = bool(auto_apply)
+            self.auto_apply = strict_bool(auto_apply, False, key="knowledge.set.auto_apply")
         self.last_save_ok = self.save()
         return self.as_dict()
 
@@ -984,7 +1094,15 @@ class ModKnowledgeBase:
                 self._data = {"preset_id": self.preset_id, "entries": {}}
         self._data.setdefault("preset_id", self.preset_id)
         self._data.setdefault("deleted", [])  # 墓碑：被删除的 topic（防旧文件继承复活）
-        self._migrate()
+        # v0.24.8（第六轮复核 B8）：收敛与迁移各自只**报告**改动，落盘在这里合并成一次 ——
+        # 两处各写一次盘的话，save() 里的 _notify_write() 会被触发两次，
+        # 同一批内容排两次向量补算后台任务。这正是「合并成一次 save()」的实质。
+        # （注意：_migrate() 不能写成 `changed or self._migrate()` —— 短路会让它根本不跑。）
+        changed = self._normalize_enabled_flags()
+        if self._migrate():
+            changed = True
+        if changed:
+            self.save()
         self._load_semantic()
         self._rebuild_index()
 
@@ -1022,8 +1140,50 @@ class ModKnowledgeBase:
     def entry_count(self) -> int:
         return len(self._data.get("entries", {}))
 
-    def _migrate(self) -> None:
-        """旧条目惰性迁移：自动补 mod/kind 字段。"""
+    def _normalize_enabled_flags(self) -> bool:
+        """把每条知识的 ``enabled`` 收敛成**真布尔**；返回「是否有条目被改」（调用方负责落盘）。
+
+        为什么必须在这里做，而不是只在 ``_searchable()`` 里判：条目级 enabled
+        来自**持久化文件**（可以被手工编辑、被旧版插件写坏、被脚本写入），
+        文件里写 ``"enabled": "false"`` 时旧代码的 ``e.get("enabled", True)``
+        是真值 → 条目**关不掉**，而且 WebUI 列表显示的也是「启用」。
+
+        收敛点选在 ``load()``：一处收口，之后所有读 ``enabled`` 的地方
+        （检索过滤、列表视图、统计、WebUI）看到的都是同一个真布尔。
+
+        v0.24.8（第六轮复核 B7 / B8）两处收紧：
+
+          · **读不懂的值按「关」收敛**（此前按 default=True 收敛 —— 方向与写路径
+            `set_enabled()` 相反：一个手改坏的值会被「修」成启用）；
+          · **不再自己落盘**，只回报 ``changed``，由 `load()` 与 `_migrate()` 的结果
+            合并后写**一次**（两次 save() 就是两次向量补算排单）。
+        """
+        entries = self._data.get("entries")
+        if not isinstance(entries, dict):
+            return False
+        changed = False
+        for topic, e in entries.items():
+            if not isinstance(e, dict) or "enabled" not in e:
+                continue
+            raw = e["enabled"]
+            if isinstance(raw, bool):
+                continue
+            # warn=False：这里的文案要连「已落盘」一起说清，别让同一件事报两遍
+            fixed = flag_enabled(e, "enabled", f"knowledge[{topic}].enabled", warn=False)
+            e["enabled"] = fixed
+            changed = True
+            _log.warning(
+                "知识条目 %r 的 enabled 字段不是布尔（%r），已按严格解析收敛为 %s 并落盘",
+                topic, raw, fixed,
+            )
+        return changed
+
+    def _migrate(self) -> bool:
+        """旧条目惰性迁移：自动补 mod/kind 字段。返回「是否有改动」（调用方负责落盘）。
+
+        v0.24.8（第六轮复核 B8）：这里**不再自己调 `save()`** —— 落盘收口到
+        `load()`，与 `_normalize_enabled_flags()` 的结果合并成一次写入。
+        """
         changed = False
         for topic, e in self._data["entries"].items():
             if "mod" not in e:
@@ -1032,8 +1192,7 @@ class ModKnowledgeBase:
             if "kind" not in e:
                 e["kind"] = self._detect_kind(topic, e.get("content", ""))
                 changed = True
-        if changed:
-            self.save()
+        return changed
 
     # v0.23.5：最近一次落盘的结果。此前这里是 `except Exception: pass` ——
     # 磁盘满 / 只读 / 路径被删时，知识库会安静地在内存里"看起来一切正常"，
@@ -1170,7 +1329,8 @@ class ModKnowledgeBase:
             "topic": topic,
             "content": e.get("content", ""),
             "status": e.get("status", "untested"),
-            "enabled": e.get("enabled", True),
+            # v0.24.8（P4）：对外一律回报**真布尔** —— 界面显示的开关必须与生效的一致
+            "enabled": entry_enabled(e),
             "updated_at": e.get("updated_at", ""),
             "mod": e.get("mod", "general"),
             "kind": e.get("kind", "instance"),
@@ -1179,11 +1339,21 @@ class ModKnowledgeBase:
     # ================= 检索 =================
 
     def _searchable(self) -> dict:
-        """可参与检索的条目：排除「手工禁用」与「待审批」。"""
+        """可参与检索的条目：排除「手工禁用」与「待审批」。
+
+        v0.24.8（GPT 第四轮复核 P4）：这里**不再**直接用 ``e.get("enabled")`` 的真值语义 ——
+        文件里写成字符串 ``"false"`` 的条目会被真值语义读成「启用」（关不掉）。
+        条目级字段已由 `_normalize_enabled_flags()` 在 load() 收口成真布尔，
+        这里再走一次严格解析，是为了兜住「不经 load 直接改内存」的路径。
+
+        v0.24.8（第六轮复核 B7）：那次「再走一次严格解析」当时是**就地写**的，
+        默认值 `True` 于是又散回读点里 —— 现在统一走 `entry_enabled()`（缺失→True /
+        存在但读不懂→False），与 `set_enabled()` 的写入口径同向。
+        """
         return {
             k: e
             for k, e in self._data["entries"].items()
-            if e.get("enabled", True) and e.get("status") != "pending"
+            if entry_enabled(e) and e.get("status") != "pending"
         }
 
     def _rebuild_index(self) -> None:
@@ -1398,7 +1568,10 @@ class ModKnowledgeBase:
         entry = {
             "content": content,
             "status": status,
-            "enabled": old.get("enabled", True),
+            # v0.24.8（第六轮复核 B7）：继承的是**收敛后的结论**，不是上一版的原始值 ——
+            # 旧实现把 `old["enabled"]` 原样搬过来，等于给「绕过 load 的非布尔值」
+            # 开了一条传播路径（写进去的新条目照样带着坏值）。
+            "enabled": entry_enabled(old),
             "created_at": old.get("created_at", now),
             "updated_at": now,
             "source": source,
@@ -1444,7 +1617,7 @@ class ModKnowledgeBase:
             "topic": topic,
             "content": e.get("content", ""),
             "status": e.get("status", "untested"),
-            "enabled": e.get("enabled", True),
+            "enabled": entry_enabled(e),
             "source": e.get("source", ""),
             "created_at": e.get("created_at", ""),
             "updated_at": e.get("updated_at", ""),
@@ -1470,20 +1643,28 @@ class ModKnowledgeBase:
         for topic, e in self._data["entries"].items():
             if kw and kw not in topic.lower() and kw not in e.get("content", "").lower():
                 continue
-            if not include_disabled and not e.get("enabled", True):
+            if not include_disabled and not entry_enabled(e):
                 continue
             out.append(self._public_entry(topic, e))
         out.sort(key=lambda x: x["updated_at"], reverse=True)
         return out
 
     def set_enabled(self, topic: str, enabled: bool) -> dict | None:
-        """启用/禁用条目。"""
+        """启用/禁用条目（入参必须是**已严格解析**的真布尔，写回也写真布尔）。
+
+        v0.24.8（GPT 第四轮复核 P4）：旧实现的 ``bool(enabled)`` 是 fail-open 的
+        入口 —— 谁绕过 WebUI 直接传字符串 ``"false"`` 进来，条目就会被**启用**。
+        现在这里做最后一道收敛：非布尔先走严格解析（读不出结论按「禁用」处理，
+        方向保守），落盘的永远是 JSON 真布尔，文件不会再长出 ``"false"`` 这种值。
+        """
         key = self._topic_key(topic)
         if key not in self._data["entries"]:
             return None
-        self._data["entries"][key]["enabled"] = bool(enabled)
+        flag = enabled if isinstance(enabled, bool) else strict_bool(
+            enabled, False, key=f"knowledge[{key}].enabled")
+        self._data["entries"][key]["enabled"] = flag
         self.save()
-        return {"topic": key, "enabled": bool(enabled)}
+        return {"topic": key, "enabled": flag}
 
     def delete_entry(self, topic: str) -> bool:
         """删除条目（含墓碑，防旧文件继承复活）。
@@ -1593,7 +1774,8 @@ class ModKnowledgeBase:
             "untested": sum(1 for e in entries.values() if e.get("status") == "untested"),
             "corrected": sum(1 for e in entries.values() if e.get("status") == "corrected"),
             "pending": sum(1 for e in entries.values() if e.get("status") == "pending"),
-            "disabled": sum(1 for e in entries.values() if not e.get("enabled", True)),
+            "disabled": sum(1 for e in entries.values()
+                            if not entry_enabled(e)),
             "template": sum(1 for e in entries.values() if e.get("kind") == "template"),
             "instance": sum(1 for e in entries.values() if e.get("kind") != "template"),
             "file": str(self.file_path),

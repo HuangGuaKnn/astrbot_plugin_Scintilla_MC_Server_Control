@@ -3,6 +3,166 @@
 本项目的所有重要变更都记录在这里。格式参考
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [v0.24.8] - 2026-10-19
+
+> 一句话：**GPT 第三轮 + 第四轮复核收口**：布尔解析收成唯一实现、阻塞执行器并发与队列双有界、停用后僵尸回调不再推送、广播「未确认／无接收者」不再冒充成功，写接口入参与非对象请求体统一校验，发布通道收成 tag 唯一来源。
+>
+> 第四轮补的五个口子（2057）：执行器**队列**仍无界、`shutdown(cancel_futures=True)` 只投哨兵、事件播报六条分支裸读真值、WebAPI 顶层非对象直接 500、空服回执绕过边界判定；外加知识条目长度上限与发布包卫生的取证边界（详见下方「GPT 第四轮复核 · 2057 收口」）。
+
+### 修复（GPT 第三轮复核 · P1 / P2 / P3 / P4 / P5）
+
+- **阻塞执行器有界化 (P1)**（`core/log_watcher.py`）：`_DaemonThreadExecutor` 的 `submit()` 每调用一次就新建一条 daemon 线程，`_max_workers = 1` 只是写死的假值 —— 实际并发等于未完成提交数，而 WebUI 首屏的状态 / 版本 / 进程表查询全落在同一个进程级执行器上，慢盘时线程数无界增长。现在改为固定 `MAX_DAEMON_WORKERS = 4` 的常驻 worker 池 + 队列排队，`_max_workers` 反映真实上限，新增 `active_threads` 供诊断，`health()` 增加 `daemon_pending`（排队 + 执行中的真实积压）；顺带修掉 `submit()` 与 `shutdown()` 的入队竞态 —— 关闭那一瞬间提交的任务可能排在哨兵之后，worker 已退出、Future 永不 resolve（界面上就是一直转圈），现在入队与关闭判定在同一把锁里。关闭仍只投哨兵、从不 join（退出不被卡住的 IO 拖住）。
+- **停用后不许再推送 (P2)**（`core/log_watcher.py` / `main.py`）：`_cancel_callbacks()` 只遍历 `_callback_inflight`，而超时回调在超时那一刻就被移进 `_callback_stuck` —— 于是「停用 / 重载」之后恰恰是那条卡死的回调还活着，一旦它从卡顿里醒来，照样往会话里发消息。现在两个集合一起取消，并把放弃数记进 `callbacks_abandoned`（进 `health()`，不再被 `clear()` 抹掉）；`_on_server_event` 与 `_send_to_targets` 各加一道终止门，连「最近事件」也不再写。
+- **广播「未确认」不再冒充成功 (P3)**（`core/web_api.py` / `pages/mc_control/index.html`）：送达判定收紧为只有 `success`；`inferred_success` / `dispatched_unconfirmed` 单独成组，接口回 `ok=True` + `confirmed=False` + warning，界面显示黄字「已发出 · 未确认」。判定同时开始读取 RCON 的 `last_boundary_confirmed` —— 这个值一直在算，此前没传进去，idle 降级下「已发出、没读干净」因此被判成确定成功。
+- **布尔解析收成唯一实现 (P4)**（新增 `core/strict_bool.py`）：改配置时有四条路各用一套判定 —— `core/web_api.py` 状态读取 18 处裸 `bool()`、`core/workflow.py` 的 `enabled`、`knowledge_state.json` 载入、`main._cfg_bool` —— 同一个配置文件能读出互相矛盾的结论，方向还一律 fail-open（字符串 `"false"` 读成「开」，知识库开关甚至关不掉）。现在统一到 `parse_bool`（严格，抛错）与 `strict_bool`（严格 + 回落 default + WARNING），`main._cfg_bool` 改为转调；工具开关 `_tool_enabled` 的 fail-closed 语义保持不变。本轮自审又补掉 WebUI 侧最后一处 `bool(self.plugin._cfg("remote_rcon_mode"))`（旧判据只扫 `bool(self._cfg(`，正好漏掉它），判据同步扩到两种写法。
+- **预设接口输入校验 (P5)**（`core/web_api.py`）：`switch / create / rename / delete / bind` 五个接口此前各写各的 —— `str(copy_from)` 把对象静默变成 `"{'a': 1}"` 塞进注册表（查不到、删不掉），`name.strip()` 对数字直接 `AttributeError` 成 500。现在统一走 `_str_field()`：只接受字符串，缺失 / null 视为空串，其余类型结构化拒绝并点名字段。
+
+### 自审补充（提交前自查）
+
+- **写接口布尔不再「静默改道」(S1)**（`core/web_api.py`）：`save_settings` 收到的 `remote_rcon_mode`
+  此前走 `strict_bool(值, False)` —— 客户端传 `"maybe"` 这种垃圾时**悄悄当成 False**，而下面正好有
+  `not remote_mode and eff_dir` 这道闸：一个拼错的布尔值会顺带把 `server_dir` 硬校验打开，
+  于是「填错开关」表现为「服务器目录被拒」。现按 `core/strict_bool.py` 自己的契约办 ——
+  写接口（外部输入入口）用 `parse_bool` 严格抛错，返回 `ok:False` 并直说只认
+  `true/false`、`yes/no`、`on/off`、`1/0`；从配置读的那条路仍用 `strict_bool`，并补齐
+  `key="remote_rcon_mode"`，与上面那条读路径的 WARNING 口径一致（此前一条带 key、一条不带）。
+- **根目录临时取证日志纳入忽略 (S2)**（`.gitignore`）：`run_release_verify.py > verify_xxx.log`
+这类产物含本机绝对路径（`%USERPROFILE%\.astrbot\data\…` 这种带盘符的完整路径）。仓库对「内部件绝不入库」有明文红线，
+  但忽略规则只覆盖了 `docs/`，**根目录是敞的** —— `git add -A` 会把它们一起扫进提交。
+  现已补 `/verify_*.txt`、`/verify_*.log`、`/_recheck_*.log`、`/_mut*.log`；
+  本次自审产生的 6 份日志已全部迁到仓库外（工作区 `核验材料_v0.24.8/`）。
+
+### 修复（GPT 第四轮复核 · 2057 收口）
+
+> 这一批的共同病根：**「有界」写在了注释里，没有写进结构里** —— 并发有界、队列无界；
+> 布尔收成唯一实现、播报分支还在裸读；边界判定算出来了、没接到那一步。
+> 每条都配一条**会真的跑起来**的判据，而不是「源码里有这一行」。
+
+- **执行器队列有界化 + 关闭真取消 (P1)**（`core/log_watcher.py`）：上一版把
+  「每次 submit 新建线程」改成了固定 worker 池，**并发**确实有界了，但**队列本身无界** ——
+  实测连续提交 50 笔阻塞任务，`pending` 就到 50 并一直躺在那里；`run_blocking` 超时只是
+  「我不再等」，那笔活儿仍在队列里排队，等 worker 有空**立刻照跑**（过期 IO 白烧一次磁盘，
+  还可能往已停用的实例里写状态）。现在三道闸一起上：
+  - 新增 `MAX_DAEMON_QUEUE = 64`，**到顶即拒收**（`RuntimeError`，与线程池关闭同一句话），
+    拒收次数记进 `rejected` 并留 WARNING —— 拒收是**有意的**保护动作，但必须留痕，
+    否则它只表现为「某些请求偶发说不可用」，没人查得到原因。入队用 `put_nowait`：
+    锁内阻塞等空位会把提交路径与 `shutdown` 一起拖住，比拒收更糟。
+  - `shutdown(cancel_futures=True)` 此前**只投哨兵**，队列里的活儿照样先于哨兵执行
+    （停用之后还在跑过期任务）。现在逐个 `cancel()`，worker 侧靠
+    `set_running_or_notify_cancel()` 直接跳过并回落 `pending`。
+  - `run_blocking` 超时**真撤回**：对「还没被领走」的任务 `cancel()` 有效，日志里明说
+    「已从队列撤回、不会白跑」；已经在跑的取消不掉（Python 杀不了线程），改为如实说
+    「已在执行中，无法中断，但跑在 daemon 线程里、不拖住退出」。
+  - 顺带修掉一个只在「关闭瞬间队列正好满」时才现形的死角：哨兵塞不进队列，
+    worker 会永远卡在 `get()` 上（daemon 线程，进程退出前一直挂着）。现在 worker
+    在「队列空且已关闭」时也会退出，哨兵只作为**加速路径**而不是唯一路径。
+- **事件播报的布尔真正统一 (P4 收尾)**（`main.py`）：上一版把布尔解析收成了唯一实现，
+  但 `_on_server_event` 里六条播报分支仍在**裸读配置真值** —— `notify_join_leave="false"`
+  实测照发（Python 里非空字符串都是真值）。现在六条分支一律走 `_cfg_bool`，
+  `"false"` / `" FALSE "` / `0` 都真的关闭；读不出结论（`"maybe"`）时按默认值走并留
+  WARNING，不静默反转语义。
+- **WebAPI 请求体顶层不是对象 (P3 收尾)**（`core/web_api.py`）：旧写法一律
+  `data = await request.json() or {}` —— 请求体是**非空数组**时 `or {}` 根本不会兜住
+  （非空数组是真值），紧接着的 `data.get(...)` 直接 `AttributeError` → 接口 500，
+  界面只看到「请求失败」。现在入口统一走 `_body()`：不是 JSON 对象就回
+  `ok:False` + 「请求体需要 JSON 对象（收到 list）」，**绝不带着错类型往下走**。
+  非法 `topic`（数字 / 对象）在 toggle / delete / approve / entry 四处同样结构化拒收，
+  一笔都不落进知识库；写接口的字符串项也统一走 `_str_field`，不再 `str()` 静默造出
+  `"{'a': 1}"` 这种键。
+- **「无接收者」不再绕过边界判定 (P3 收尾)**（`core/command_result.py`）：空服回
+  `No player was found` 时，上一版直接判成功 —— 而 RCON 侧**边界是否读到干净**这个值
+  一直在算、却在这一步被跳过。现在判定顺序固定为「先看边界，再谈成功」：
+  边界**未确认** → `dispatched_unconfirmed`（并保留 `no_recipient` 事实，界面可以同时
+  说「没人收到」），边界已确认才判 `success`（空服广播本身不是失败）。
+- **知识条目长度上限 (P5 收尾)**（`core/knowledge_base.py` / `core/web_api.py` / `main.py`）：
+  知识库是**一个 JSON**，每次写入都要全量序列化并落盘，超长正文还会被切段逐段算嵌入 ——
+  一条几十万字的「知识」只会把保存按钮卡住、把嵌入队列堵住。新增
+  `MAX_TOPIC_CHARS = 200` / `MAX_CONTENT_CHARS = 20000` 与 `knowledge_length_error()`：
+  **当场说清楚**（超出多少、上限多少、建议拆成一条方案一条知识），不静默入库、
+  也不静默截断（截断更坏：用户以为存进去了）。WebUI 写接口与两个 LLM 工具**共用同一处**
+  判定，不是各写一套。
+- **`knowledge_base.set()` 去掉最后一处裸 `bool()`**（`core/knowledge_base.py`）：
+  上一版在这里留了一句「保留 `bool()` 只为兜住内部调用方传 0/1 的老习惯，不再是外部
+  输入的入口」——**这句话是反的**：真正的入口是 `load()`（读持久化文件），而 `set()`
+  自己也可能被脚本直接调用。既然判定已经收成唯一实现，这里就不该留第二种语义：
+  非布尔先严格解析，读不出结论按「关」处理（方向保守），落盘的永远是 JSON 真布尔。
+- **发布包卫生的取证边界写明 (自审)**（`run_release_verify.py`）：这一项实测的是
+  `git archive HEAD`，**不是工作区**。改完顺手跑一遍门禁，看到「发布包卫生 PASS」
+  很容易误读成「这批改动已经能进包了」。现在只要工作区有未提交改动，就会多打一行
+  `[NOTE] 本次实测的是 HEAD(xxxxxxx) 的归档 —— 工作区还有 N 处未提交改动，不在名单里`。
+  只提示、不判失败：本项的职责是 `.gitattributes` 名单，不是「有没有提交」。
+
+### 回归用例
+
+- 新增 `tests/test_v0248_review_round3.py`：钉住「布尔解析只有一份实现」「执行器并发有界且不丢活」「停用会连僵尸回调一起取消并记账」「广播有未确认态且前端不用绿字」「`_str_field` 拒绝非字符串」五组判据；并追加「关闭瞬间提交只允许被拒或被执行、不留永不 resolve 的孤儿」与「关闭后 pending 归零」两条（本轮 46 项：P1~P5 的 43 项 + 自审 S1 的 3 项）。
+- 新增 `tests/test_v0248_review_round4.py`：**62 项行为判据**，逐条对着 2057 的五个口子
+  真跑一遍 —— 把队列灌满看拒收（20 笔灌进上限 8 → 拒 12 笔）、关闭后确认被取消的活儿
+  **一笔都没执行**、`run_blocking` 超时后确认那笔活儿**没有白跑**、真的调一次
+  `_on_server_event` 看它有没有去发送、真的发一个**数组体**进 WebAPI 看回包说的是
+  「需要 JSON 对象」而不是「必填」、`No player was found` + 边界未确认必须落在
+  `dispatched_unconfirmed`、超长知识必须被同一处上限拒收、`KnowledgeState.set()` 写盘
+  必须是 JSON 真布尔。
+- 变异凭据扩到 **M15**（`tests/mutation_v0248.py`，本轮实跑 **15/15 KILLED**）：
+  M7 队列改回无界 / M8 `cancel_futures` 只投哨兵 / M9 超时不再撤回 / M10 播报裸读真值 /
+  M11 非对象体静默当空对象 / M12 空服回执绕过边界 / M13 正文上限放大到 10 亿 /
+  M14 正文超长不判 / M15 `set()` 退回裸 `bool()`。
+  > **自审记一笔**：M13 第一次跑是 **SURVIVED** —— 用例里写的是
+  > `content = "y" * (kbmod.MAX_CONTENT_CHARS + 1)`，期望值跟着实现走；把上限放大到
+  > 10 亿，用例**照样全绿**。已改成把 `200 / 20000` 钉死（它是产品口径：CHANGELOG、
+  > 界面提示、工具回执都按这两个数字说话），再补一条 M14 专测「超长不判」。
+  > 判据跟着实现跑的，本质上只是把实现抄了一遍。
+
+### 证据与发布流程（GPT 第三轮复核 B6 / B7 / B8）
+
+- **前端「留空不提交」改成行为判据 (B6)**（新增 `tests/test_v0248_collect_settings.py`）：旧判据只检查 `S_DEFAULTS` 里有没有那三个键 —— 把 `collectSettings()` 的数字分支改成 `s[key] = isNaN(x) ? 0 : x` 之后 113 项照样全绿，而用户留空会真的提交 `0`、把内置默认值覆盖掉。现在从 `index.html` **抽取真实的 `collectSettings()`**（不复制一份到用例里，避免实现与判据漂移），套最小 DOM 桩在 node 里真跑，只看它返回了什么：空 / 纯空白 / 非数字**不得出现该键**，`0` 必须出现且等于 `0`，`12.5` 原样提交；node 缺席时显式失败，不静默跳过。
+- **发布通道收成 tag 唯一来源 (B7)**（新增 `run_release_channel.py`，改写 `.github/workflows/release.yml`）：原先「是否预发布」靠 CHANGELOG 小节标题里有没有「预发布」三个字，而「上一个正式版」的基线却查 GitHub Release 的真实 `prerelease == false` —— 同一件事两处判据，文案一改发布性质就漂（v0.24.7 正是标题没写、靠人事后手改才正确的）。现在 `vX.Y.Z` = 正式版、`vX.Y.Z-rc.N` = 预发布；发布通道判定、标签与 metadata 版本一致性校验、CHANGELOG 取小节三处共用这一支脚本，`-rc.N` 不参与版本比对；tag 形状不合法直接失败，绝不按「看不懂就当正式版」放行。
+- **发送预算压力判据 (B8)**（新增 `tests/test_v0248_budget_stress.py`）：一万条小命令逐条记账（实测 0.005s）后第 10001 条起整体停发；64 MiB + 1 字节的单条命令被结构化拒发、不抛异常也不拖时间；边界精确到「恰好等于上限放行、多 1 字节 / 多 1 条即拒」；单批 10000 条整批拒绝且提示里给出实际条数与上限。
+- **知识条目级布尔 (P4 收尾·2)**（`core/knowledge_base.py`）：上一版把「配置布尔」与「状态布尔」收了，**条目级** `enabled` 还留着第二种语义 —— 文件里写 `"enabled": "false"` 的条目在 `_searchable()` 里被真值读成「启用」，界面看着是关的、检索照样命中。现在 `_searchable()` 走严格解析，`load()` 再加一道`_normalize_enabled_flags()` 把能解析的字符串**就地收敛成 JSON 真布尔**并落 WARNING，使「文件 / 内存 / 界面」三处口径一致；`set_enabled()` 的入参同样不再 `bool()`，读不出结论按「禁用」保守处理。
+- **设置页布尔显示 (P4 收尾·3)**（`pages/mc_control/index.html`）：渲染此前用 `!!value`，字符串 `"false"` 显示成「开」，与后端刚统一的口径正好相反；现在统一走 `parseCfgBool(value, default)`。
+- **根目录日志兜底忽略 (S3)**（`.gitignore`）：取证日志的名字是随手起的（`_r4_*.log` 就这样漏网），逐条补名字治不了根；改为「仓库根目录不留任何 `.log`」，把「内部件绝不入库」这条红线落到结构上。
+
+### 第七轮（GPT 第六轮复核 · B6 / B7 / B8 / B9 收口）
+
+> 这一批的共同病根：**判据读的是文本，实现换掉了它照样绿** —— 「`parseCfgBool(v, dft)` 在不在」
+> 这种断言，函数体怎么改它都在；「7 处各自都判对了吗」这种判据，只要有一处口径不同就永远对不上。
+> 四条各自换成**会真的跑起来**的判据。
+
+- **前端与后端布尔逐格同源 (B6 / B10)**（`pages/mc_control/index.html` + 新增
+  `tests/test_v0248_same_source_bool.py`）：第四轮把设置页布尔渲染改走 `parseCfgBool` 之后，
+  判据只剩「函数签名在不在」—— 第六轮逐条实测**三条变异全部存活**：调用点改回 `!!e.enabled`、
+  函数体整段换成 `return !!v;`、删掉数字分支。逐格比对又暴出 **12 格分叉**（此前只对上一半），
+  三族各有来路：空串 / 纯空白（后端 False，前端回落 `default` —— 默认值为「开」的字段被画成开，
+  方向最危险）、非 0/1 数字（后端回落 default，前端 `v !== 0` 一律 true）、单字母词表
+  `y/t/n/f`（后端词表里有、前端没有 —— **输入表靠人列必漏格**）。现在两份词表逐字同源
+  （出处写在常量后面）、输入表**从后端词表生成**、每格跑**两档默认值**（两族的露头条件正好相反，
+  只跑一档必漏一半），判据从页面抽取 `parseCfgBool` 原文在 node 里真跑并与 `strict_bool` 逐格比对，
+  外加五种变异必须报红、一条等价改写必须照样绿。
+- **条目级 `enabled` 收成唯一口径 (B7)**（`core/knowledge_base.py` + 新增
+  `tests/test_v0248_kb_enabled_single_source.py`）：默认值 `True` 还散在 7 处读点里，方向能相反 ——
+  界面列表显示「已禁用」、检索照样命中；统计 `disabled` 是 0，而检索已经把它排除。现在两条规则
+  各归一处：`entry_enabled()`（字段**缺失** → True 历史兼容；字段存在但读不懂 → False 保守关闭）与
+  `flag_enabled()`（按字段名回落「关」），7 处读点 + 内容指纹 + 改名继承全部转调，写入口
+  `set_enabled()` 落盘永远是 JSON 真布尔。
+- **加载期只落一次盘 (B8)**（`core/knowledge_base.py`）：`_normalize_enabled_flags()` 此前**只改内存、
+  不落盘** —— 文件里写坏布尔时，每次启动都重新收敛一遍、每次留一条 WARNING，而文件里那个坏值一直
+  没被修掉；反过来若让收敛与迁移各自 `save()`，同一批内容会排**两次**向量补算。现在落盘收口到
+  `load()`：两处改动合并成一次写入，干净文件一次都不写。
+- **未跟踪的取证产物让门禁变红 (B9)**（`run_release_verify.py` + 新增
+  `tests/test_v0248_untracked_forensics.py`）：`.gitignore` 只在**写对名字**时挡得住，第四、第五轮
+  各漏一次，每次都是「规则补上了、名字又换了」。现在不问规则、直接问 git「哪些文件已经在工作区里、
+  却不在版本控制之下」，形状像取证产物的一律红；同时钉住边界（被忽略的目录不进名单、
+  `tests/_paths.py` 这类正经辅助模块不许误判）。判据还覆盖 `git add -N` 与「已暂存未提交」两种状态
+  —— 只认 `git status` 里 `??` 的写法恰好会漏掉它们（实测：intent-to-add 的文件在 `git diff --cached`
+  里**看不见**，索引里那一条是「空 blob + 意图标记」）。
+- **判据工具自审**：`tests/test_v0248_review_round4.py` 里那两条**读文本**的布尔判据（正是第六轮
+  变异存活的那两条）降级为「入口还在」并注明行为判据在哪；M16 / M17 的锚点随 B7 / B8 的实现更新；
+  变异凭据扩到 **M22**（`tests/mutation_v0248.py`，实跑 **22/22 KILLED**：新增 M19 口径回退 fail-open /
+  M20 收敛与迁移各写一次盘 / M21 前端词表少掉单字母 / M22 门禁不再认根目录取证产物）。变异器本身
+  也修了三处会误导结论的地方：多行锚点按 CRLF 自动适配（仓库是 Windows 检出）、
+  「变异把文件写坏」只在**真出现 traceback + 异常名**时才算（原先按关键词裸查，把用例正文里
+  提到的 `AttributeError` 也判成了崩溃）、摘证据行优先取 `[FAIL]` 开头那行（原先会摘到
+  `[ok] … 空服广播不是失败` 这种，看着像判据没红）。
+
 ## [v0.24.7] - 2026-10-18
 
 > 一句话：**GPT 第二轮复核收口（P1-5 + P2）** —— 工作流发送三道资源闸门、广播逐条如实判定、回调加超时与在飞上限、阻塞 IO 不再占默认线程池；并一并发布此前未发版的 v0.24.6 安全批次。

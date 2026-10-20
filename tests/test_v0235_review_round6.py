@@ -233,8 +233,14 @@ def part_c() -> None:
             LW.IO_TIMEOUT = 0.05
             try:
                 await w.start()
-                check("专属执行器：1 个线程（卡住的线程只占它自己的池）",
-                      w._executor is not None and w._executor._max_workers == 1)
+                # v0.24.8：旧实现每次 submit 新建线程，_max_workers=1 是假值。
+                # 现在断言真实并发上限，且它是**有界**的（不是随提交数增长）。
+                check("专属执行器：并发有界（线程数不随提交增长）",
+                      w._executor is not None
+                      and w._executor._max_workers == LW.MAX_DAEMON_WORKERS
+                      and w._executor.active_threads <= LW.MAX_DAEMON_WORKERS,
+                      f"_max_workers={getattr(w._executor, '_max_workers', None)}"
+                      f" active={getattr(w._executor, 'active_threads', None)}")
 
                 def stuck(offset, size):
                     time.sleep(1.0)          # 假装陷在系统调用里

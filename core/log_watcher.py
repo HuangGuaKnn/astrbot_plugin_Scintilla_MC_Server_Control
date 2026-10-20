@@ -25,6 +25,7 @@ import asyncio
 import hashlib
 import re
 import threading
+from queue import Empty, Full, Queue
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -67,43 +68,95 @@ CALLBACK_STUCK_GRACE = 60.0
 #: 卡死回调的引用上限（只用于留痕；到顶就丢最旧的一条并告警，防止集合无界增长）。
 MAX_STUCK_CALLBACKS = 32
 
+#: daemon 阻塞执行器的并发上限（v0.24.8 · GPT 第三轮复核 P1）。
+#: 旧实现是 `submit()` 里 `threading.Thread(...)` 一发一条 —— 名字叫「单线程」，
+#: 实际线程数等于未完成提交数：WebUI 首屏的状态 / 指纹 / 进程表全落到同一个
+#: 进程级执行器上，慢盘时线程数无界增长。这里改成固定 worker 池（队列排队），
+#: 既堵住无界，又不把短 IO 串成一条线（串行会让 WebUI 首屏明显变慢）。
+MAX_DAEMON_WORKERS = 4
+
+#: 排队上限（v0.24.8 · GPT 第四轮复核 P1「队列仍无界」）。
+#: 固定 worker 池只让「同时跑几条」有界 —— **队列本身还是无界的**：实测连续提交
+#: 50 笔阻塞任务，`pending` 就到 50 并一直躺在那里（`run_blocking` 超时只是「不再等」，
+#: 任务仍在队列里排队），内存随提交量线性增长；而 `shutdown(cancel_futures=True)`
+#: 此前只投哨兵，队列里的活儿照样先于哨兵执行（停用之后还在跑过期任务）。
+#: 现在两道闸一起上：**到顶即拒收**（`RuntimeError`，与线程池关闭同一句话）、
+#: **关闭时真取消**（把队列里未开始的任务逐个 cancel）。宁可让调用方拿到
+#: 「不可用」，也不让队列变成第二处无界增长点。
+MAX_DAEMON_QUEUE = 64
+
 
 class _DaemonThreadExecutor:
-    """单线程 **daemon** 执行器（v0.24.7 · GPT 第二轮复核 P2）。
+    """有界并发的 **daemon** 执行器（v0.24.7；v0.24.8 改为固定 worker 池）。
 
     为什么不再用 ``concurrent.futures.ThreadPoolExecutor``：它的工作线程是**非 daemon**
     的，解释器退出时会走 ``threading._register_atexit`` 去 join 它们。日志 IO 一旦卡在
     系统调用里（慢盘 / 网络盘 / 文件被别的进程独占），Python 杀不掉那个线程，
     ``shutdown(wait=False)`` 也拦不住退出流程 —— 表现为「停用它之后进程迟迟不退」。
 
-    换成 daemon 线程 + 自建 ``Future``，对调用方语义保持一致：
+    v0.24.7 的替代品是「每次 submit 新建一条 daemon 线程」，虽然解决了退出问题，
+    却把并发上限变成了「未完成提交数」—— 名字叫单线程、行为是无界，这是假的。
 
-      * ``submit()`` 仍然返回 ``concurrent.futures.Future``（``run_in_executor``
-        只要求这个类型）；
-      * 关闭之后再 ``submit()`` 抛 ``RuntimeError``（与线程池同一句话，调用方
-        现有的 ``except RuntimeError`` 分支原样有效）；
-      * 单飞仍由 LogWatcher 自己的在飞闸门负责 —— 这里不做排队，只保证
-        「卡住的线程不许拖住进程退出」。
+    现在：``max_workers`` 条**常驻** worker 线程从队列取任务，提交方只入队立即返回。
+    对调用方语义保持一致：
+
+      * ``submit()`` 仍返回 ``concurrent.futures.Future``（``run_in_executor`` 只要求这个）；
+      * 关闭之后再 ``submit()`` 抛 ``RuntimeError``（与线程池同一句话）；
+      * **队列有界**：排队到顶即拒收（同样是 ``RuntimeError``，不让队列无界增长）；
+      * 关闭时投递哨兵让 worker 自然退出，**从不 join**（``wait`` 参数刻意忽略）；
+      * ``shutdown(cancel_futures=True)`` 会**真的取消**队列里还没开始的任务。
     """
 
-    #: 回归用例按线程池的口径断言过这个属性（``_max_workers == 1``），保留它。
-    _max_workers = 1
-
-    def __init__(self, thread_name_prefix: str = "logwatch") -> None:
+    def __init__(self, thread_name_prefix: str = "logwatch",
+                 max_workers: int = MAX_DAEMON_WORKERS,
+                 max_queue: int = MAX_DAEMON_QUEUE) -> None:
         self._prefix = thread_name_prefix
+        #: 保留这个名字：回归用例与运维脚本按线程池口径读过它。
+        #: 值是**真实**的并发上限（以前写死 1，实际却是无界）。
+        self._max_workers = max(1, int(max_workers))
+        #: 排队上限（不含正在执行的）；到顶即拒收。
+        self._max_queue = max(1, int(max_queue))
+        self._queue: "Queue" = Queue(maxsize=self._max_queue)
         self._shutdown = False
         self._lock = threading.Lock()
         self._threads: set = set()
+        #: 已入队、未完成（排队 + 执行中）的任务数 —— 饱和时给运维一个可看的数。
+        self._pending = 0
+        #: 因队列到顶被拒收的累计次数（v0.24.8）：拒收是**有意的**保护动作，
+        #: 但必须留痕 —— 否则它只表现为「某些请求偶发说不可用」，没人查得到原因。
+        self._rejected = 0
+        for i in range(self._max_workers):
+            th = threading.Thread(target=self._worker_loop, name=f"{self._prefix}-{i}",
+                                  daemon=True)
+            with self._lock:
+                self._threads.add(th)
+            th.start()
 
-    def submit(self, fn, *args, **kwargs) -> Future:
-        with self._lock:
-            if self._shutdown:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-        fut: Future = Future()
-
-        def _runner() -> None:
-            if not fut.set_running_or_notify_cancel():
+    def _worker_loop(self) -> None:
+        while True:
+            try:
+                item = self._queue.get(timeout=0.2)
+            except Empty:
+                # v0.24.8（GPT 第四轮 P1）：**队列空且已关闭 → 退出**。
+                # 哨兵只是「立刻退出」的加速路径，不是唯一路径 —— 否则一旦
+                # 关闭瞬间队列正好是满的（哨兵塞不进去），worker 就会永远
+                # 卡在 get() 上（daemon 线程，进程退出前一直挂着）。
+                # 注意顺序：先**排空**队列再退，已在队列里的活儿照旧执行
+                # （与 ``ThreadPoolExecutor.shutdown(wait=False)`` 同义）。
+                if self._shutdown:
+                    with self._lock:
+                        self._threads.discard(threading.current_thread())
+                    return
+                continue
+            if item is None:                                  # 关闭哨兵
+                with self._lock:
+                    self._threads.discard(threading.current_thread())
                 return
+            fut, fn, args, kwargs = item
+            if not fut.set_running_or_notify_cancel():         # 调用方已取消
+                with self._lock:
+                    self._pending = max(0, self._pending - 1)
+                continue
             try:
                 fut.set_result(fn(*args, **kwargs))
             except BaseException as e:                       # noqa: BLE001
@@ -112,23 +165,96 @@ class _DaemonThreadExecutor:
                 except Exception:                            # noqa: BLE001
                     pass
             finally:
+                # 记账放在**完成后**：pending 才是「排队 + 执行中」的真实积压，
+                # 而不是「还没被领走的条数」（后者会把正在跑的活儿漏掉）。
                 with self._lock:
-                    self._threads.discard(threading.current_thread())
+                    self._pending = max(0, self._pending - 1)
 
-        t = threading.Thread(target=_runner, name=self._prefix, daemon=True)
+    def submit(self, fn, *args, **kwargs) -> Future:
+        # v0.24.8：**入队与关闭判定必须在同一把锁里**。旧写法先查 `_shutdown`
+        # 再出锁入队 —— 关掉的那一瞬间，任务可能正好排在哨兵之后：worker 已经
+        # 领到哨兵退出，这笔任务永远不会执行，调用方的 Future 也永远不会 resolve
+        # （在 WebUI 上就是「一直转圈」，比报错更难查）。SimpleQueue 入队不阻塞，
+        # 因此锁内入队不会拖慢提交路径。
         with self._lock:
-            self._threads.add(t)
-            t.start()
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            fut: Future = Future()
+            try:
+                # v0.24.8（GPT 第四轮 P1）：**有界入队**，到顶即拒收。
+                # 用 put_nowait 而不是 put：锁内阻塞等待空位会把提交路径
+                # （以及 shutdown）一起拖住，比拒收更糟。
+                self._queue.put_nowait((fut, fn, args, kwargs))
+            except Full:
+                self._rejected += 1
+                logger.warning(
+                    "daemon 执行器队列已满（上限 %d 笔，累计拒收 %d 次）—— "
+                    "本次调用按「不可用」处理；持续出现说明有阻塞调用卡住了 worker",
+                    self._max_queue, self._rejected,
+                )
+                raise RuntimeError(
+                    f"daemon 执行器队列已满（上限 {self._max_queue} 笔）"
+                ) from None
+            self._pending += 1
         return fut
 
+    @property
+    def pending(self) -> int:
+        """已入队、未完成（排队 + 执行中）的任务数。"""
+        with self._lock:
+            return self._pending
+
+    @property
+    def active_threads(self) -> int:
+        """当前存活 worker 数（诊断 / 回归用）。"""
+        with self._lock:
+            return sum(1 for th in self._threads if th.is_alive())
+
+    @property
+    def capacity(self) -> int:
+        """排队上限（不含正在执行的）。"""
+        return self._max_queue
+
+    @property
+    def rejected(self) -> int:
+        """因队列到顶被拒收的累计次数。"""
+        with self._lock:
+            return self._rejected
+
     def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
-        """只做「不再接收新任务」的标记，**刻意不 join**。
+        """标记关闭；``cancel_futures=True`` 时**真的取消**队列里还没开始的任务。
 
         ``wait=True`` 会把这里唯一的改进毁掉：卡在系统调用里的那笔 IO 是 daemon 线程，
         进程退出时由解释器直接回收，这正是我们要的行为。
+
+        v0.24.8（GPT 第四轮复核 P1）：``cancel_futures`` 以前是句空话 —— 只投哨兵，
+        队列里的活儿照样**先于哨兵**执行。于是「停用日志监听」之后，积压的过期 IO
+        还会一条条跑完（甚至写已停用实例的状态）。现在按线程池的语义来：
+        关闭瞬间还在排队的任务逐个 ``cancel()``，``pending`` 同步减回去。
         """
         with self._lock:
+            if self._shutdown:
+                return
             self._shutdown = True
+            if cancel_futures:
+                while True:
+                    try:
+                        item = self._queue.get_nowait()
+                    except Empty:
+                        break
+                    if item is None:
+                        continue
+                    if item[0].cancel():          # 还没被 worker 领走 → 取消得掉
+                        self._pending = max(0, self._pending - 1)
+            # 哨兵与「关闭」标记在同一把锁里投递：此后不可能再有任务排在哨兵后面。
+            # 已在队列里的任务仍会先于哨兵执行（与线程池 shutdown(wait=False) 同义）。
+            # 队列满时用 put_nowait：worker 已能靠「队列空 + 已关闭」自行退出，
+            # 哨兵塞不进去也不影响收尾（塞不进去就少一条加速路径，不能死锁）。
+            for _ in range(self._max_workers):
+                try:
+                    self._queue.put_nowait(None)
+                except Full:
+                    break
 
 
 #: v0.24.7：进程级 daemon 执行器（懒建）。给「**可能卡住的阻塞调用**」用 ——
@@ -138,7 +264,7 @@ _DAEMON_RUNNER_LOCK = threading.Lock()
 
 
 def daemon_executor() -> "_DaemonThreadExecutor":
-    """进程级、单线程的 daemon 执行器（懒建，v0.24.7）。"""
+    """进程级、有界并发的 daemon 执行器（懒建，v0.24.7；v0.24.8 有界化）。"""
     global _DAEMON_RUNNER
     if _DAEMON_RUNNER is None:
         with _DAEMON_RUNNER_LOCK:
@@ -173,8 +299,19 @@ async def run_blocking(fn, *args, timeout: float = 8.0, what: str = ""):
     try:
         return True, await asyncio.wait_for(asyncio.shield(fut), timeout)
     except asyncio.TimeoutError:
-        logger.warning("阻塞调用 %s 超过 %g 秒未返回，本次按「不可用」处理"
-                       "（它跑在 daemon 线程里，不会拖住进程退出）", name, timeout)
+        # v0.24.8（GPT 第四轮复核 P1 收尾）：**超时就把排队中的那笔撤下来**。
+        # `wait_for` 超时只是「我不再等」—— 任务本身还在队列里排队，等 worker 有空
+        # 就会照跑（过期 IO 白烧一次磁盘，还可能写已停用实例的状态）。
+        # `Future.cancel()` 对「还没被 worker 领走」的任务是真的有效：worker 侧
+        # `set_running_or_notify_cancel()` 会返回 False 并直接跳过（见 `_worker_loop`）。
+        # 已经在跑的取消不掉（Python 杀不了线程），那时 cancel() 返回 False，如实记账。
+        if fut.cancel():
+            logger.warning("阻塞调用 %s 超过 %g 秒未返回，已把它从队列里撤回"
+                           "（尚未开始执行，不会白跑）", name, timeout)
+        else:
+            logger.warning("阻塞调用 %s 超过 %g 秒未返回，本次按「不可用」处理"
+                           "（已在执行中，无法中断；它跑在 daemon 线程里，"
+                           "不会拖住进程退出）", name, timeout)
         return False, None
     except Exception as e:                                   # noqa: BLE001
         logger.warning("阻塞调用 %s 失败：%s: %s", name, type(e).__name__, e)
@@ -416,6 +553,10 @@ class LogWatcher:
         self.callback_timeouts: int = 0
         #: 在飞额度满而**丢弃**的条数（事件没派发出去，只记账）
         self.callbacks_dropped: int = 0
+        #: v0.24.8：停用 / 重载时被放弃的未完成回调数（含卡死的僵尸）。
+        #: 「停用后还在发消息」是用户看得见的事故，但旧实现的 health() 里
+        #: callbacks_stale 在 clear() 之后归零 —— 丢了几条，事后查不出来。
+        self.callbacks_abandoned: int = 0
 
     def _stale(self, gen: "int | None") -> bool:
         """这个监听任务代号是否已过期（v0.23.5 第八轮，GPT 第七轮 P2）。
@@ -878,6 +1019,15 @@ class LogWatcher:
             "callbacks_dropped": int(self.callbacks_dropped),
             "callbacks_inflight": len(self._callback_inflight),
             "callbacks_stale": len(self._callback_stuck),
+            "callbacks_abandoned": int(self.callbacks_abandoned),
+            # v0.24.8：进程级阻塞执行器的积压（排队 + 执行中）。有界池的代价是
+            # 可能排队 —— 饱和时必须能从 health() 看见，而不是只表现为「页面变慢」。
+            # 执行器尚未建立（没发生慢调用）时按 0 报，不为一次健康检查拉起 4 条线程。
+            "daemon_pending": (_DAEMON_RUNNER.pending if _DAEMON_RUNNER is not None else 0),
+            # v0.24.8（GPT 第四轮 P1）：有界队列的两个数也要能看见 ——
+            # 「拒收过几次」「上限是多少」决定了「偶发不可用」是不是队列打满。
+            "daemon_rejected": (_DAEMON_RUNNER.rejected if _DAEMON_RUNNER is not None else 0),
+            "daemon_capacity": (_DAEMON_RUNNER.capacity if _DAEMON_RUNNER is not None else 0),
         }
 
     def _file_sig(self) -> tuple[int, int] | None:
@@ -1386,13 +1536,25 @@ class LogWatcher:
         v0.24.7：回调已改成独立任务，**不再**挂在轮询任务上 —— 老实现里 stop()
         取消轮询时回调会随之消失，现在必须显式取消，否则一次「停用 / 重载」之后
         还会有一条回调继续往会话里推消息（活过一个已停用的插件）。
-        卡死的那批不强杀（取消对它们无效），但解除留痕引用，交给 GC。
+        v0.24.8（GPT 第三轮复核 P2）：卡死的那批**必须一起取消**。
+        旧实现只遍历 `_callback_inflight`，而僵尸在超时那一刻就被移进
+        `_callback_stuck` 了 —— 于是「停用」之后恰恰是那条已经卡住的回调还活着：
+        它一旦从卡顿里醒来，照样把消息推给会话（活过一个已停用的插件）。
+        取消对它们未必有效，所以还要记账进 `callbacks_abandoned`（进 health()）：
+        「停用时丢了几条」必须事后查得到，不能靠 clear() 把痕迹抹掉。
         """
-        for task in list(self._callback_inflight):
+        victims = set(self._callback_inflight) | set(self._callback_stuck)
+        for task in victims:
             try:
                 task.cancel()
             except Exception:                                    # noqa: BLE001
                 pass
+        if victims:
+            self.callbacks_abandoned += len(victims)
+            logger.warning(
+                "日志监听：停用时放弃 %d 个未完成回调（其中卡死僵尸 %d 个）—— "
+                "已记入 callbacks_abandoned", len(victims), len(self._callback_stuck),
+            )
         self._callback_inflight.clear()
         self._callback_stuck.clear()
 

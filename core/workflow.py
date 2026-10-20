@@ -26,6 +26,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 
+from .strict_bool import strict_bool
 from .agent_llm import AgentLLM
 from .agent_prompts import AGENT_DEFINITIONS
 from .command_result import (
@@ -205,7 +206,7 @@ class MCWorkflow:
 
     @property
     def enabled(self) -> bool:
-        return bool(self._cfg("agent_workflow_enabled", True))
+        return strict_bool(self._cfg("agent_workflow_enabled", True), True)
 
     def _cfg_int(self, key: str, default: int, lo: int, hi: int) -> int:
         """读一个整数配置项，坏值 fail-closed 回落到默认值并夹在 [lo, hi] 内。

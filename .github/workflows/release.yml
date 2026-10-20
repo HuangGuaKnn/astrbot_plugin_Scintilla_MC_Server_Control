@@ -5,9 +5,13 @@ name: release
 # 附件用 git archive 生成（跟随 .gitattributes 的 export-ignore，不含 tests/），
 # 文件名与历史 Release 保持一致，旧下载链接继续有效。
 #
-# 预发布：把 CHANGELOG 里对应小节的标题写成 `## [vX.Y.Z] - YYYY-MM-DD（预发布）`，
-# 本流程会自动把这个 Release 标成 pre-release（不会占据「Latest」正式版位置）；
-# 不加「（预发布）」则是正式版。
+# 发布通道（唯一来源 = tag 本身，判定逻辑见 run_release_channel.py）：
+#   vX.Y.Z          → 正式版
+#   vX.Y.Z-rc.N     → 预发布（Release 标 pre-release，不占「Latest」正式版位置）
+# metadata.yaml 的版本号始终写 X.Y.Z（不带 -rc.N）；CHANGELOG 小节按 `## [vX.Y.Z]` 取。
+# v0.24.8 之前这里靠「CHANGELOG 小节标题里有没有『预发布』三个字」判定 —— 文案一改
+# 发布性质就跟着漂（v0.24.7 的标题没写，靠人事后手动改成 pre-release 才正确），
+# GPT 第三轮复核 B7 点名要收成单一来源。
 #
 # 外部审查 D4 已修：发布前必须**测试全绿**（verify job），publish 依赖它。
 # v0.23.5 第五轮：verify 扩到**与 CI 同一套**（含 UI 契约类硬门禁），见 verify job 注释。
@@ -63,16 +67,13 @@ jobs:
             | while IFS= read -r line; do echo "::error title=发版前置红点::$line"; done
       - name: 校验标签与 metadata.yaml 版本是否一致
         # 放在 verify 而不是 publish：能便宜地失败的事就早失败，别等打完包再发现版本号写错。
+        # 判定走 run_release_channel.py（与发布通道同一份实现）：`-rc.N` 只是发布通道，
+        # 版本号仍是 X.Y.Z —— 用 shell 的 ${tag%-rc.*} 各写一遍迟早会漂。
         run: |
           set -e
-          tag="${GITHUB_REF_NAME#v}"
           ver="$(awk '/^version:/{print $2; exit}' metadata.yaml)"
-          ver="${ver%\"}"; ver="${ver#\"}"; ver="${ver#v}"
-          echo "tag=$tag  metadata=$ver"
-          if [ "$tag" != "$ver" ]; then
-            echo "::error::标签与 metadata.yaml 版本不一致（$tag != $ver）"
-            exit 1
-          fi
+          echo "tag=$GITHUB_REF_NAME  metadata=$ver"
+          python run_release_channel.py --tag "$GITHUB_REF_NAME" --expect "$ver"
 
   publish:
     needs: verify
@@ -89,7 +90,10 @@ jobs:
       - name: 生成 Release 说明（优先取 CHANGELOG.md 对应小节）
         run: |
           set -e
-          awk -v v="$GITHUB_REF_NAME" '
+          # 小节标题按**版本号**取（v0.24.8），不带 -rc.N —— 预发布与正式版共用同一节，
+          # rc 只是通道，不是另一个版本（否则每打一个 rc 就要在 CHANGELOG 里抄一遍）。
+          ver="v$(python run_release_channel.py --tag "$GITHUB_REF_NAME" --print version)"
+          awk -v v="$ver" '
             index($0, "## [" v "]") == 1 {flag = 1; next}
             flag && index($0, "## [") == 1 {exit}
             flag {print}
@@ -115,18 +119,13 @@ jobs:
           else
             echo "未找到上一个正式版，跳过"
           fi
-      - name: 判定是否预发布（CHANGELOG 小节标题含「预发布」→ pre-release）
+      - name: 判定发布通道（唯一来源：tag 本身）
+        # 不再读 CHANGELOG 文案：`v0.24.8` → 正式版；`v0.24.8-rc.1` → 预发布。
+        # 判定与「标签/版本一致性校验」共用 run_release_channel.py 这一份实现。
         run: |
           set -e
-          title="$(grep -m1 -F "## [${GITHUB_REF_NAME}]" CHANGELOG.md || true)"
-          echo "CHANGELOG 小节标题：${title:-（没找到，按正式版处理）}"
-          if printf '%s' "$title" | grep -q "预发布"; then
-            echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV"
-            echo "→ 本次按【预发布】发布"
-          else
-            echo "PRERELEASE=" >> "$GITHUB_ENV"
-            echo "→ 本次按【正式版】发布"
-          fi
+          python run_release_channel.py --tag "$GITHUB_REF_NAME" --github-env >> "$GITHUB_ENV"
+          python run_release_channel.py --tag "$GITHUB_REF_NAME"
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ github.token }}

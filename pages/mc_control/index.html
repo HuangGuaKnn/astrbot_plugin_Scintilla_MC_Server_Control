@@ -1114,9 +1114,12 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div class="card">
         <h3><span class="dot" style="background:var(--amber)"></span>新增知识条目</h3>
         <label class="f">主题 topic</label>
-        <input type="text" id="new_topic" placeholder="如：tac 满改 hk416 nbt 方案">
+        <!-- v0.24.8（GPT 第四轮复核 P5）：maxlength 与后端上限同源（200 / 20000）——
+             让「太长」在输入阶段就被拦住，而不是等保存时才报错。
+             后端仍会独立校验：浏览器限制只是体验，不是安全边界。 -->
+        <input type="text" id="new_topic" maxlength="200" placeholder="如：tac 满改 hk416 nbt 方案">
         <label class="f">内容 content（含物品ID / NBT格式 / 命令示例 / 注意事项）</label>
-        <textarea id="new_content"></textarea>
+        <textarea id="new_content" maxlength="20000"></textarea>
         <div class="btnrow" style="margin-top:8px">
           <button class="btn primary" id="btn_add">写入知识库</button>
           <button class="btn danger sm" id="btn_clear">清空全部</button>
@@ -2145,7 +2148,10 @@ async function loadServerEvents(){
 // ============ 知识库 ============
 function entryHTML(e, isPending){
   const [bcls,btxt] = BADGE[e.status]||["dim","○"];
-  const dis = !e.enabled ? `<span class="badge dim">已禁用</span>` : "";
+  // v0.24.8（P4）：条目级 enabled 也走严格解析 —— 持久化文件里写成字符串
+  // "false" 时，`!e.enabled` 会把它显示成「已启用」，与实际检索行为相反。
+  const on = parseCfgBool(e.enabled, true);
+  const dis = on ? "" : `<span class="badge dim">已禁用</span>`;
   const kind = e.kind==="template" ? `<span class="badge vio" title="通用规则，可套用到同模组同类物品">模板</span>` : `<span class="badge info">实例</span>`;
   // v0.21.11：卡片只能显示 72px 预览 → 加「查看详情」入口（按钮 + 直接点内容都能开）
   const tp = esc(e.topic);
@@ -2157,7 +2163,7 @@ function entryHTML(e, isPending){
       <span class="acts">
         ${isPending?`<button class="btn ok sm" data-act="approve" data-topic="${tp}">批准</button><button class="btn danger sm" data-act="deny" data-topic="${tp}">拒绝</button>`:""}
         <button class="btn sm" data-act="view" data-topic="${tp}" title="全屏查看完整内容并编辑">查看详情</button>
-        <button class="btn sm" data-act="toggle" data-topic="${tp}" data-en="${e.enabled?0:1}">${e.enabled?"禁用":"启用"}</button>
+        <button class="btn sm" data-act="toggle" data-topic="${tp}" data-en="${on?0:1}">${on?"禁用":"启用"}</button>
         <button class="btn danger sm" data-act="del" data-topic="${tp}">删除</button>
       </span>
     </div>
@@ -2261,7 +2267,7 @@ function openEntryDetail(topic){
   $("kbdet_title").textContent = e.topic;
   $("kbdet_sub").innerHTML = `<span class="badge ${e.kind==="template"?"vio":"info"}">${e.kind==="template"?"模板":"实例"}</span>`
     + `<span class="badge ${bcls}">${btxt}</span>`
-    + (e.enabled ? "" : `<span class="badge dim">已禁用</span>`)
+    + (parseCfgBool(e.enabled, true) ? "" : `<span class="badge dim">已禁用</span>`)
     + `<span class="muted">${esc(e.updated_at || "")}</span>`;
   $("kbdet_kv").innerHTML = [
     ["所属模组", e.mod || "general", 1],
@@ -2948,6 +2954,35 @@ const S_DEFAULTS = {
   "cfg_grad_fmt": "json",
   "cfg_plain_fmt": "hex",
 };
+
+// ============ 配置布尔值的严格解析（v0.24.8 · GPT 第四轮复核 P4 / 第六轮复核 B6） ============
+// 后端 core/strict_bool.py 的**前端同口径实现**。为什么必须有一份：
+// 配置文件里的布尔可能是字符串（手工编辑 / 旧版页面写入 / 脚本生成），
+// `!!"false"` 在 JS 里是 **true** —— 开关明明关着，界面却画成打开，
+// 用户看到的状态与真正生效的行为正好相反（比报错更难发现）。
+//
+// v0.24.8 第七轮（B6）：口径不是「看起来一样」，是**逐格相同**。第六轮复核逐格实测出
+// 12 格分叉（此前只对上了一半），三族各有各的来路：
+//   · 空串 / 纯空白：后端按 False（保守关闭），旧前端回落 default ——
+//     **默认值为「开」的字段会被画成开**（生效是关），方向最危险；
+//   · 非 0/1 数字（2 / 3.5 / -1）：后端回落 default，旧前端 `v !== 0` 一律 true；
+//   · 单字母词表 `y`/`t`/`n`/`f`：**后端词表里有、旧前端词表里没有** ——
+//     这一族是「输入表靠人列」漏掉的：表必须**从后端词表生成**，人列必漏格。
+// 两份词表现在逐字同源（改一处必须同时改另一处，出处写在常量后面）。
+const CFG_TRUE_TOKENS = new Set(["true", "1", "yes", "on", "y", "t"]);          // core/strict_bool.py::_TRUE_TOKENS
+const CFG_FALSE_TOKENS = new Set(["false", "0", "no", "off", "n", "f", ""]);    // core/strict_bool.py::_FALSE_TOKENS
+function parseCfgBool(v, dft){
+  if(typeof v === "boolean") return v;
+  // None 取 default（键不存在与「显式写了 null」都按缺省处理）—— 与 strict_bool 一致
+  if(v === null || v === undefined) return !!dft;
+  if(typeof v === "number") return (v === 0 || v === 1) ? !!v : !!dft;   // 数字只认 0 / 1（含 0.0 / 1.0）
+  if(typeof v === "string"){
+    const t = v.trim().toLowerCase();
+    if(CFG_TRUE_TOKENS.has(t)) return true;
+    if(CFG_FALSE_TOKENS.has(t)) return false;   // 空串在这里命中 False（保守关闭）
+  }
+  return !!dft;
+}
 
 // ============ RCON 进阶设置折叠（v0.23.0） ============
 // 收起不等于失明：异地模式漏填版本会让附魔 / NBT 请求被**直接拒绝**，
@@ -4111,7 +4146,8 @@ async function loadSettings(){
     const el = $(id);
     if(!el) continue;
     const v = cfg[key];
-    if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : !!v;
+    // v0.24.8（GPT 第四轮复核 P4）：字符串 "false" 必须画成**关**（见 parseCfgBool）
+    if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);
     else if(ty==="l") el.value = Array.isArray(v) ? v.join(", ") : (v==null?"":String(v));
     else if(ty==="p"){
       // v0.23.5 只写字段：后端从不回传密文，这里也绝不写入任何值 ——
@@ -4966,7 +5002,8 @@ async function loadColors(){
   }
   const g = r.gradient || {};
   const stops = g.stops || {};
-  $("clr_grad_en").checked = !!g.enabled;
+  // v0.24.8（P4）：同上 —— 字符串 "false" 不许画成打开
+  $("clr_grad_en").checked = parseCfgBool(g.enabled, false);
   $("clr_grad_fmt").value = FORMAT_LABELS[g.format] ? g.format : "json";
   $("clr_plain_fmt").value = PLAIN_LABELS[(r.plain||{}).format] ? (r.plain||{}).format : "hex";
   syncNameCells(r.colors);   // v0.23.7 追加：色名下拉按「后端会用的近似色名」回显
@@ -5030,7 +5067,18 @@ function bind(){
     if(!msg){ $("bc_out").textContent = "请输入广播内容"; return; }
     $("bc_out").textContent = "发送中…";
     const r = await callPost("server/broadcast", { message: msg, mode: bcMode }).catch(()=>({ok:false,error:"请求失败"}));
-    if(r.ok){ const lbl={chat:"聊天栏",title:"全屏标题",task:"模拟任务输出"}[r.mode]||r.mode; $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${esc(r.message)}`; $("bc_msg").value=""; }
+    if(r.ok){
+      const lbl={chat:"聊天栏",title:"全屏标题",task:"模拟任务输出"}[r.mode]||r.mode;
+      if(r.confirmed === false){
+        // v0.24.8（GPT 第三轮复核 P3）：「发出去了」不等于「有人收到」。
+        // 没有可靠回执时用黄字，明确写出「未确认」，绝不沿用绿字成功态。
+        $("bc_out").innerHTML = `<span style="color:var(--warn)">△ 已发出 · 未确认（${lbl}）：</span> ${esc(r.message)}`
+          + `<div style="margin-top:4px">${esc(r.warning||"服务端没有给出可靠回执，请以游戏内画面为准。")}</div>`;
+      } else {
+        $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${esc(r.message)}`;
+      }
+      $("bc_msg").value="";
+    }
     else $("bc_out").innerHTML = `<span style="color:var(--bad)">✗ 失败：</span> ${esc(r.error||"未知错误")}`;
   };
   $("bc_msg").addEventListener("keydown", e=>{ if(e.key==="Enter") $("bc_send").click(); });
@@ -5038,6 +5086,13 @@ function bind(){
   $("btn_add").onclick = async ()=>{
     const topic = $("new_topic").value.trim(), content = $("new_content").value.trim();
     if(!topic || !content){ setNotice($("kb_notice"), "主题和内容不能为空", true); return; }
+    // v0.24.8（P5）：与后端 knowledge_length_error() 同一套上限，前端先说一遍
+    if(topic.length > 200 || content.length > 20000){
+      setNotice($("kb_notice"),
+        `条目过长（主题 ${topic.length}/200，内容 ${content.length}/20000）—— `
+        + "请拆成「一条方案一条知识」，或精简到可复用的要点", true);
+      return;
+    }
     const r = await callPost("kb/entry", { topic, content });
     if(r.ok){
       if(!showSaveWarn(r, $("kb_notice"))) setNotice($("kb_notice"), "✓ 已写入知识库");

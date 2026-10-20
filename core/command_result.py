@@ -383,8 +383,10 @@ class CommandResult:
     #: ``""`` = 与成功无关。
     confidence: str = ""
     #: v0.23.7 · N2：命令已执行，但目标选择器当前没有匹配对象（空服广播）。
-    #: 只在 ``status == "success"`` 且 ``confidence == "no_recipient"`` 时为真 ——
-    #: 用来把回执渲染成「消息已发出、暂无接收者」，而不是含糊的「成功」或误报的「失败」。
+    #: ``confidence == "no_recipient"`` 时为真 —— 用来把回执渲染成
+    #: 「消息已发出、暂无接收者」，而不是含糊的「成功」或误报的「失败」。
+    #: v0.24.8（GPT 第四轮 P4）：边界未确认时 ``status`` 是 ``dispatched_unconfirmed``
+    #: 而非 ``success``（本字段照旧为真，界面两条信息一起说）。
     no_recipient: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -699,6 +701,9 @@ def classify_command_output(
        统一到「已执行、暂无接收者」。**本步必须早于第 6 步**，否则失败词扫描
        会把它判成 ``failed``。
        点名目标（``give Steve``）不走这里，照旧判失败。
+       v0.24.8（GPT 第四轮 P4）：**边界未确认时不给确定成功** —— 该组合降级为
+       ``dispatched_unconfirmed`` + ``no_recipient=True``（黄字「已发出·未确认」，
+       同时说明没有接收者）。
     5. **先取正面证据**：命中本命令的锚定成功模式（``^gave\\b`` 等）时，
        第 6 步跳过失败词扫描 —— 否则玩家名叫 ``Error`` 会把真成功翻成失败
     6. 其它明确失败 → ``failed``
@@ -783,6 +788,21 @@ def classify_command_output(
     # 空服广播：≥1.16.5 回 ``No player was found``、≤1.13.2 静默 —— 同一事实。
     # 必须插在第 5 步（失败词扫描）**之前**，否则这条回执会被判成 failed。
     if is_no_recipient_output(command, out_s):
+        if boundary_confirmed is False:
+            # v0.24.8（GPT 第四轮复核 P4）：**「没有接收者」也逃不过边界确认**。
+            # 旧写法在这里无条件给 success —— 于是 idle 降级模式（输出可能被截断、
+            # 结束边界没确认）下，WebUI 照样弹绿字「已发送」，而这句
+            # ``No player was found`` 究竟是不是本次命令的完整回执，其实没人知道。
+            # 现在按「已发出、未确认」处理：不算失败（命令确实送达并被执行了），
+            # 也不冒充确定成功；`no_recipient` 仍保留，界面能同时说明「没有接收者」。
+            res.status = "dispatched_unconfirmed"
+            res.confidence = "no_recipient"
+            res.no_recipient = True
+            res.reason = (
+                "回执显示选择器当前没有匹配对象，但响应边界未确认"
+                "（可能处于 idle 降级模式）—— 已发出，未确认"
+            )
+            return res
         res.status = "success"
         res.confidence = "no_recipient"
         res.no_recipient = True

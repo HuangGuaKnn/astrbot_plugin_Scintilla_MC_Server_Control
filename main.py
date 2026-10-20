@@ -53,11 +53,17 @@ from .core.legacy_items import (
     plan_give as legacy_plan_give,
 )
 from .core.rate_limit import Cooldown
-from .core.knowledge_base import KnowledgePresetManager, ModKnowledgeBase, VECTOR_CACHE_SUFFIX
+from .core.knowledge_base import (
+    KnowledgePresetManager,
+    ModKnowledgeBase,
+    VECTOR_CACHE_SUFFIX,
+    knowledge_length_error,
+)
 from .core.mod_fingerprint import compute_server_identity
 from .core.player_bindings import PlayerBindings
 from .core.workflow import MCWorkflow
 from .core.web_api import McControlWebApi, parse_bool
+from .core.strict_bool import strict_bool
 from .core.log_watcher import (
     EVENT_ADVANCEMENT,
     EVENT_CHAT,
@@ -824,15 +830,21 @@ class McControlPlugin(Star):
         读不出结论时**回落 default**（这里不抛异常：本函数在工具与设置页热路径上，
         抛出去会把整次调用变成 500，比按保守默认取值更糟），并留一条 WARNING。
         """
-        raw = self._cfg(key, default)
-        try:
-            return parse_bool(raw)
-        except ValueError:
-            self.logger.warning(
-                "配置项 %s 的值无法解析为布尔（%r），已按默认值 %s 处理",
-                key, raw, default,
-            )
-            return bool(default)
+        # v0.24.8（GPT 第三轮复核 P4）：实现已收归 core/strict_bool.py，
+        # 全工程只有一套判定；此处只负责注入插件 logger 与 key 便于追查。
+        return strict_bool(self._cfg(key, default), default, key=key, logger=self.logger)
+
+    @staticmethod
+    def _knowledge_too_long(topic: str, content: str) -> str:
+        """知识条目超长的**用户可读**说明（空串 = 没超，可以入库）。
+
+        v0.24.8（GPT 第四轮复核 P5）：LLM 工具与 WebUI 写接口此前都允许任意长度 ——
+        知识库每次写入都要**全量序列化落盘**，超长正文还会被切段逐段算嵌入，
+        一条几十万字的「知识」足以把两件事一起拖垮（表现是保存按钮卡住 / 转圈，
+        最后才失败）。上限与判据集中在 `core/knowledge_base.py`，这里只做转发，
+        保证「工具」和「界面」两条入口说的是同一句话、同一套上限。
+        """
+        return knowledge_length_error(topic or "", content or "")
 
     def _cfg_flat(self, prefix: str | None = None) -> dict:
         """把分组配置摊平成旧版扁平字典（WebUI / 调试用）。
@@ -1131,6 +1143,12 @@ class McControlPlugin(Star):
         delivered = False
         for target in targets or []:
             for umo in self._target_candidates(target):
+                # v0.24.8（GPT 第三轮复核 P2）：入口检查挡不住「发送途中被停用」，
+                # 一批多目标里前几个发完、后几个照发。每次真实发送前再查一次 ——
+                # 宁可少发，也不让停用后的插件继续往会话里灌消息。
+                if _is_terminated(self):
+                    self.logger.warning("插件已停用，放弃剩余推送（下一个目标 %s）", umo)
+                    return delivered
                 try:
                     ok = await StarTools.send_message(umo, chain)
                 except Exception as e:
@@ -4527,6 +4545,13 @@ class McControlPlugin(Star):
             return "知识库能力已停用（总开关关闭），无法写入。"
         if not self._knowledge.state.learning:
             return "知识库学习已关闭，不会写入任何知识。"
+        # v0.24.8（GPT 第四轮复核 P5）：**超长知识不再默默入库**。
+        # 知识库整体是一个 JSON（每次写入全量落盘）＋ 向量索引（超长正文会被切段
+        # 逐段算嵌入），一条几十万字的「知识」足以把落盘与嵌入拖成分钟级，
+        # 而且它本身也不会是可复用的方案 —— 与其接受，不如当场说清上限。
+        over = self._knowledge_too_long(topic, content)
+        if over:
+            return over
         entry = self._knowledge.save_entry(topic, content, source="llm_learn")
         # v0.23.5 第三轮：落盘结果要当场看。磁盘满 / 只读 / 目录被删时，条目只在
         # 内存里 —— 重启即失，而工具却回「✓ 已沉淀」，用户会以为知识已经记住了。
@@ -4574,6 +4599,9 @@ class McControlPlugin(Star):
             return "知识库能力已停用（总开关关闭），无法纠正。"
         if not self._knowledge.state.learning:
             return "知识库学习已关闭，无法纠正写入。"
+        over = self._knowledge_too_long(topic, correction)
+        if over:
+            return over
         entry = self._knowledge.correct_entry(topic, correction)
         if entry is None:
             return f"知识库中不存在「{topic}」，请用 mc_save_knowledge 新增。"
@@ -4688,7 +4716,10 @@ class McControlPlugin(Star):
         text = tpl.replace("{player}", str(player)).replace("{message}", message)
         chain = MessageChain().message(text)
         delivered = await self._send_to_targets(targets, chain)
-        if delivered and self._cfg("chat_bridge_receipt", False):
+        # v0.24.8（GPT 第四轮复核 P4 收口）：事件播报这一片的开关此前直接拿配置真值 ——
+        # 配置文件里写成字符串 "false"（手工编辑 / 旧版页面缓存 / 脚本写入）时，
+        # Python 真值语义会把它读成**开**。这里全部改走 `_cfg_bool`（严格解析）。
+        if delivered and self._cfg_bool("chat_bridge_receipt", False):
             await self._send_bridge_receipt(player)
         return delivered
 
@@ -4715,6 +4746,11 @@ class McControlPlugin(Star):
 
     async def _on_server_event(self, etype: str, player: str, detail: str):
         """日志监听回调：记录最近事件 + 聊天桥接 + 按配置开关决定是否推送。"""
+        # v0.24.8（GPT 第三轮复核 P2）：停用 / 重载后，回调仍可能从卡顿里
+        # 醒来（`stop()` 的 cancel 对已卡死的协程无效）。已终止的实例什么都不该做 ——
+        # 连「最近事件」也不该再写（那是已停用插件的状态）。
+        if _is_terminated(self):
+            return
         # v0.24.2（F03）防御门：异地模式下本地日志事件一律不转发、不桥接 ——
         # 兜住「旧 watcher 还没停干净 / 有别的路径塞事件进来」的窗口。
         if self.is_remote_mode():
@@ -4740,17 +4776,19 @@ class McControlPlugin(Star):
             return
         text = ""
         group = self.EVENT_TO_NOTIFY_GROUP.get(etype, "")
-        if etype == EVENT_CHAT and self._cfg("notify_chat", False):
+        # v0.24.8（GPT 第四轮复核 P4）：六条分支的开关一律走严格解析 ——
+        # `notify_join_leave="false"` 实测仍会照发播报，就是这里裸真值语义造成的。
+        if etype == EVENT_CHAT and self._cfg_bool("notify_chat", False):
             text = f"💬 [{player}] {detail}"
-        elif etype == EVENT_JOIN and self._cfg("notify_join_leave", True):
+        elif etype == EVENT_JOIN and self._cfg_bool("notify_join_leave", True):
             text = f"🟢 {player} 加入了游戏"
-        elif etype == EVENT_LEAVE and self._cfg("notify_join_leave", True):
+        elif etype == EVENT_LEAVE and self._cfg_bool("notify_join_leave", True):
             text = f"🔴 {player} 离开了游戏"
-        elif etype == EVENT_DEATH and self._cfg("notify_death", True):
+        elif etype == EVENT_DEATH and self._cfg_bool("notify_death", True):
             text = f"💀 {detail}"
-        elif etype == EVENT_ADVANCEMENT and self._cfg("notify_advancement", True):
+        elif etype == EVENT_ADVANCEMENT and self._cfg_bool("notify_advancement", True):
             text = f"🏆 {detail}"
-        elif etype == EVENT_COMMAND and self._cfg("notify_command", True):
+        elif etype == EVENT_COMMAND and self._cfg_bool("notify_command", True):
             # 原版格式 detail 带斜杠（/gamemode creative）；整合包格式为指令反馈文案
             text = f"⌨ [{player}] {detail}"
         if not text:

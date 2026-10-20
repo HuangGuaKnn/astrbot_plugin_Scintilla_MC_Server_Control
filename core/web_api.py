@@ -15,7 +15,8 @@ from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .command_result import classify_command_output
-from .knowledge_base import normalize_status
+from .knowledge_base import knowledge_length_error, normalize_status
+from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
 from .tool_guard import HINT_MODES, HINT_TOPIC_KEYWORDS
@@ -29,7 +30,13 @@ from .version_caps import ITEM_SYNTAX_CHOICES
 #: `inferred_success` = 没证据也没错误标记（不冒充成功，但也不该拿它当失败）；
 #: `dispatched_unconfirmed` = 已发出、结束边界没确认（idle 降级模式下的合法结果）。
 #: 其余（failed / syntax_error / unknown / skipped）一律视为**没送达**。
-_BROADCAST_OK_STATUSES = frozenset({"success", "inferred_success", "dispatched_unconfirmed"})
+#:
+#: v0.24.8（GPT 第三轮复核 P3）：「没证据」不等于「送达」—— 后两种不再算成功，
+#: 而是单独成组：接口回 `ok=True` + ``confirmed=False`` + warning，前端显示黄字
+#: 「已发出 · 未确认」。把 `boundary_confirmed` 传进判定后，这条区分才有意义。
+_BROADCAST_OK_STATUSES = frozenset({"success"})
+#: 已发出、但**没有可靠送达证据**的判定（不算失败，也绝不冒充成功）。
+_BROADCAST_UNCONFIRMED_STATUSES = frozenset({"inferred_success", "dispatched_unconfirmed"})
 
 PAGE_PREFIX = "astrbot_plugin_Scintilla_MC_Server_Control/page"
 
@@ -85,46 +92,11 @@ def is_version_reply_text(raw: str) -> bool:
     return not any(m in low for m in _VERSION_REPLY_PLACEHOLDERS)
 
 
-# ================= 严格布尔解析（v0.23.5） =================
-
-_BOOL_TRUE_TOKENS = frozenset({"true", "1", "yes", "on", "y", "t"})
-_BOOL_FALSE_TOKENS = frozenset({"false", "0", "no", "off", "n", "f", ""})
-
-
-def parse_bool(value) -> bool:
-    """严格解析布尔值；无法确定时抛 ``ValueError``。
-
-    v0.23.5 修复：此前各接口一律写 ``bool(value)``。Python 中
-    ``bool("false")`` / ``bool("0")`` / ``bool("no")`` **都是 True** ——
-    非前端客户端（脚本、curl、旧版页面缓存）提交字符串形式的「关」时，
-    反而会把开关**打开**：异地 RCON 模式、多 Agent 工作流与工具位、渐变颜色
-    都可能被意外启用，方向上是「从保守变激进」，属于 fail-open。
-
-    现在只认三类输入，其余一律报错、绝不猜：
-
-      * JSON 布尔 ``true`` / ``false``
-      * 数字 ``0`` / ``1``（含 ``0.0`` / ``1.0``）
-      * 字符串词表 ``true``/``false``、``yes``/``no``、``on``/``off``、``1``/``0``
-        （忽略大小写与首尾空白）
-
-    ``None`` 与空串按 False 处理：与旧行为一致，且方向保守（= 关闭）。
-    """
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, (int, float)):          # bool 已在上面拦掉
-        if value in (0, 1):
-            return bool(value)
-        raise ValueError(f"数字只接受 0 或 1，收到 {value!r}")
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in _BOOL_TRUE_TOKENS:
-            return True
-        if token in _BOOL_FALSE_TOKENS:
-            return False
-        raise ValueError(f"无法解析为布尔值：{value!r}")
-    raise ValueError(f"不支持的类型 {type(value).__name__}：{value!r}")
+# ================= 严格布尔解析（唯一实现，见 core/strict_bool.py） =================
+# v0.24.8（GPT 第三轮复核 P4）：实现已上移到 core/strict_bool.py —— 此前
+# main._cfg_bool / web_api.parse_bool / workflow / knowledge_base 各有一套布尔判定，
+# 同一个配置文件能读出不同结论，方向还都是 fail-open。此处只做再导出，
+# 保留 `web_api.parse_bool` 这条既有引用路径（main.py 与测试都在用）。
 
 
 PLUGIN_INFO = {
@@ -143,7 +115,7 @@ class McControlWebApi:
         self.plugin = plugin
 
     @staticmethod
-    def _str_field(data: dict, key: str) -> tuple[str, str]:
+    def _str_field(data: dict, key: str, *, required: bool = False) -> tuple[str, str]:
         """取一个字符串字段，返回 ``(值, 错误)``（v0.24.7 · GPT 第二轮复核 P2-5）。
 
         旧写法 ``(data.get("topic") or "").strip()`` 在字段是数字 / 对象 / 数组时
@@ -151,13 +123,42 @@ class McControlWebApi:
         「请求失败」，日志里也没说清哪个字段。这里改为：非字符串**直接说清楚**，
         不静默 ``str()`` 转换后当成有效主题入库（那会造出 `{'a': 1}` 这种主题）。
         缺省 / null 视为空串（由调用方按「必填」处理）。
+
+        v0.24.8（GPT 第三轮复核 P5）：预设接口也统一走这里 —— 它们此前
+        各写各的，``get(str(...))`` 把对象静默变成 ``"{'a': 1}"``
+        塞进注册表（查不到、删不掉），``name.strip()`` 则对数字直接 500。
+        ``required=True`` 时空串直接判错，省得调用方再写一遍。
         """
         if key not in data or data.get(key) is None:
-            return "", ""
+            return ("", f"{key} 必填") if required else ("", "")
         raw = data.get(key)
         if not isinstance(raw, str):
             return "", f"{key} 需要字符串（收到 {type(raw).__name__}）"
-        return raw.strip(), ""
+        val = raw.strip()
+        if required and not val:
+            return "", f"{key} 必填"
+        return val, ""
+
+    @staticmethod
+    async def _body() -> tuple[dict, str]:
+        """读 POST 请求体，**保证拿到 dict**；不是对象就说清楚（v0.24.8 · GPT 第四轮 P3）。
+
+        旧写法一律 ``data = await request.json() or {}``：请求体是 JSON 数组 / 字符串 /
+        数字时，``or {}`` **不会**把它变成字典（非空数组是真值），紧接着的
+        ``data.get(...)`` 就 AttributeError → 接口 500，界面只看到「请求失败」。
+        现在统一在入口收口：不是对象直接回一句人话，绝不带着错类型往下走。
+
+        返回 ``(data, error)``；``error`` 非空时调用方直接回错误即可。
+        """
+        try:
+            data = await request.json()
+        except Exception:                                    # noqa: BLE001
+            return {}, "请求体不是合法 JSON"
+        if data is None:
+            return {}, ""
+        if not isinstance(data, dict):
+            return {}, f"请求体需要 JSON 对象（收到 {type(data).__name__}）"
+        return data, ""
 
     # ================= 注册 =================
 
@@ -327,7 +328,9 @@ class McControlWebApi:
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         # v0.23.5 外部复核：本接口此前把外部值**直传** `KnowledgeState.set()`，
         # 而它内部是裸 `bool()` —— `bool("false")` 仍是 True，等于把「关」读成「开」。
         # 四个入口当时都改了，偏偏漏了这一处；现在一律走严格解析：无法判定就报错。
@@ -613,7 +616,15 @@ class McControlWebApi:
                 parsed["rcon_password"] = _pwd
         for k in self.STR_SETTING_KEYS:
             if k in settings:
-                parsed[k] = str(settings[k] or "").strip()
+                raw = settings[k]
+                # v0.24.8（GPT 第四轮复核 P5）：**不再静默 str() 转换**。
+                # 旧写法 `str(settings[k] or "")` 会把对象变成 "{'a': 1}" 原样写进
+                # 配置 —— 界面显示「保存成功」，配置里躺着一个字符串化的字典，
+                # 之后所有按字符串用它的地方都拿到这串垃圾（而且看不出是哪一步坏的）。
+                # 这里明确要求字符串（数字也拒收：端口那类走 INT_RANGES）。
+                if raw is not None and not isinstance(raw, str):
+                    return None, f"{k} 需要字符串（收到 {type(raw).__name__}）"
+                parsed[k] = (raw or "").strip()
         for k, allowed in self.ENUM_SETTING_KEYS.items():
             if k in settings:
                 v = str(settings[k] or "").strip().lower()
@@ -665,7 +676,8 @@ class McControlWebApi:
         任何异常一律吞掉返回空列表：提醒绝不能反过来把保存搞砸。
         """
         try:
-            if not bool(self.plugin._cfg("remote_rcon_mode", False)):
+            if not strict_bool(self.plugin._cfg("remote_rcon_mode", False), False,
+                                 key="remote_rcon_mode"):
                 return []
             if str(self.plugin._cfg("server_version_override", "") or "").strip():
                 return []
@@ -687,7 +699,9 @@ class McControlWebApi:
 
     async def save_settings(self):
         """保存全部设置：校验 → 写盘 → 热应用到运行中的插件。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         settings = data.get("settings")
         if not isinstance(settings, dict):
             return json_response({"ok": False, "error": "参数错误"})
@@ -701,10 +715,22 @@ class McControlWebApi:
         # 误配（空壳目录 / 父级目录 / 客户端 .minecraft）会让指纹退化成空集合、
         # 词典 0 mod、日志永远读不到 —— 界面看着配好了，实际全是空数据。
         # 于是在保存这一步直接拦住：宁可报错，也不写盘、不给「看起来成功」的假象。
-        remote_mode = (
-            bool(parsed["remote_rcon_mode"]) if "remote_rcon_mode" in parsed
-            else bool(self.plugin._cfg("remote_rcon_mode", False))
-        )
+        # v0.24.8 自审（S1）：这是**写接口**，按 core/strict_bool.py 的契约走 parse_bool ——
+        # 传进来的不是布尔就明确拒收。此前用 strict_bool 静默回落 False，等于把
+        # 「客户端传了垃圾」当成「用户关了异地模式」，还会顺带把下面的 server_dir
+        # 硬校验打开（`not remote_mode and eff_dir`）—— 一个拼错的布尔值能改道整条校验。
+        if "remote_rcon_mode" in parsed:
+            try:
+                remote_mode = parse_bool(parsed["remote_rcon_mode"])
+            except ValueError as e:
+                return json_response({
+                    "ok": False,
+                    "error": "「异地 RCON 模式」不是合法布尔值（只认 true/false、"
+                             f"yes/no、on/off、1/0）：{e}",
+                })
+        else:
+            remote_mode = strict_bool(self.plugin._cfg("remote_rcon_mode", False), False,
+                                      key="remote_rcon_mode")
         eff_dir = (
             str(parsed["server_dir"] or "").strip() if "server_dir" in parsed
             else str(self.plugin._cfg("server_dir", "") or "").strip()
@@ -966,8 +992,8 @@ class McControlWebApi:
             return json_response({"ok": False, "error": "工作流未初始化"})
         return json_response({
             "ok": True,
-            "enabled": bool(self._cfg("agent_workflow_enabled", True)),
-            "tool_enabled": bool(self._cfg("enable_mc_workflow", True)),
+            "enabled": strict_bool(self._cfg("agent_workflow_enabled", True), True),
+            "tool_enabled": strict_bool(self._cfg("enable_mc_workflow", True), True),
             "main_provider": self._cfg("llm_provider_id", ""),
             "agents": {
                 "classifier": self._cfg("agent_classifier_provider_id", ""),
@@ -1005,7 +1031,9 @@ class McControlWebApi:
 
     async def save_prompts(self):
         """保存提示词。支持单条 {role, content} 或批量 {values: {role: content}}。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         payload: dict = {}
         if isinstance(data.get("values"), dict):
             payload = {str(k): v for k, v in data["values"].items()}
@@ -1049,7 +1077,9 @@ class McControlWebApi:
 
     async def reset_prompt(self):
         """把某个 Agent（或全部）的提示词恢复为内置默认。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         role = str(data.get("role") or "").strip()
         if data.get("all"):
             roles = list(AGENT_ORDER)
@@ -1085,7 +1115,7 @@ class McControlWebApi:
         if d is not None:
             try:
                 dict_info = {
-                    "enabled": bool(self._cfg("dictionary_enabled", True)),
+                    "enabled": strict_bool(self._cfg("dictionary_enabled", True), True),
                     "mods": len(d.mods),
                     "items": len(d.items),
                     "recipes": len(d.recipes),
@@ -1100,7 +1130,7 @@ class McControlWebApi:
             try:
                 st = kb.stats()
                 kb_info = {
-                    "enabled": bool(self._cfg("knowledge_enabled", True)),
+                    "enabled": strict_bool(self._cfg("knowledge_enabled", True), True),
                     "server_id": kb.server_id,
                     "state": kb.state.as_dict(),
                     "stats": st,
@@ -1126,8 +1156,8 @@ class McControlWebApi:
             failed = [l for l in logs if l.get("status") in ("failed", "error")]
             running = [l for l in logs if l.get("status") == "running"]
             wf_info = {
-                "enabled": bool(self._cfg("agent_workflow_enabled", True)),
-                "tool_enabled": bool(self._cfg("enable_mc_workflow", True)),
+                "enabled": strict_bool(self._cfg("agent_workflow_enabled", True), True),
+                "tool_enabled": strict_bool(self._cfg("enable_mc_workflow", True), True),
                 "main_provider": self._cfg("llm_provider_id", ""),
                 "agents": {
                     "classifier": self._cfg("agent_classifier_provider_id", ""),
@@ -1156,7 +1186,7 @@ class McControlWebApi:
         except Exception:                                # noqa: BLE001
             _whealth = {}
         listener = {
-            "enabled": bool(self._cfg("enable_event_listener", False)),
+            "enabled": strict_bool(self._cfg("enable_event_listener", False), False),
             "running": bool(_whealth.get("running", False)),
             "health": _whealth,
             "server_dir": str(self._cfg("server_dir", "") or ""),
@@ -1164,11 +1194,11 @@ class McControlWebApi:
             # v0.17.0：会话级播报内容 + 全局类型闸门状态（供 WebUI 渲染子菜单）
             "target_events": self._cfg("notify_target_events", {}) or {},
             "type_switches": {
-                "join_leave": bool(self._cfg("notify_join_leave", True)),
-                "chat": bool(self._cfg("notify_chat", False)),
-                "death": bool(self._cfg("notify_death", True)),
-                "advancement": bool(self._cfg("notify_advancement", True)),
-                "command": bool(self._cfg("notify_command", True)),
+                "join_leave": strict_bool(self._cfg("notify_join_leave", True), True),
+                "chat": strict_bool(self._cfg("notify_chat", False), False),
+                "death": strict_bool(self._cfg("notify_death", True), True),
+                "advancement": strict_bool(self._cfg("notify_advancement", True), True),
+                "command": strict_bool(self._cfg("notify_command", True), True),
             },
             "event_groups": [
                 {"key": k, "label": lbl} for k, lbl in plugin.NOTIFY_EVENT_GROUPS
@@ -1195,11 +1225,11 @@ class McControlWebApi:
                 "rcon_runtime": self._rcon_runtime(),
                 "server_dir": str(self._cfg("server_dir", "") or ""),
                 # v0.21.15：概览页据此把本地文件类模块标成「异地模式禁用」
-                "remote_rcon_mode": bool(self._cfg("remote_rcon_mode", False)),
+                "remote_rcon_mode": strict_bool(self._cfg("remote_rcon_mode", False), False),
                 "admin_ids": self._cfg("admin_ids", []) or [],
                 "feedback_name": self._cfg("feedback_name", "RCON"),
                 "danger_command_policy": self._cfg("danger_command_policy", "whitelist"),
-                "feedback_tellraw": bool(self._cfg("feedback_tellraw", True)),
+                "feedback_tellraw": strict_bool(self._cfg("feedback_tellraw", True), True),
             },
             "dictionary": dict_info,
             "knowledge": kb_info,
@@ -1342,7 +1372,9 @@ class McControlWebApi:
 
     async def broadcast(self):
         """向服务器广播消息（chat/title），或模拟任务输出（task）。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         message = str(data.get("message", "")).strip()
         mode = str(data.get("mode", "chat")).strip() or "chat"
         if not message:
@@ -1389,15 +1421,25 @@ class McControlWebApi:
             # 而那句提示恰恰是「谁都没收到」的证据。现在第一条非送达就停下并如实回错误体
             # —— 继续发后面的段落只会让「半句消息」更难解释。
             results = []
+            confirmed = True
             for idx, c in enumerate(cmds, start=1):
                 out = await rcon.command(c)
-                verdict = classify_command_output(c, out, response_received=True)
+                # v0.24.8（GPT 第三轮复核 P3）：RCON 一直在算「这次读到可靠结束
+                # 边界了吗」（`last_boundary_confirmed`），只是这里没传 —— 于是 idle
+                # 降级模式下「已发出、没读干净」被判成确定的成功。
+                verdict = classify_command_output(
+                    c, out, response_received=True,
+                    boundary_confirmed=getattr(rcon, "last_boundary_confirmed", None),
+                )
                 results.append({
                     "command": c,
                     "status": verdict.status,
                     "output": str(out).strip(),
                 })
                 if verdict.status in _BROADCAST_OK_STATUSES:
+                    continue
+                if verdict.status in _BROADCAST_UNCONFIRMED_STATUSES:
+                    confirmed = False
                     continue
                 raw = str(out).strip()[:200] or "（服务端无输出）"
                 hint = ""
@@ -1416,6 +1458,13 @@ class McControlWebApi:
                 })
             return json_response({
                 "ok": True, "mode": mode, "message": message,
+                # v0.24.8：confirmed=False 表示「命令发出去了，但没有可靠回执」。
+                # 前端据此显示黄字，不再拿 var(--ok) 的绿字糊过去。
+                "confirmed": confirmed,
+                "warning": "" if confirmed else (
+                    "服务端没有给出可靠的『已读完整』回执，这条广播可能只发出了一部分；"
+                    "请以游戏内实际画面为准。"
+                ),
                 "results": results,
             })
         except Exception as e:
@@ -1515,7 +1564,9 @@ class McControlWebApi:
 
     async def save_ui_theme(self):
         """保存界面主题偏好（light / dark）。传入 null 或空串 = 清除，回到跟随系统。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         raw = data.get("theme", None)
         theme = str(raw).strip().lower() if raw is not None else ""
         if theme and theme not in self.UI_THEMES:
@@ -1544,7 +1595,7 @@ class McControlWebApi:
                 k: self._cfg(k, self.COLOR_DEFAULTS[k]) for k in self.COLOR_KEYS
             },
             "gradient": {
-                "enabled": bool(self._cfg("gradient_enabled", False)),
+                "enabled": strict_bool(self._cfg("gradient_enabled", False), False),
                 "format": self._cfg("gradient_format", self.DEFAULT_FORMAT),
                 "stops": {
                     k: self._cfg(k, self.GRADIENT_COLOR_DEFAULTS[k])
@@ -1560,7 +1611,9 @@ class McControlWebApi:
 
     async def save_colors(self):
         """保存文本颜色 + 渐变色（多锚点列表 / 输出格式）：即时生效无需重启。"""
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         parsed = {}
         for k in self.COLOR_KEYS:
             if k in data:
@@ -1624,7 +1677,7 @@ class McControlWebApi:
             self.plugin._set_cfg_batch(parsed)
         except Exception as e:
             return json_response({"ok": False, "error": f"配置写入失败: {e}"})
-        grad = bool(self._cfg("gradient_enabled", False))
+        grad = strict_bool(self._cfg("gradient_enabled", False), False)
         fmt_now = self._cfg("gradient_format", self.DEFAULT_FORMAT)
         plain_now = self._cfg("plain_color_format", "hex")
         return json_response({
@@ -1693,7 +1746,9 @@ class McControlWebApi:
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         # v0.24.7（GPT 第二轮复核 P2-5）：字段校验收敛在一处 ——
         #   · topic / content / old_topic 必须是字符串（收到数字 / 对象时旧写法
         #     `.strip()` 直接 AttributeError → 接口 500，界面只显示「请求失败」）；
@@ -1711,6 +1766,11 @@ class McControlWebApi:
         status, status_note = normalize_status(data.get("status"))
         if not topic or not content:
             return json_response({"ok": False, "error": "topic 与 content 必填"})
+        # v0.24.8（GPT 第四轮复核 P5）：**超长知识不入库**。上限在 knowledge_base
+        # 里定义（与 LLM 工具共用同一处），这里只负责把话说清楚。
+        over = knowledge_length_error(topic, content)
+        if over:
+            return json_response({"ok": False, "error": over})
         # v0.21.11：详情弹窗支持「改名 + 改内容」；改名撞到已有主题就拒绝，避免静默覆盖别人的条目
         renaming = old_topic != topic
         if renaming:
@@ -1731,9 +1791,17 @@ class McControlWebApi:
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        topic, enabled = data.get("topic", ""), data.get("enabled")
-        if not topic or enabled is None:
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        # v0.24.8（GPT 第四轮复核 P5）：topic 也必须过 `_str_field` ——
+        # 数字 / 对象 / 数组此前会一路下沉到 `_topic_key()` 的 `.strip()` 上抛
+        # AttributeError（接口 500）。`if not topic` 拦不住非空 dict/list/数字。
+        topic, err = self._str_field(data, "topic", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
+        enabled = data.get("enabled")
+        if enabled is None:
             return json_response({"ok": False, "error": "topic 与 enabled 必填"})
         try:
             flag = parse_bool(enabled)
@@ -1749,10 +1817,12 @@ class McControlWebApi:
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        topic = data.get("topic", "")
-        if not topic:
-            return json_response({"ok": False, "error": "topic 必填"})
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        topic, err = self._str_field(data, "topic", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
         ok = kb.delete_entry(topic)
         return json_response({"ok": ok, "deleted": ok,
                               "save_warning": self._kb_save_warning(kb)})
@@ -1761,14 +1831,16 @@ class McControlWebApi:
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        topic = data.get("topic", "")
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        topic, err = self._str_field(data, "topic", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
         try:
             approve = parse_bool(data.get("approve", True))
         except ValueError as e:
             return json_response({"ok": False, "error": f"approve 需要布尔值（{e}）"})
-        if not topic:
-            return json_response({"ok": False, "error": "topic 必填"})
         entry = kb.approve_entry(topic, approve)
         if entry is None:
             return json_response({"ok": False, "error": "条目不存在"})
@@ -1864,10 +1936,12 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        pid = data.get("id", "")
-        if not pid:
-            return json_response({"ok": False, "error": "id 必填"})
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        pid, err = self._str_field(data, "id", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
         r = man.switch(pid)
         if not r.get("ok"):
             return json_response(r)
@@ -1885,14 +1959,22 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         if not isinstance(data, dict):
             return json_response({"ok": False, "error": "参数错误"})
-        copy_from = data.get("copy_from") or None
-        if copy_from is not None and man.get(str(copy_from)) is None:
+        name, err = self._str_field(data, "name")
+        if err:
+            return json_response({"ok": False, "error": err})
+        copy_from, err = self._str_field(data, "copy_from")
+        if err:
+            return json_response({"ok": False, "error": err})
+        copy_from = copy_from or None
+        if copy_from is not None and man.get(copy_from) is None:
             return json_response({"ok": False, "error": "源预设不存在"})
         preset = man.create(
-            name=data.get("name", ""),
+            name=name,
             copy_from=copy_from,
         )
         return json_response({
@@ -1908,8 +1990,16 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        p = man.rename(data.get("id", ""), data.get("name", ""))
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        pid, err = self._str_field(data, "id", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
+        name, err = self._str_field(data, "name", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
+        p = man.rename(pid, name)
         if p is None:
             return json_response({"ok": False, "error": "预设不存在或名称为空"})
         return json_response({
@@ -1921,9 +2011,14 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
-        was_active = data.get("id") == man.reg.get("active")
-        r = man.remove(data.get("id", ""))
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        pid, err = self._str_field(data, "id", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
+        was_active = pid == man.reg.get("active")
+        r = man.remove(pid)
         if not r.get("ok"):
             return json_response(r)
         if was_active:
@@ -1938,15 +2033,23 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
+        pid, err = self._str_field(data, "id", required=True)
+        if err:
+            return json_response({"ok": False, "error": err})
         target = data.get("target")
         if target == "server":
             fp: str | None = man.server_id
         elif target == "none":
             fp = None
         else:
-            fp = data.get("fingerprint")
-        p = man.bind(data.get("id", ""), fp)
+            fp_raw, err = self._str_field(data, "fingerprint")
+            if err:
+                return json_response({"ok": False, "error": err})
+            fp = fp_raw or None
+        p = man.bind(pid, fp)
         if p is None:
             return json_response({"ok": False, "error": "预设不存在"})
         return json_response({
@@ -1961,7 +2064,9 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         src, dst = data.get("from", ""), data.get("to", "")
         mode = "move" if data.get("mode") == "move" else "copy"
         # v0.24.7（GPT 第二轮复核 P2-6）：id 必须是字符串再往下走 —— 收到数字 / 对象时
@@ -1995,7 +2100,9 @@ class McControlWebApi:
         man = self._kbman()
         if man is None:
             return json_response(self._kb_uninit())
-        data = await request.json() or {}
+        data, body_err = await self._body()
+        if body_err:
+            return json_response({"ok": False, "error": body_err})
         action = data.get("action", "ack")
         if action == "seen":
             # v0.21.8：弹窗只要真的显示过就记账 —— 同一轮（预设 × 服务端指纹）不再重复弹，

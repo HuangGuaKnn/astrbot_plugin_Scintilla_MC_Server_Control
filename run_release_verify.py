@@ -209,6 +209,79 @@ def _is_internal_doc(p: str) -> bool:
             or name.endswith(".diff") or "实施单" in name)
 
 
+# ================= 未跟踪的取证产物（v0.24.8 · 第六轮复核 B9） =================
+#
+# 为什么单开一条判据，而不是把下面那条 `[NOTE]` 升级成失败：
+# 那条 `[NOTE]` 的职责是「说清本次实测的是 HEAD 的归档」，**明确不判失败**
+# （工作区脏本身是正常开发状态）。这里管的是另一件事：**取证产物不许留在仓库里**。
+#
+# 取证日志 / 探针脚本是本地一次性产物，含本机绝对路径（`<用户目录>\…`），
+# 而仓库对「内部件绝不入库」有明文红线。`.gitignore` 只挡得住**写对名字**的那些：
+# `/*.log` 挡得住 `_r4_verify.log`，挡不住 `_r4_verify.txt` / `_r4_probe.json`，
+# `tests/_r5_probe.py` 这种连规则都没有 —— 靠规则的前提是「我记得起名字」，
+# 而这恰恰是它漏的原因（第四轮、第五轮各漏过一次）。所以这里不问规则，直接问 git：
+# **哪些文件已经在工作区里、却不在版本控制之下。**
+#
+# 判据只按**形状**判（根目录 / tests 一层的取证后缀，或 `_` 开头的脚本）：
+# 把「凡是未跟踪就红」写上去，会把正常开发流整个拦住 —— 那是另一种坏。
+# 形状之外的探针脚本（比如 `tests/r7_probe.py`）这条判据看不见，
+# 由 `tests/test_v0240_no_local_paths.py`（本机路径）与提交前人工复核兜底。
+FORENSIC_SUFFIXES = (".log", ".txt", ".json", ".patch", ".diff")
+#: `tests/` 下以 `_` 开头但**是正经辅助模块**的（它们本来就该随仓库走，不在取证之列）。
+#: 新增辅助模块要显式登记在这里 —— 也就是一个人必须过一眼的决定点。
+FORENSIC_ALLOW = {"_paths.py", "_ui_manifest.py"}
+
+
+def is_forensic_artifact(rel: str) -> bool:
+    """形状判定：这个（未跟踪的）文件是不是「取证产物」。真实仓库与临时仓库共用。"""
+    parts = [x for x in rel.replace("\\", "/").split("/") if x]
+    if not parts or len(parts) > 2:
+        return False                     # 只盯仓库根与 tests/ 一层，别扫 data/ 之类的运行资产
+    name = parts[-1]
+    if len(parts) == 2:
+        if parts[0] != "tests" or name in FORENSIC_ALLOW:
+            return False
+        return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
+    # 仓库根
+    return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
+
+
+def check_untracked_forensics(root: Path | None = None) -> list:
+    """返回工作区里**未跟踪**的取证产物（空清单 = 干净）。`root` 供测试喂临时仓库。
+
+    两个细节（第六轮复核时踩过）：
+
+      · **不能只解析 `git status --porcelain` 的 `??`**：`git add -N` 挂进来的新文件
+        在 porcelain 里是 ` A`，而 `git add -N` 恰好是「先让 git 看见、还没提交」的
+        常用手法 —— 只认 `??` 的判据正好把它漏掉。这里直接问 git 要数据，而且**分三路**：
+        未跟踪（`ls-files --others`）、intent-to-add（工作区 vs 索引的 `A`）、
+        已暂存未提交的新文件（索引 vs HEAD 的 `A`）。
+        （实测：intent-to-add 的文件在 `git diff --cached` 里**看不见** —— 索引里那一条
+        是「空 blob + 意图标记」，只有工作区 vs 索引这一路才认它。）
+      · **不在 git 仓库里就不适用**（比如 CI 解包目录 / 用户下载的 zip）：
+        返回空清单，不判红、也不假装通过（这一项根本不该在那种环境里跑）。
+    """
+    base = Path(root) if root else ROOT
+
+    def _git(*args: str):
+        return subprocess.run(["git", *args], cwd=str(base), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+
+    try:
+        others = _git("ls-files", "--others", "--exclude-standard")
+    except Exception:                                            # noqa: BLE001
+        return []
+    if others.returncode != 0:
+        return []
+    names = {ln.strip() for ln in (others.stdout or "").splitlines() if ln.strip()}
+    for args in (("diff", "--name-only", "--diff-filter=A"),
+                 ("diff", "--cached", "--name-only", "--diff-filter=A")):
+        got = _git(*args)
+        if got.returncode == 0:            # 没有 HEAD（新仓库）时 --cached 会失败：跳过这一路
+            names |= {ln.strip() for ln in (got.stdout or "").splitlines() if ln.strip()}
+    return sorted(n for n in names if is_forensic_artifact(n))
+
+
 def check_export_ignore(strict: bool = False) -> list:
     """发布包卫生：**把发布包真的打出来看**（`git archive HEAD` → tar → 列名单）。
 
@@ -243,11 +316,17 @@ def check_export_ignore(strict: bool = False) -> list:
         return env_missing("git archive HEAD 不可用 —— 跳过发布包卫生实测")
     try:
         # 中文文件名按 UTF-8 解（别让它落到系统 locale 上）
-        names = tarfile.open(fileobj=io.BytesIO(r.stdout),
-                             encoding="utf-8", errors="replace").getnames()
+        _tar = tarfile.open(fileobj=io.BytesIO(r.stdout),
+                            encoding="utf-8", errors="replace")
+        names = _tar.getnames()
+        dirs = {m.name for m in _tar.getmembers() if not m.isfile()}
     except Exception as e:                                       # noqa: BLE001
         return env_missing(f"解包发布包失败：{e}")
-    files = [n for n in names if not n.endswith("/")]
+    # v0.24.8 自审（S3）：**目录条目在 git archive 出的 tar 里不以 "/" 结尾**
+    # （是不是目录要靠 typeflag 看）。原来只按 "/" 后缀过滤，会把 11 个目录当成文件，
+    # 于是那句「实测共 82 个文件」是假的 —— 真值 71 个。数字假了，底下所有基于
+    # 这份名单的断言（漏挡了谁、必须留的还在不在）就都不可信。
+    files = [n for n in names if n not in dirs]
     leaked = [n for n in files if n.startswith("tests/")
               or (n.startswith("run_") and n.endswith(".py")) or _is_internal_doc(n)]
     must_keep = ["main.py", "metadata.yaml", "_conf_schema.json",
@@ -390,6 +469,25 @@ def check_export_ignore(strict: bool = False) -> list:
 
         print(f"[PASS] 发布包卫生：实测 git archive 共 {len(files)} 个文件 —— "
               f"测试 / 开发脚本 / 内部核验文档 0 个，用户可见文件齐全")
+    # v0.24.8（GPT 第四轮复核的证据边界）：这一项实测的是 **HEAD 的归档**，
+    # 不是工作区。开发者常在工作区里改完就顺手跑一遍门禁，看到「发布包卫生 PASS」
+    # 便以为「这批改动已经能进包了」—— 而 `git archive HEAD` 根本看不见未提交文件。
+    # 不把这句话说出来，这份绿就成了假证据（复核时被点过一次）。
+    # 这里只提示、不判失败：本项的职责是 .gitattributes 名单，不是「有没有提交」。
+    try:
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace")
+        dirty = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
+        if st.returncode == 0 and dirty:
+            head = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                  cwd=str(ROOT), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace").stdout.strip()
+            print(f"[NOTE] 本次实测的是 HEAD({head}) 的归档 —— 工作区还有 "
+                  f"{len(dirty)} 处未提交改动，**不在这份名单里**；"
+                  "要让它们进包，得先提交再复跑。")
+    except Exception:                                            # noqa: BLE001
+        pass
     return out
 
 
@@ -444,6 +542,18 @@ def static_checks(strict_env: bool = False) -> list[str]:
               f"本机专属 {len(local_only())} 件，无未归类用例）")
 
     fails.extend(check_export_ignore(strict=strict_env))
+
+    # v0.24.8（第六轮复核 B9）：未跟踪的取证产物 —— 与上面那条 `[NOTE]` 分工不同：
+    # 那条只说「本次实测的是 HEAD 的归档」，不判失败；这条只管「取证产物不许留在仓库里」。
+    forensics = check_untracked_forensics()
+    if forensics:
+        print(f"[FAIL] 工作区里有未跟踪的取证产物：{forensics[:6]}"
+              + (f" …共 {len(forensics)} 个" if len(forensics) > 6 else "")
+              + "（取证输出写到仓库外；确属该入库的新文件请先 `git add`）")
+        fails.append("未跟踪的取证产物")
+    else:
+        print("[PASS] 工作区没有未跟踪的取证产物（根目录 / tests 下的 "
+              ".log/.txt/.json/.patch/.diff 与 `_*.py`）")
     return fails
 
 
