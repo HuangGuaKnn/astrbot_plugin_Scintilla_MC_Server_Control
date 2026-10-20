@@ -268,6 +268,8 @@ def run_render(html: str, cells: list[dict], node: str) -> list:
 
 
 _CALLSITE_RE = re.compile(r"parseCfgBool\(\s*e\.enabled\s*,\s*true\s*\)")
+#: 设置页布尔渲染的调用点（`= / :` 之后的那次调用；**函数签名不算**）
+_SITE_BOOL_RE = re.compile(r"[=:]\s*parseCfgBool\(\s*v\s*,\s*dft\s*\)")
 
 
 def audit_text(html: str) -> list[str]:
@@ -285,11 +287,14 @@ def audit_text(html: str) -> list[str]:
     if f_false != set(sb._FALSE_TOKENS):
         problems.append(f"假值词表不同源：前端多 {sorted(f_false - set(sb._FALSE_TOKENS))} / "
                         f"少 {sorted(set(sb._FALSE_TOKENS) - f_false)}")
-    # 调用点哨兵：两个条目级渲染点必须走 parseCfgBool（`!!e.enabled` 是变异靶子）
+    # 调用点哨兵：设置页必须**真的调用** parseCfgBool（`!!e.enabled` 是变异靶子）
     if len(_CALLSITE_RE.findall(html)) < 2:
         problems.append("条目级开关的渲染点没走 parseCfgBool（`parseCfgBool(e.enabled, true)` 少于 2 处）")
-    if "parseCfgBool(v, dft)" not in html:
-        problems.append("设置页的布尔渲染没走 parseCfgBool")
+    # 第八轮：这条原来写的是 `"parseCfgBool(v, dft)" in html` —— 而 `function parseCfgBool(v, dft){`
+    # 这串字**本身就是函数签名**，函数体怎么换它都在（第六轮踩过的同一个坑，这里又踩了一次）。
+    # 现在要求「赋值 / 冒号之后出现的那次调用」，签名不再能满足它。
+    if not _SITE_BOOL_RE.search(html):
+        problems.append("设置页的布尔渲染没走 parseCfgBool（找不到 `: parseCfgBool(v, dft)` 这样的调用）")
     bad = [ln.strip() for ln in html.splitlines()
            if ".checked" in ln and "!!" in ln
            and re.search(r"(cfg\[|e\.enabled|g\.enabled)", ln)]
@@ -439,6 +444,13 @@ MUTATIONS = [
          'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);',
          'if(ty==="b") el.checked = !!v;'),
      "函数本体没动、文本哨兵照样命中 → 渲染入口的行为判据必须红"),
+    # 这一条才是「行为层」为什么非有不可的证据：**调用还在**、文本层与函数体层都放过，
+    # 只有真跑一遍才知道画错了。
+    ("渲染入口忽略默认值（null / undefined 一律画「关」）",
+     lambda h: h.replace(
+         'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);',
+         'if(ty==="b") el.checked = (v===undefined||v===null) ? false : parseCfgBool(v, dft);'),
+     "调用点还在（文本层放过）、函数体没动（逐格层放过）→ 只有渲染入口的行为判据能红"),
 ]
 
 #: 渲染入口那一行的原文（变异与阳性对照共用；改实现时这里跟着改，改不动就会红）
@@ -447,7 +459,7 @@ _RENDER_LINE = 'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : pa
 
 def part_two(node: str) -> None:
     print("\n" + "=" * 74)
-    print("② 判据有牙：六种变异必须各自报红，等价改写必须照样绿（阳性对照）")
+    print("② 判据有牙：七种变异必须各自报红，等价改写必须照样绿（阳性对照）")
     print("=" * 74)
     html = PAGE.read_text(encoding="utf-8")
     for name, mutate, why in MUTATIONS:
