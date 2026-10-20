@@ -266,12 +266,15 @@ def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
 #:  前两个以 `_` 开头、第三个是 `.txt`，形状命中取证物，但用户包里必须有它们。）
 ARCHIVE_FORENSIC_ALLOW = {"_conf_schema.json", "__init__.py", "requirements.txt"}
 
-#: 归档里「形状像取证产物、但整个目录本来就该随包」的**前缀**（第九/十轮复核）。
-#: 收窄到**实际存在的运行数据目录**，不再整片放行 `data/` ——
-#: 第十轮复核实测：`data/_probe.json` 与 `docs/images/evidence.log` 都能从整片放行里溜过去。
-#: `docs/images/` 也不再整片放行：那里只有 `.png`，本来就不匹配任何取证形状；
-#: 将来真出现合法的取证形状文件，让门禁红一次、由人显式登记，比默默放过强。
-ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/legacy_items/", "data/legacy_registry/")
+#: 归档里「形状像取证产物、但**命名本身就说明它是运行数据表**」的规则（第十一轮复核的严格化）。
+#: 第十轮把整片放行收窄到了两个目录，但目录内**整段放行**仍会放过
+#: `data/legacy_items/_probe.json`、`data/legacy_registry/_debug.log`（复核点的就是这两个）。
+#: 现在只认真正的世代运行表命名：`<版本>.json` 与 `items_<版本>.json` ——
+#: 未来新增世代（`1.16.5.json` 之类）不用改白名单，而 `_probe.json` 这种一律按取证形状判。
+ARCHIVE_FORENSIC_ALLOW_PATTERNS = (
+    re.compile(r"^data/legacy_items/\d+(?:\.\d+)*\.json$"),
+    re.compile(r"^data/legacy_registry/items_\d+(?:\.\d+)*\.json$"),
+)
 
 
 def check_archive_forensics(files: list[str]) -> list[str]:
@@ -284,7 +287,11 @@ def check_archive_forensics(files: list[str]) -> list[str]:
 
     第九轮（GPT 第八轮复核 P2-1）：扫描范围从「根 + tests/ 一层」放宽到**任意层级**
     （`deep=True`）—— `docs/evidence.log` / `tools/_probe.py` 这类同样不该进包。
-    放宽的代价用**显式白名单**抵掉：文件名白名单 + 目录前缀白名单，两条都写在上面。
+    放宽的代价用**显式白名单**抵掉：文件名白名单 + 命名规则白名单，两条都写在上面。
+
+    第十一轮（GPT 第十轮复核的严格化建议）：命名规则白名单从「整目录前缀」改成
+    「运行数据表的**命名形状**」—— 目录内整段放行会放过 `data/legacy_items/_probe.json`
+    与 `data/legacy_registry/_debug.log`，现在这两个也会被抓住。
     """
     bad: list[str] = []
     for n in files:
@@ -293,7 +300,7 @@ def check_archive_forensics(files: list[str]) -> list[str]:
             continue
         if norm.rsplit("/", 1)[-1] in ARCHIVE_FORENSIC_ALLOW:
             continue
-        if any(norm.startswith(p) for p in ARCHIVE_FORENSIC_ALLOW_PREFIXES):
+        if any(p.match(norm) for p in ARCHIVE_FORENSIC_ALLOW_PATTERNS):
             continue
         bad.append(n)
     return sorted(bad)

@@ -253,6 +253,19 @@ def part_five() -> None:
     check("★白名单收窄：data/ 与 docs/images/ 下长成取证形状的仍要抓",
           holes == ["data/_probe.json", "docs/images/_shot.png", "docs/images/evidence.log"],
           str(holes))
+    # ---- 第十一轮复核：连**目录内**也不能整段放行（按运行表的命名形状放行）----
+    inside = RV.check_archive_forensics(["data/legacy_items/_probe.json",
+                                         "data/legacy_registry/_debug.log",
+                                         "data/legacy_items/_1.12.2.json"])
+    check("★运行数据目录**内部**的取证形状也要抓（_probe.json / _debug.log）",
+          inside == ["data/legacy_items/_1.12.2.json", "data/legacy_items/_probe.json",
+                     "data/legacy_registry/_debug.log"],
+          str(inside))
+    future = RV.check_archive_forensics(["data/legacy_items/1.16.5.json",
+                                         "data/legacy_registry/items_1.16.5.json",
+                                         "data/legacy_items/1.12.2.json"])
+    check("★未来新增世代（1.16.5 之类）仍按命名形状放行 —— 不用改白名单",
+          future == [], str(future))
     check("★未跟踪那条**仍然**只看根与 tests/ 一层（别把运行资产扫进来）",
           not RV.is_forensic_artifact("data/legacy_items/1.7.10.json")
           and not RV.is_forensic_artifact("core/_debug.py")

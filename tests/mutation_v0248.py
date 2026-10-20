@@ -290,10 +290,12 @@ CASES = [
     ),
     Case(
         "M27", "run_release_verify.py",
-        'ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/legacy_items/", "data/legacy_registry/")',
-        'ARCHIVE_FORENSIC_ALLOW_PREFIXES = ("data/", "docs/images/")  # 变异：整片放行',
+        '    re.compile(r"^data/legacy_items/\\d+(?:\\.\\d+)*\\.json$"),\n'
+        '    re.compile(r"^data/legacy_registry/items_\\d+(?:\\.\\d+)*\\.json$"),',
+        '    re.compile(r"^data/"),  # 变异：data/ 整片放行\n'
+        '    re.compile(r"^data/legacy_registry/items_\\d+(?:\\.\\d+)*\\.json$"),',
         "tests/test_v0248_untracked_forensics.py",
-        "归档白名单整片放行 → 第五节必须发现「data/_probe.json 与 docs/images/evidence.log 溜过去」",
+        "运行数据目录整片放行 → 第五节必须发现「data/_probe.json 与目录内的 _probe.json 都溜过去」",
     ),
 ]
 

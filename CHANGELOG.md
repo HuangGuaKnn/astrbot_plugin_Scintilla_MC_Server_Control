@@ -245,6 +245,21 @@
   （复核指出，已改）。
 - **仍未做**：真实 Minecraft 服务端回归（按约定放到修完这批问题之后一起做）、远端 Actions、v0.24.8 tag 与 Release。
 
+### 第十一轮（GPT 第十轮复核的严格化建议）
+
+> 第十轮复核结论是「三类问题已验证修复，无新的 P0/P1」，另提一条**可选**严格化：
+> 两个运行数据目录仍是整段放行的，`data/legacy_items/_probe.json` 这类会被当成合法。
+
+- **归档白名单从「目录前缀」改成「命名形状」**（`run_release_verify.py`）：只放行
+  `data/legacy_items/<版本>.json` 与 `data/legacy_registry/items_<版本>.json` ——
+  目录内的 `_probe.json` / `_debug.log` 现在会被抓；未来新增世代（`1.16.5.json` 之类）不用改白名单，
+  因为认的是命名形状而不是具体文件名。用例 22 → **24 项**；变异 M27 随之改成
+  「运行数据目录整片放行」，仍然 KILLED。
+- **复核确认两件事不必再动**：`docs/images/` 保持「只放行实际存在的 PNG、其余形状一律报警」的严格策略；
+  `compileall` 已足够覆盖 `from __future__` 插入位置这类错误，不再加重复守卫。
+- **仍未做**：真实 Minecraft 服务端回归（按约定这批修完后一起做）、远端 Actions、tag 与 Release。
+
+
 
 
 ## [v0.24.7] - 2026-10-18
