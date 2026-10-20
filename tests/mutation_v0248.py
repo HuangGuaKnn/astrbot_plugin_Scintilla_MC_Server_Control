@@ -243,10 +243,14 @@ CASES = [
     ),
     Case(
         "M22", "run_release_verify.py",
-        "    # 仓库根\n"
-        '    return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)',
-        "    # 仓库根\n"
-        "    return False  # 变异：根目录不再认取证产物",
+        # 第九轮：实现改了（多了 deep 分支），锚点跟着回写 —— 锚点失配会记 INFRA-ERR，
+        # 那是「工具要维护」，不是「用例没牙」，两者不能混为一谈。
+        '        if len(parts) == 2 and (parts[0] != "tests" or name in FORENSIC_ALLOW):\n'
+        "            return False\n"
+        '        return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)',
+        '        if len(parts) == 2 and (parts[0] != "tests" or name in FORENSIC_ALLOW):\n'
+        "            return False\n"
+        "        return False  # 变异：根目录不再认取证产物",
         "tests/test_v0248_untracked_forensics.py",
         "门禁不再认根目录的取证产物 → 新用例必须发现「未跟踪的取证日志会被放行」",
     ),
