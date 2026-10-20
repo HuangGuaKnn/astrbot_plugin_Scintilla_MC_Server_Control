@@ -18,6 +18,14 @@
 视野里（`--exclude-standard` 不算它们），`tests/_paths.py` / `tests/_ui_manifest.py`
 这类正经辅助模块也不该被误判。
 
+第八轮补的另一半（GPT 第七轮复核）
+================================
+「未跟踪」只在**还没提交**时有效：取证日志一旦被误提交，就变成**已跟踪**，上面这条判据从此
+看不见它 —— 而 `git archive` 会把它原样打进发布包（附件里带着本机绝对路径）。
+所以第五节改成对**归档清单**再问一遍同一个形状口径（`check_archive_forensics`），
+外加白名单 `ARCHIVE_FORENSIC_ALLOW`（`_conf_schema.json` / `__init__.py` / `requirements.txt`
+是合法文件但形状像取证物，必须显式登记）。「先误提交、后发布」这条路，只有这层堵得上。
+
 运行：
   <AstrBot python> tests\\test_v0248_untracked_forensics.py
 """
@@ -168,6 +176,63 @@ def part_four() -> None:
               "「判据非空转」由第二节的临时仓库实测覆盖")
 
 
+# ============================================================ 五、已跟踪的取证产物
+def _archive_files(repo: Path) -> list[str]:
+    """`git archive HEAD` → 归档里的文件清单（目录不计；与门禁里的口径一致）。"""
+    import io as _io
+    import tarfile
+    r = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=str(repo),
+                       capture_output=True)
+    tf = tarfile.open(fileobj=_io.BytesIO(r.stdout), encoding="utf-8", errors="replace")
+    dirs = {m.name for m in tf.getmembers() if not m.isfile()}
+    return [n for n in tf.getnames() if n not in dirs]
+
+
+def part_five() -> None:
+    print("\n---- 五、已提交进仓库的取证产物：未跟踪那条看不见它，发布包这条必须抓住 ----")
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        # 白名单里的三个「合法但形状像取证物」的文件 + 一个真的取证产物 + 一个深层 json
+        (repo / "_conf_schema.json").write_text("{}\n", encoding="utf-8")
+        (repo / "__init__.py").write_text("", encoding="utf-8")
+        (repo / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (repo / "_r7_probe.py").write_text("# 误提交的探针\n", encoding="utf-8")
+        (repo / "data").mkdir()
+        (repo / "data" / "legacy_items").mkdir()
+        (repo / "data" / "legacy_items" / "1.7.10.json").write_text("{}\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t",
+             "commit", "-q", "-m", "误提交一个取证探针")
+
+        # 事实先行：未跟踪那条判据**确实**看不见已提交的文件（这是 GPT 第七轮复核的观察，
+        # 不是我们希望的最终状态 —— 所以下面才要补发布包这一条）。
+        check("事实：已提交的取证产物不在「未跟踪」名单里（那条判据的视野边界）",
+              RV.check_untracked_forensics(repo) == [], str(RV.check_untracked_forensics(repo)))
+
+        files = _archive_files(repo)
+        got = RV.check_archive_forensics(files)
+        check("★已提交的取证产物进包时必须被抓（_r7_probe.py）",
+              got == ["_r7_probe.py"], f"归档 {sorted(files)} → 抓到 {got}")
+        check("★白名单里的合法文件不许误判（_conf_schema.json / __init__.py / requirements.txt）",
+              RV.check_archive_forensics(["_conf_schema.json", "__init__.py",
+                                          "requirements.txt"]) == [],
+              str(RV.check_archive_forensics(["_conf_schema.json", "__init__.py",
+                                              "requirements.txt"])))
+        check("★深层运行数据表不许误判（data/legacy_items/1.7.10.json）",
+              "data/legacy_items/1.7.10.json" not in got, str(got))
+        # 去掉那一个，其余应当全清（证明抓的是形状，不是「凡 json 必红」）
+        check("★把误提交的那个删掉后，同一份归档零误报",
+              RV.check_archive_forensics([n for n in files if n != "_r7_probe.py"]) == [],
+              str(RV.check_archive_forensics([n for n in files if n != "_r7_probe.py"])))
+
+    # 真实仓库：HEAD 的归档里不许有取证产物
+    real_files = _archive_files(PLUGIN_DIR)
+    real_bad = RV.check_archive_forensics(real_files)
+    check(f"★真实仓库 {len(real_files)} 个文件的归档里，取证产物 0 个", real_bad == [], str(real_bad))
+
+
 def main() -> int:
     print("=" * 78)
     print("v0.24.8 回归 · 第六轮复核 B9：未跟踪的取证产物必须让门禁变红")
@@ -176,6 +241,7 @@ def main() -> int:
     part_two()
     part_three()
     part_four()
+    part_five()
     print("\n================ 汇总 ================")
     print("通过 %d 项，失败 %d 项" % (PASSED[0], len(FAILED)))
     if FAILED:

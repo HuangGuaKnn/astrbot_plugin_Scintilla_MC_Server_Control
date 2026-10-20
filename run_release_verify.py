@@ -246,6 +246,29 @@ def is_forensic_artifact(rel: str) -> bool:
     return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
 
 
+#: 归档里「形状像取证产物、但**本来就该随包**」的文件。白名单必须显式列出：
+#: 新增一个长成这种形状的正常文件，要在这里登记 —— 也就是一个人必须过一眼的决定点。
+#: （`_conf_schema.json` / `__init__.py` / `requirements.txt` 三个是本仓库真实存在的：
+#:  前两个以 `_` 开头、第三个是 `.txt`，都命中了「取证形状」，但它们都是用户包里必须有东西。）
+ARCHIVE_FORENSIC_ALLOW = {"_conf_schema.json", "__init__.py", "requirements.txt"}
+
+
+def check_archive_forensics(files: list[str]) -> list[str]:
+    """**发布包里的**取证产物（空清单 = 干净）。
+
+    第八轮（GPT 第七轮复核 B9）：`check_untracked_forensics()` 只管「未跟踪」——
+    一旦取证日志被**误提交**进仓库，它就变成「已跟踪」，那条判据从此看不见它，
+    而 `git archive` 会把它原样打进发布包（附件里带着本机绝对路径）。
+    「先误提交、后发布」这条路，只有对着**归档清单**再问一遍才堵得上。
+
+    口径与未跟踪那条同源（同一个 `is_forensic_artifact`），差别只在：
+      · 作用对象是 `git archive` 出的**文件清单**（不是工作区状态）；
+      · 多一张白名单 —— 合法文件里也有长成这种形状的，不白名单就会把正常包判红。
+    """
+    return sorted(n for n in files
+                  if is_forensic_artifact(n) and n not in ARCHIVE_FORENSIC_ALLOW)
+
+
 def check_untracked_forensics(root: Path | None = None) -> list:
     """返回工作区里**未跟踪**的取证产物（空清单 = 干净）。`root` 供测试喂临时仓库。
 
@@ -329,6 +352,8 @@ def check_export_ignore(strict: bool = False) -> list:
     files = [n for n in names if n not in dirs]
     leaked = [n for n in files if n.startswith("tests/")
               or (n.startswith("run_") and n.endswith(".py")) or _is_internal_doc(n)]
+    # 第八轮（GPT 第七轮复核 B9）：**已跟踪**的取证产物也要挡 —— 未跟踪那条判据看不见它们
+    arch_forensics = check_archive_forensics(files)
     must_keep = ["main.py", "metadata.yaml", "_conf_schema.json",
                  "docs/configure.md", "docs/faq.md", "docs/usage.md", "docs/gallery.md",
                  # 运行数据表：生成链要用，**必须**随包 —— v0.24.0 实案是 .gitignore 把它们
@@ -462,13 +487,18 @@ def check_export_ignore(strict: bool = False) -> list:
         print(f"[FAIL] 发布包里混进不该带的东西：{leaked[:6]}"
               + (f" …共 {len(leaked)} 个" if len(leaked) > 6 else ""))
         out.append("发布包卫生：漏挡内部文件")
+    if arch_forensics:
+        print(f"[FAIL] 发布包里混进取证产物（已提交进仓库的那种）：{arch_forensics[:6]}"
+              + (f" …共 {len(arch_forensics)} 个" if len(arch_forensics) > 6 else "")
+              + " —— 取证产物必须写到仓库外；确实该随包的文件请登记到 ARCHIVE_FORENSIC_ALLOW")
+        out.append("发布包卫生：归档里混进取证产物")
     if missing:
         print(f"[FAIL] 发布包里少了用户要的东西：{missing}")
         out.append("发布包卫生：误挡用户可见文件")
-    if not leaked and not missing and not data_bad:
+    if not leaked and not missing and not data_bad and not arch_forensics:
 
         print(f"[PASS] 发布包卫生：实测 git archive 共 {len(files)} 个文件 —— "
-              f"测试 / 开发脚本 / 内部核验文档 0 个，用户可见文件齐全")
+              f"测试 / 开发脚本 / 内部核验文档 / 取证产物 0 个，用户可见文件齐全")
     # v0.24.8（GPT 第四轮复核的证据边界）：这一项实测的是 **HEAD 的归档**，
     # 不是工作区。开发者常在工作区里改完就顺手跑一遍门禁，看到「发布包卫生 PASS」
     # 便以为「这批改动已经能进包了」—— 而 `git archive HEAD` 根本看不见未提交文件。

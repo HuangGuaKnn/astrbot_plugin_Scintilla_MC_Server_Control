@@ -35,7 +35,12 @@
   （这正是「看起来对账了、其实只对了一半」的那种假绿）；
 * 逐格与 Python 侧 `strict_bool(value, default)` 比对，**0 格分叉**才算过；
 * 外加一条**调用点哨兵**：两个条目级渲染点必须走 `parseCfgBool`，设置页任何把配置值
-  画到开关上的行都不许出现 `!!`。
+  画到开关上的行都不许出现 `!!`；
+* **第三层（v0.24.8 第八轮 · GPT 第七轮复核 B10）**：把设置页的**渲染循环原文**抽出来，
+  配最小 DOM 桩在 node 里**真跑一遍**，看每个格里开关**最终画成什么**。
+  起因是第七轮复核实测：把 `if(ty==="b") el.checked = …parseCfgBool(v, dft);` 整句换成
+  `el.checked = !!v;`，函数本体一个字没动、文本哨兵照样命中（`parseCfgBool(v, dft)` 这串字
+  在别处还在），整页回退成 `!!v` 而判据全绿。**函数对 ≠ 它被用上了。**
 
 判据自己有没有牙
 ================
@@ -122,6 +127,32 @@ def extract_bool_source(html: str) -> str:
     return html[start:end] + _extract_function(html, "parseCfgBool")
 
 
+#: 设置页把配置值写进控件的**渲染循环头**（第八轮 B10 的盲区就在这个循环里的那一行）。
+_RENDER_ANCHOR = "for(const [id,key,ty,dft] of CFG_FIELDS){"
+
+
+def extract_render_loop(html: str) -> str:
+    """抽取渲染循环的**原文**（含 `ty==="b"` 那一行），供 node 真跑。
+
+    锚点是循环头原文 —— 循环被改名 / 被换写法就抽不出来，抽不出来**判红**。
+    这是故意的保守方向：宁可要人来更新锚点，也不许「抽不到就当通过」。
+    """
+    start = html.find(_RENDER_ANCHOR)
+    if start < 0:
+        raise AssertionError(f"index.html 里找不到渲染循环 `{_RENDER_ANCHOR}`")
+    brace = html.find("{", start)
+    depth = 0
+    for i in range(brace, len(html)):
+        ch = html[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:i + 1]
+    raise AssertionError("渲染循环的大括号没有闭合")
+
+
 #: 输入表：**从后端词表生成** + 边界值。每格都带两档默认值（见模块说明）。
 def build_cells() -> list[dict]:
     cells: list[dict] = []
@@ -181,13 +212,69 @@ def run_node(bool_src: str, cells: list[dict], node: str) -> list:
 
 # ============================ 判据本体（真实页面与变异页面共用） ============================
 
+_RENDER_HARNESS = r"""
+const fs = require("fs");
+const boolSrc = fs.readFileSync(process.argv[2], "utf8");   // 词表 + parseCfgBool 原文
+const loopSrc = fs.readFileSync(process.argv[3], "utf8");   // 渲染循环原文
+const cells = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
+eval(boolSrc + "\n;globalThis.__pcb = parseCfgBool;");
+// 注意：这里不能再 `const parseCfgBool = …` —— 直接 eval 已经把 parseCfgBool 声明在
+// 本模块作用域里了，重名会直接 SyntaxError（第一次跑就是这么挂的：判据本身写错 ≠ 页面有问题）。
+
+// 最小 DOM 桩：只实现这段循环**真的会碰**的属性 / 方法（不是模拟浏览器）
+function makeEl(id){
+  return { id, checked: null, value: null, innerHTML: "", options: [] };
+}
+const els = {};
+const $ = (id) => els[id] || (els[id] = makeEl(id));
+const ensureProviderOption = () => {};
+const syncPwdPlaceholder = () => {};
+const S_DEFAULTS = {};
+const render = new Function("cfg", "CFG_FIELDS", "$", "S_DEFAULTS",
+  "ensureProviderOption", "syncPwdPlaceholder", "parseCfgBool", loopSrc);
+
+// 每格：只放一个布尔字段，默认值就是这一格要测的那一档，读回它**最终**画成的 checked
+const out = cells.map((c) => {
+  const el = makeEl("cfg_probe");
+  els["cfg_probe"] = el;
+  const cfg = { probe: (c.kind === "undefined" ? undefined : c.v) };
+  render(cfg, [["cfg_probe", "probe", "b", c.dft]], $, S_DEFAULTS,
+         ensureProviderOption, syncPwdPlaceholder, globalThis.__pcb);
+  return el.checked;
+});
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def run_render(html: str, cells: list[dict], node: str) -> list:
+    """把设置页的渲染循环**真跑一遍**，返回每个格里开关最终是开还是关。"""
+    loop_src = extract_render_loop(html)
+    bool_src = extract_bool_source(html)
+    with tempfile.TemporaryDirectory() as td:
+        js = Path(td) / "render.js"
+        b = Path(td) / "bool.js"
+        lp = Path(td) / "loop.js"
+        data = Path(td) / "cells.json"
+        js.write_text(_RENDER_HARNESS, encoding="utf-8")
+        b.write_text(bool_src, encoding="utf-8")
+        lp.write_text(loop_src, encoding="utf-8")
+        data.write_text(json.dumps(cells, ensure_ascii=False), encoding="utf-8")
+        r = subprocess.run([node, str(js), str(b), str(lp), str(data)],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+    if r.returncode != 0:
+        raise AssertionError("node 跑渲染循环失败：" + (r.stderr or r.stdout or "")[-400:])
+    return json.loads(r.stdout)
+
+
 _CALLSITE_RE = re.compile(r"parseCfgBool\(\s*e\.enabled\s*,\s*true\s*\)")
 
 
-def audit(html: str, node: str) -> list[str]:
-    """返回问题清单（空清单 = 干净）。真实页面与病灶样本共用同一套判定。"""
+def audit_text(html: str) -> list[str]:
+    """① 文本层（**最弱**的一层：第六轮实测过它可以全绿而 bug 原样在）。
+    留着是因为它便宜、且能抓到「明显的写法退化」；真正算数的是下面两层行为判据。"""
     problems: list[str] = []
-    # ① 词表逐字同源（顺序无关：Set 语义）
+    # 词表逐字同源（顺序无关：Set 语义）
     try:
         f_true, f_false = extract_tokens(html)
     except AssertionError as exc:
@@ -198,7 +285,7 @@ def audit(html: str, node: str) -> list[str]:
     if f_false != set(sb._FALSE_TOKENS):
         problems.append(f"假值词表不同源：前端多 {sorted(f_false - set(sb._FALSE_TOKENS))} / "
                         f"少 {sorted(set(sb._FALSE_TOKENS) - f_false)}")
-    # ② 调用点哨兵：两个条目级渲染点必须走 parseCfgBool（`!!e.enabled` 是变异靶子）
+    # 调用点哨兵：两个条目级渲染点必须走 parseCfgBool（`!!e.enabled` 是变异靶子）
     if len(_CALLSITE_RE.findall(html)) < 2:
         problems.append("条目级开关的渲染点没走 parseCfgBool（`parseCfgBool(e.enabled, true)` 少于 2 处）")
     if "parseCfgBool(v, dft)" not in html:
@@ -208,23 +295,61 @@ def audit(html: str, node: str) -> list[str]:
            and re.search(r"(cfg\[|e\.enabled|g\.enabled)", ln)]
     if bad:
         problems.append(f"仍有对配置值直接取两次非的行：{bad[:2]}")
-    # ③ 行为：抽取真实函数，在 node 里逐格跑，与后端 strict_bool 比
+    return problems
+
+
+def audit_parse(html: str, node: str) -> list[str]:
+    """② `parseCfgBool` 本体的逐格行为（把函数原文抽出来真跑）。"""
     try:
         bool_src = extract_bool_source(html)
     except AssertionError as exc:
-        return problems + [str(exc)]
+        return [str(exc)]
     cells = build_cells()
     got = run_node(bool_src, cells, node)
     if len(got) != len(cells):
-        return problems + [f"node 返回 {len(got)} 格，输入表是 {len(cells)} 格（形状不对）"]
+        return [f"node 返回 {len(got)} 格，输入表是 {len(cells)} 格（形状不对）"]
     diff = []
     for c, g in zip(cells, got):
         want = sb.strict_bool(c["v"], c["dft"], logger=_QUIET)
         if bool(g) is not want or (g is not True and g is not False):
             diff.append(f"默认值={c['dft']} / {c['label']}：前端 {g!r} vs 后端 {want!r}")
-    if diff:
-        problems.append(f"逐格比对 {len(diff)}/{len(cells)} 格分叉：" + "；".join(diff[:4]))
-    return problems
+    if not diff:
+        return []
+    return [f"逐格比对 {len(diff)}/{len(cells)} 格分叉：" + "；".join(diff[:4])]
+
+
+def audit_render(html: str, node: str) -> list[str]:
+    """③ 设置页**渲染入口**的逐格行为（GPT 第七轮复核 B10）：把循环原文抽出来真跑，
+    看开关最终画成什么。
+
+    为什么单列这一层：`parseCfgBool` 本身对，不代表**它被用上了**。
+    把 `if(ty==="b") el.checked = … parseCfgBool(v, dft);` 换成 `el.checked = !!v;`，
+    函数本体一个字没动、文本哨兵也照样命中（`parseCfgBool(v, dft)` 这串字在别处还在），
+    于是整页回退成 `!!v` 而判据全绿 —— 这正是第七轮复核实测出来的盲区。
+    """
+    cells = build_cells()
+    try:
+        got = run_render(html, cells, node)
+    except AssertionError as exc:
+        return [str(exc)]
+    if len(got) != len(cells):
+        return [f"渲染循环返回 {len(got)} 格，输入表是 {len(cells)} 格（形状不对）"]
+    diff = []
+    for c, g in zip(cells, got):
+        want = sb.strict_bool(c["v"], c["dft"], logger=_QUIET)
+        if bool(g) is not want or (g is not True and g is not False):
+            diff.append(f"默认值={c['dft']} / {c['label']}：开关画成 {g!r}，应是 {want!r}")
+    if not diff:
+        return []
+    return [f"渲染入口逐格 {len(diff)}/{len(cells)} 格画错：" + "；".join(diff[:4])]
+
+
+def audit(html: str, node: str) -> list[str]:
+    """返回问题清单（空清单 = 干净）。真实页面与病灶样本共用同一套判定。
+
+    三层由弱到强：文本 → 函数本体行为 → **渲染入口行为**。任一层发现问题就算红。
+    """
+    return audit_text(html) + audit_parse(html, node) + audit_render(html, node)
 
 
 # ============================ 一、真实页面 ============================
@@ -268,6 +393,19 @@ def part_one(node: str) -> None:
         check(f"  逐格：{label}（默认值={dft}）→ {want}",
               pairs.get((label, dft)) is want, f"实际 {pairs.get((label, dft))!r}")
     print(f"       共比对 {len(cells)} 格，0 格分叉")
+    # ---- 渲染入口（GPT 第七轮复核 B10）：开关**最终画成什么** ----
+    try:
+        rgot = run_render(html, cells, node)
+    except AssertionError as exc:
+        check("★能把设置页渲染循环抽出来真跑", False, str(exc))
+        return
+    rpairs = {(c["label"], c["dft"]): bool(g) for c, g in zip(cells, rgot)}
+    for label, dft, want in (("词表原样 'false'", True, False), ("词表原样 'n'", True, False),
+                             ("字符串 ''", True, False), ("数字 2", False, False),
+                             ("数字 1", False, True), ("字符串 'maybe'", True, True)):
+        check(f"  渲染入口：{label}（默认值={dft}）→ 开关 {want}",
+              rpairs.get((label, dft)) is want, f"实际 {rpairs.get((label, dft))!r}")
+    print(f"       渲染入口逐格 {len(cells)} 格，0 格画错（这三格是 `!!v` 那套画法必错的）")
 
 
 # ============================ 二、判据有牙 ============================
@@ -294,12 +432,22 @@ MUTATIONS = [
      lambda h: h.replace('const CFG_FALSE_TOKENS = new Set(["false", "0", "no", "off", "n", "f", ""]);',
                          'const CFG_FALSE_TOKENS = new Set(["false", "0", "no", "off", "n", "f"]);'),
      "空串不再按「关」→ 默认值=True 那一档必须红"),
+    # v0.24.8 第八轮（GPT 第七轮复核 B10）：**函数本体一个字没动**、文本哨兵照样命中，
+    # 整页却回退成 `!!v` —— 只有「真跑渲染循环」那一层判据能抓到。
+    ("设置页渲染入口整句换回 `!!v`（B10 盲区）",
+     lambda h: h.replace(
+         'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);',
+         'if(ty==="b") el.checked = !!v;'),
+     "函数本体没动、文本哨兵照样命中 → 渲染入口的行为判据必须红"),
 ]
+
+#: 渲染入口那一行的原文（变异与阳性对照共用；改实现时这里跟着改，改不动就会红）
+_RENDER_LINE = 'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);'
 
 
 def part_two(node: str) -> None:
     print("\n" + "=" * 74)
-    print("② 判据有牙：五种变异必须各自报红，等价改写必须照样绿（阳性对照）")
+    print("② 判据有牙：六种变异必须各自报红，等价改写必须照样绿（阳性对照）")
     print("=" * 74)
     html = PAGE.read_text(encoding="utf-8")
     for name, mutate, why in MUTATIONS:
@@ -314,6 +462,13 @@ def part_two(node: str) -> None:
                         "  if(v === null || v === undefined) return dft ? true : false;")
     check("阳性对照：等价改写（`!!dft` → 三元）照样绿", same != html and audit(same, node) == [],
           str(audit(same, node)))
+    # 阳性对照 2（第八轮 B10）：渲染入口的等价改写（加括号 / 换 Boolean(dft)）不许被误判 ——
+    # 证明这一层判的是**行为**，不是那一行的字面。
+    same2 = html.replace(
+        _RENDER_LINE,
+        'if(ty==="b"){ el.checked = (v === undefined || v === null) ? Boolean(dft) : parseCfgBool(v, dft); }')
+    check("阳性对照：渲染入口等价改写（括号 / Boolean(dft)）照样绿",
+          same2 != html and audit(same2, node) == [], str(audit(same2, node)))
 
 
 def main() -> int:

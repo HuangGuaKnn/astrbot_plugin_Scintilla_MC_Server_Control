@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.24.8 判据变异凭据：22 处关键边界逐条翻错，看专项用例会不会红。
+"""v0.24.8 判据变异凭据：24 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 ------------------
@@ -249,6 +249,23 @@ CASES = [
         "    return False  # 变异：根目录不再认取证产物",
         "tests/test_v0248_untracked_forensics.py",
         "门禁不再认根目录的取证产物 → 新用例必须发现「未跟踪的取证日志会被放行」",
+    ),
+    # ---------------- 第八轮（GPT 第七轮复核 B10 / B9 的靶子） ----------------
+    Case(
+        "M23", "pages/mc_control/index.html",
+        'if(ty==="b") el.checked = (v===undefined||v===null) ? !!dft : parseCfgBool(v, dft);',
+        'if(ty==="b") el.checked = !!v;  // 变异：整页回退成 !!v',
+        "tests/test_v0248_same_source_bool.py",
+        "设置页渲染入口整句换回 !!v → 新渲染判据必须发现「开关画错 53/122 格」"
+        "（函数本体没动、文本哨兵也照样命中，只有这一层能抓）",
+    ),
+    Case(
+        "M24", "run_release_verify.py",
+        "    return sorted(n for n in files\n"
+        "                  if is_forensic_artifact(n) and n not in ARCHIVE_FORENSIC_ALLOW)",
+        "    return []  # 变异：发布包不再看已跟踪的取证产物",
+        "tests/test_v0248_untracked_forensics.py",
+        "发布包不再看已跟踪取证产物 → 第五节必须发现「误提交的探针跟着进包了」",
     ),
 ]
 
