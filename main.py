@@ -1171,7 +1171,7 @@ class McControlPlugin(Star):
                 break
         if not delivered:
             # v0.24.8（2026-10-21 真机）：配置里的播报目标可能是**早就失效的旧会话**
-            # （真机实测：`Pirika:FriendMessage:1` / `Pirika:GroupMessage:72`），
+            # （真机实测：某平台下线的私聊 / 群聊会话标识，形如 `<平台>:FriendMessage:1`），
             # 平台没连接时只留一条 WARN —— 用户那边什么都收不到，还以为播报坏了。
             # 兜底：把消息送到「最近一次跟本插件说过话的会话」（一定活着 ——
             # 不然这条事件根本不会产生），并明说这是回退。
