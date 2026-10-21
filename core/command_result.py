@@ -331,6 +331,12 @@ ANCHORED_SUCCESS_PATTERNS: dict[str, tuple[str, ...]] = {
         r"^value of attribute .+ is ",
         r"^base value of attribute .+ is ",
     ),
+    # -- 2026-10-21 真机（paper-1.21.11）：Paper 的 `/tps` 回执 --
+    #   原样回包：`§6TPS from last 1m, 5m, 15m: §a20.0§r, §a20.0§r, §a20.0`
+    #   带颜色码、且不是原版命令（原版没有 /tps）→ 原先一律落「已执行·未确认」。
+    #   只认前缀（颜色码与数值都不参与），且只影响**置信度**（未确认 → 成功），
+    #   不参与任何安全判定（原版回 Unknown command 时走不到这里）。
+    "tps": (r"tps from last\b",),
 }
 
 _ANCHORED_SUCCESS_RES: dict[str, tuple[re.Pattern, ...]] = {

@@ -113,6 +113,15 @@ def main() -> None:
     r = cls("time set day", "Set the time to 1000")
     check("time 锚定不受影响", r.status == "success", f"{r.status}")
 
+    # ---- 2026-10-21 真机（paper-1.21.11）：Paper 的 /tps 回执 ----
+    # 真实回包带颜色码：§6TPS from last 1m, 5m, 15m: §a20.0§r, §a20.0§r, §a20.0
+    print("---- 六、Paper /tps（真机原样回包）----")
+    r = cls("tps", "§6TPS from last 1m, 5m, 15m: §a20.0§r, §a20.0§r, §a20.0")
+    check("★Paper /tps 回执 → success（原先落「未确认」）",
+          r.status == "success", f"{r.status}/{r.confidence}")
+    r = cls("tps", "Unknown command. Try /help for a list of commands")
+    check("反面：原版没有 /tps → 不得是 success", r.status != "success", f"{r.status}")
+
     _source_scan()
     _summary()
 
