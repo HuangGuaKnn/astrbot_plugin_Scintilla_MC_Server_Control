@@ -193,6 +193,29 @@ class AsyncRcon:
     def connected(self) -> bool:
         return self._connected
 
+    def _peer_closed(self) -> bool:
+        """对端是不是已经把连接关了 —— **只看本地状态，不发包**。
+
+        v0.24.8（2026-10-21 真机 · 1.7.10-forge）：空闲一段时间后服务端会悄悄关掉 RCON，
+        而本实例仍标记「已连接」。下一次命令就会在读取阶段撞上
+        ``RCON 读取失败: 0 bytes read on a total of 4 expected bytes`` ——
+        用户看到的是「隔半天第一次使唤就先报一次错」。
+
+        ``StreamReader.at_eof()`` 由 asyncio 在对端 FIN 到达时置位，读的是内存里的标志；
+        ``StreamWriter.is_closing()`` 同理。两者都不产生协议流量 ——
+        所以这里**不是**「重发命令」，只是「发之前先确认这条管道还活着」。
+
+        判定本身出错时按「需要重建」处理（fail-closed）：重建连接比撞一次读失败便宜。
+        """
+        if not self._connected or self._writer is None or self._reader is None:
+            return True
+        try:
+            if self._writer.is_closing():
+                return True
+            return bool(self._reader.at_eof())
+        except Exception:  # noqa: BLE001
+            return True
+
     def _next_id(self) -> int:
         self._req_id += 1
         return self._req_id
@@ -331,6 +354,12 @@ class AsyncRcon:
 
     async def _command_locked(self, command: str, timeout: float | None = None) -> str:
         if not self._connected or self._writer is None or self._reader is None:
+            await self.connect()
+        elif self._peer_closed():
+            # v0.24.8（2026-10-21 真机 · 1.7.10）：空闲后服务端会悄悄关掉 RCON 连接，
+            # 而本实例还记着「已连接」—— 下一次命令就撞「0 bytes read」。
+            # 发送前先看本地状态，关了就先重建（不重发任何命令，不碰幂等性问题）。
+            self._close_socket()
             await self.connect()
 
         # v0.22.5（复审 P2 整改）：本条命令的边界状态**从「未确认」起算**。
