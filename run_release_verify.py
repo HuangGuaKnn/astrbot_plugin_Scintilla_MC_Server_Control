@@ -241,7 +241,7 @@ def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
     `deep=True`（发布包那条用，第九轮复核 P2-1）：**任意层级**只看形状。
     归档是「发出去的东西」，`docs/evidence.log` / `tools/_probe.py` 这种形状
     一样不该进包 —— 只看一层就会漏掉它们。调用方叠白名单（见
-    `ARCHIVE_FORENSIC_ALLOW` / `ARCHIVE_FORENSIC_ALLOW_PREFIXES`）。
+    `ARCHIVE_FORENSIC_ALLOW_PATHS` / `ARCHIVE_FORENSIC_ALLOW_PATTERNS`）。
     """
     parts = [x for x in rel.replace("\\", "/").split("/") if x]
     if not parts:
@@ -259,12 +259,21 @@ def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
     return name.startswith("_") or name.lower().endswith(FORENSIC_SUFFIXES)
 
 
-#: 归档里「形状像取证产物、但**本来就该随包**」的**文件名**（任意层级都放行）。
+#: 归档里「形状像取证产物、但**路径本身就合法**」的文件 —— 按**完整路径**放行，不按文件名。
 #: 白名单必须显式列出：新增一个长成这种形状的正常文件，要在这里登记 ——
 #: 也就是一个人必须过一眼的决定点。
-#: （`_conf_schema.json` / `__init__.py` / `requirements.txt` 三个都是本仓库真实存在的：
-#:  前两个以 `_` 开头、第三个是 `.txt`，形状命中取证物，但用户包里必须有它们。）
-ARCHIVE_FORENSIC_ALLOW = {"_conf_schema.json", "__init__.py", "requirements.txt"}
+#:
+#: 第十二轮（GPT 第十一轮复核的最后一条收紧）：上一版按 **basename** 放行，于是
+#: `docs/_conf_schema.json` / `tools/requirements.txt` / `docs/__init__.py` 也会被放过 ——
+#: 那不是「仓库现有合法路径」，是「任何目录里叫这个名字的东西」。现在只认**这一份清单里的路径**。
+#: （清单与仓库现状对齐：根目录的 `_conf_schema.json` / `requirements.txt` / `__init__.py`，
+#:  以及 `core/__init__.py` —— 新增包目录时**必须**回来加一行，否则门禁会红。）
+ARCHIVE_FORENSIC_ALLOW_PATHS = frozenset({
+    "_conf_schema.json",
+    "requirements.txt",
+    "__init__.py",
+    "core/__init__.py",
+})
 
 #: 归档里「形状像取证产物、但**命名本身就说明它是运行数据表**」的规则（第十一轮复核的严格化）。
 #: 第十轮把整片放行收窄到了两个目录，但目录内**整段放行**仍会放过
@@ -292,13 +301,17 @@ def check_archive_forensics(files: list[str]) -> list[str]:
     第十一轮（GPT 第十轮复核的严格化建议）：命名规则白名单从「整目录前缀」改成
     「运行数据表的**命名形状**」—— 目录内整段放行会放过 `data/legacy_items/_probe.json`
     与 `data/legacy_registry/_debug.log`，现在这两个也会被抓住。
+
+    第十二轮（GPT 第十一轮复核）：路径白名单从 **basename** 改成**完整路径** ——
+    `docs/_conf_schema.json` / `tools/requirements.txt` / `docs/__init__.py` 这类「名字对、位置不对」
+    的现在也会被抓。
     """
     bad: list[str] = []
     for n in files:
         norm = n.replace("\\", "/")
         if not is_forensic_artifact(norm, deep=True):
             continue
-        if norm.rsplit("/", 1)[-1] in ARCHIVE_FORENSIC_ALLOW:
+        if norm in ARCHIVE_FORENSIC_ALLOW_PATHS:
             continue
         if any(p.match(norm) for p in ARCHIVE_FORENSIC_ALLOW_PATTERNS):
             continue
@@ -559,7 +572,7 @@ def check_export_ignore(strict: bool = False) -> list:
     if arch_forensics:
         print(f"[FAIL] 发布包里混进取证产物（已提交进仓库的那种）：{arch_forensics[:6]}"
               + (f" …共 {len(arch_forensics)} 个" if len(arch_forensics) > 6 else "")
-              + " —— 取证产物必须写到仓库外；确实该随包的文件请登记到 ARCHIVE_FORENSIC_ALLOW")
+              + " —— 取证产物必须写到仓库外；确实该随包的文件请登记到 ARCHIVE_FORENSIC_ALLOW_PATHS")
         out.append("发布包卫生：归档里混进取证产物")
     if missing:
         print(f"[FAIL] 发布包里少了用户要的东西：{missing}")

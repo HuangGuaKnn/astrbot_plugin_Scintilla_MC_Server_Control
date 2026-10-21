@@ -259,6 +259,20 @@
   `compileall` 已足够覆盖 `from __future__` 插入位置这类错误，不再加重复守卫。
 - **仍未做**：真实 Minecraft 服务端回归（按约定这批修完后一起做）、远端 Actions、tag 与 Release。
 
+### 第十二轮（GPT 第十一轮复核的最后一条收紧）
+
+> 第十一轮复核结论是「主要改动已通过，确实接近收尾」，另提一条**可选**收紧：
+> 三个普通文件白名单按 **basename** 放行，于是 `docs/_conf_schema.json`、`tools/requirements.txt`、
+> `docs/__init__.py` 这类「名字对、位置不对」的也会被放过。
+
+- **路径白名单取代文件名白名单**（`run_release_verify.py`）：`ARCHIVE_FORENSIC_ALLOW_PATHS`
+  只认四条真实路径 —— 根目录 `_conf_schema.json` / `requirements.txt` / `__init__.py` + `core/__init__.py`。
+  名字对、位置不对的一律按取证形状判；新增包目录时必须回来加一行（否则门禁会红，这就是决定点）。
+  用例 24 → **26 项**（新增「名字对、位置不对的要抓」与「白名单里不许有已经不存在的路径」）；
+  变异 **M28**（退回 basename）实测 KILLED，总数 **28**。
+- **仍未做**：真实 Minecraft 服务端回归、远端 Actions、`v0.24.8` tag 与 Release。
+
+
 
 
 

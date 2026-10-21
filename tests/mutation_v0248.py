@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.24.8 判据变异凭据：27 处关键边界逐条翻错，看专项用例会不会红。
+"""v0.24.8 判据变异凭据：28 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 ------------------
@@ -296,6 +296,14 @@ CASES = [
         '    re.compile(r"^data/legacy_registry/items_\\d+(?:\\.\\d+)*\\.json$"),',
         "tests/test_v0248_untracked_forensics.py",
         "运行数据目录整片放行 → 第五节必须发现「data/_probe.json 与目录内的 _probe.json 都溜过去」",
+    ),
+    # ---------------- 第十二轮（GPT 第十一轮复核的最后一条收紧） ----------------
+    Case(
+        "M28", "run_release_verify.py",
+        "        if norm in ARCHIVE_FORENSIC_ALLOW_PATHS:",
+        '        if norm.rsplit("/", 1)[-1] in ARCHIVE_FORENSIC_ALLOW_PATHS:  # 变异：退回 basename',
+        "tests/test_v0248_untracked_forensics.py",
+        '路径白名单退回 basename → 第五节必须发现「docs/_conf_schema.json / tools/requirements.txt 溜过去」',
     ),
 ]
 

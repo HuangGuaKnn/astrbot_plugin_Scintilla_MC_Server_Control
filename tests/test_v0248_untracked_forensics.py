@@ -25,6 +25,8 @@
 所以第五节改成对**归档清单**再问一遍同一个形状口径（`check_archive_forensics`），
 外加白名单 `ARCHIVE_FORENSIC_ALLOW`（`_conf_schema.json` / `__init__.py` / `requirements.txt`
 是合法文件但形状像取证物，必须显式登记）。「先误提交、后发布」这条路，只有这层堵得上。
+（第十二轮之后：这份白名单已从 **basename** 改成**完整路径** `ARCHIVE_FORENSIC_ALLOW_PATHS`，
+见下面「第十二轮再收」一节。）
 
 第九轮再补（GPT 第八轮复核 P2-1）
 ================================
@@ -32,6 +34,16 @@
 `docs/evidence.log` / `tools/_probe.py` 这种**同样不该进包**的形状漏了。
 现在 `is_forensic_artifact(..., deep=True)` 按**任意层级**只看形状，代价用两张显式白名单抵掉：
 文件名白名单（`__init__.py` 这类任意层级都合法）+ 目录前缀白名单（`data/`、`docs/images/`）。
+
+第十二轮再收（GPT 第十一轮复核）
+================================
+上面那两张白名单先后被两次复核收窄，现在是：
+
+* **路径**白名单 `ARCHIVE_FORENSIC_ALLOW_PATHS`：根目录 `_conf_schema.json` / `requirements.txt` /
+  `__init__.py` + `core/__init__.py`（**不再按 basename**：`docs/_conf_schema.json`、
+  `tools/requirements.txt`、`docs/__init__.py` 都会被抓住）；
+* **命名形状**白名单 `ARCHIVE_FORENSIC_ALLOW_PATTERNS`：只放行世代运行表的命名
+  （`data/legacy_items/<版本>.json`、`data/legacy_registry/items_<版本>.json`）。
 工作区那条**仍然**只看一层：那里 `data/` 天天在动，扫深了会把正常开发流整个拦住。
 
 运行：
@@ -266,6 +278,13 @@ def part_five() -> None:
                                          "data/legacy_items/1.12.2.json"])
     check("★未来新增世代（1.16.5 之类）仍按命名形状放行 —— 不用改白名单",
           future == [], str(future))
+    # ---- 第十二轮复核：路径白名单（不再按 basename 放行）----
+    wrong_place = RV.check_archive_forensics(["docs/_conf_schema.json", "tools/requirements.txt",
+                                              "docs/__init__.py", "tools/__init__.py"])
+    check("★名字对、位置不对的也要抓（docs/_conf_schema.json / tools/requirements.txt / docs/__init__.py）",
+          wrong_place == ["docs/__init__.py", "docs/_conf_schema.json",
+                          "tools/__init__.py", "tools/requirements.txt"],
+          str(wrong_place))
     check("★未跟踪那条**仍然**只看根与 tests/ 一层（别把运行资产扫进来）",
           not RV.is_forensic_artifact("data/legacy_items/1.7.10.json")
           and not RV.is_forensic_artifact("core/_debug.py")
@@ -276,6 +295,9 @@ def part_five() -> None:
     real_files = _archive_files(PLUGIN_DIR)
     real_bad = RV.check_archive_forensics(real_files)
     check(f"★真实仓库 {len(real_files)} 个文件的归档里，取证产物 0 个", real_bad == [], str(real_bad))
+    # 路径白名单必须与仓库现状对齐：留着一条已经不存在的路径，等于给未来的同名文件留了个后门
+    stale = sorted(p for p in RV.ARCHIVE_FORENSIC_ALLOW_PATHS if p not in real_files)
+    check("★路径白名单里没有「已经不存在的路径」（防止白名单变成化石）", stale == [], str(stale))
 
 
 def main() -> int:
