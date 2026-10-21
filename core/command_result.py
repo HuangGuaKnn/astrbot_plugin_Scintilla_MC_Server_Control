@@ -128,8 +128,16 @@ _UNKNOWN_COMMAND_MARKERS = (
 #: ``Gave 1 [Unknown command. Type "/help" for help.] to Steve`` 是**真成功**，
 #: 整段扫描却把它命中成错误证据，判 ``failed``（下游再把 failed 当「确定没生效」重发）。
 #: 服务端的这条提示一定独占一行行首，所以按行锚定。
+#:
+#: 2026-10-21 真机（1.14.4）：旧世代**没有** "Try /help" 那句，回执形如
+#: ``Unknown commandtps<--[HERE]``（``<--[HERE]`` 是 brigadier 的位置标记）。
+#: 只认带 ``help`` 的形态时，1.13–1.15 上打错命令会被报成「已执行·未确认」而不是「失败」。
+#: 现在两种形态都认：行首 ``unknown command`` **且**同行为 ``help`` 或 ``<--[HERE]`` ——
+#: 两个尾巴至少有一个在，所以「物品名里带这句话」的真成功行（行首是 ``Gave``）不受影响。
 _UNKNOWN_COMMAND_LINE_RE = re.compile(
-    r'^\s*unknown command\b[^\n]*\bhelp\b', re.IGNORECASE | re.MULTILINE)
+    r"^\s*unknown command[^\n]*(?:<--\[HERE\]|\bhelp\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 #: v0.24.3（N01）：服务端**在动手之前**就拒绝的短语 —— 命中等价于
 #: 「这条命令没有产生任何副作用」，是唯一够格发「自动重试许可」的一类失败文本。

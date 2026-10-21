@@ -142,6 +142,17 @@ def matrix_cases() -> None:
           r.status == "failed" and r.retryable is False,
           f"{r.status}/{r.retryable}")
 
+    # 2026-10-21 真机（1.14.4）：旧世代的「命令不存在」回执**没有** "Try /help" 那句，
+    # 而是 `Unknown command<命令原文><--[HERE]>`（brigadier 的位置标记）。
+    # 只认带 help 的形态时，1.13–1.15 上打错命令会被报成「已执行·未确认」而不是「失败」。
+    r = classify("tps", "Unknown commandtps<--[HERE]")
+    check("★1.14.4 的 `Unknown command…<--[HERE]` → failed 且不可重试",
+          r.status == "failed" and r.retryable is False,
+          f"{r.status}/{r.retryable}/{r.reason}")
+    r = classify("frobnicate", "Unknown command. Try /help for a list of commands")
+    check("1.16+ 的 `Unknown command. Try /help…` 仍认",
+          r.status == "failed", f"{r.status}")
+
     r = classify("give", "Unknown or incomplete command, see below for error")
     check("Unknown or incomplete command → syntax_error 且可重试",
           r.status == "syntax_error" and r.retryable is True,
