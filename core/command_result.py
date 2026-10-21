@@ -253,11 +253,18 @@ MESSAGE_DELIVERY_COMMANDS = frozenset({
 })
 
 #: 服务端的「没有匹配对象」表述（1.16.5+ 英文端 / 中文端）。
+#: 2026-10-21 真机补：**1.12.2 的表述是 ``Selector '@a' found nothing``**
+#: （实测：空服上发 title/tellraw，服务器回这一句）—— 只认前面几种时，
+#: 空服广播会被报成普通成功，而不是「消息已发出、暂无接收者」。
+#: 用「found nothing」这个片段（而非绑死 ``'@a'``）：选择器可能是 @a/@p/@r/@e，
+#: 而调用方已经有两道闸门（必须是 tellraw/title 这类消息投递命令 + 命令里必须是通配选择器），
+#: 不会溢出到点名目标或模组反馈。
 _NO_RECIPIENT_MARKERS = (
     "no player was found",
     "no players were found",
     "no entity was found",
     "没有找到玩家",
+    "found nothing",
 )
 
 #: 通配选择器目标：``@a`` / ``@p`` / ``@r`` / ``@e``（含 ``@a[…]`` 带参形态）。

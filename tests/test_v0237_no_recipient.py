@@ -96,6 +96,22 @@ def main() -> None:
     r = cls('title @a title {"text":"hi"}', "")
     check("title 静默空响应同理（不冒充「无接收者」）",
           r.status == "success" and r.no_recipient is False, f"{r.status}")
+    # 2026-10-21 真机（1.12.2）：空服上 title/tellraw 的回执是
+    #   ``Selector '@a' found nothing``
+    # —— 与 1.16.5+ 的 ``No player was found`` 是同一件事的两种表述，
+    # 只认后者时这条会被报成普通成功（真机踩到）。
+    for cmd in ('title @a title {"text":"hi"}',
+                'tellraw @a {"text":"[Server] hi"}',
+                "tellraw @p hello"):
+        r = cls(cmd, "Selector '@a' found nothing")
+        check(f"★真机 1.12.2 空服回执 {cmd[:34]!r} → success/no_recipient",
+              r.status == "success" and r.no_recipient is True
+              and r.confidence == "no_recipient",
+              f"{r.status}/{r.confidence}/no_recipient={r.no_recipient}")
+    r = cls("give Steve diamond 1", "Selector '@a' found nothing")
+    check("反面：点名目标（give Steve）不因这句被温和化",
+          r.status != "success" or r.no_recipient is False,
+          f"{r.status}/{r.confidence}")
 
     print("---- 三、反面：温和化不许溢出 ----")
     cases = [
