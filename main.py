@@ -45,6 +45,8 @@ from .core.command_result import (
     STATUS_LABEL,
     CommandResult,
     classify_command_output,
+    format_daytime_line,
+    parse_daytime_reply,
 )
 from .core.item_dictionary import ItemDictionary
 from .core.legacy_items import (
@@ -2749,9 +2751,12 @@ class McControlPlugin(Star):
             return "该功能已在插件配置中停用。"
         try:
             rcon = await self._get_rcon()
-            players = await rcon.command("list")
-            day = await rcon.command("time query daytime")
-            return f"{players}\n{day}"
+            players = (await rcon.command("list")).strip()
+            # v0.24.8（2026-10-21 真机 · 1.7.10-forge）：`time query` 是 1.13+ 才有的子命令，
+            # 1.7.10 回的是用法文本 `/time <set|add> <value>` —— 直接拼出来会让状态里
+            # 多一行「像服务器抽风」的文字。现在解析不成 tick 就如实说「该版本不支持」。
+            ticks = parse_daytime_reply(await rcon.command("time query daytime"))
+            return f"{players}\n{format_daytime_line(ticks)}"
         except RconError as e:
             return f"查询失败：{e}"
 

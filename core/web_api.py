@@ -14,7 +14,7 @@ from pathlib import Path
 from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
-from .command_result import classify_command_output
+from .command_result import classify_command_output, parse_daytime_reply
 from .knowledge_base import knowledge_length_error, normalize_status
 from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
@@ -1345,7 +1345,13 @@ class McControlWebApi:
             except Exception as e:
                 info["list_error"] = str(e)
             try:
-                info["daytime"] = (await rcon.command("time query daytime")).strip()
+                ticks = parse_daytime_reply(await rcon.command("time query daytime"))
+                if ticks is None:
+                    # v0.24.8（2026-10-21 真机 · 1.7.10-forge）：`time query` 是 1.13+ 才有的子命令，
+                    # 旧版回的是用法文本 —— 不能把它当时间贴到设置页（原来正是这么干的）。
+                    info["daytime_note"] = "该服务端不支持 time query（1.13+ 才有）"
+                else:
+                    info["daytime"] = str(ticks)
             except Exception:
                 pass
             # 版本原文：原版/Forge 无 version 命令，优先从服务端文件探测。

@@ -906,6 +906,41 @@ STATUS_LABEL = {
 KNOWN_STATUSES = frozenset(STATUS_LABEL)
 
 
+# ===================== `time query daytime` 的回包（2026-10-21 真机） =====================
+#
+# `time query daytime` 是 **1.13+** 才有的子命令。1.7.10 上它回的是用法文本：
+#     `/time <set|add> <value>`
+# Paper/Spigot 之类回 `Unknown command. Try /help…`。
+# 而 `mc_server_status` 与 WebUI 的「服务器状态」卡原先**直接把它当时间贴出去** ——
+# 1.7.10 真机实测：状态里多出一行 `/time <set|add> <value>`，看着像服务器抽风。
+#
+# 现在两个入口都先过这一层：**解析不成 tick 数就当作「这个服务端没有这个能力」**，
+# 由调用方如实说「该版本不支持」，而不是把服务器的用法提示当数据。
+
+_DAYTIME_TICKS = re.compile(r"^\s*(-?\d{1,6})\s*$")
+
+
+def parse_daytime_reply(raw: str) -> int | None:
+    """把 `time query daytime` 的回包解析成 0..23999 的 tick；**解析不出返回 None**。
+
+    只有「整条回包就是一个数字」才算数 —— 用法文本、`Unknown command`、空串一律 None。
+    """
+    m = _DAYTIME_TICKS.match(str(raw or ""))
+    if not m:
+        return None
+    v = int(m.group(1))
+    return v if 0 <= v < 24000 else None
+
+
+def format_daytime_line(ticks: int | None) -> str:
+    """把 tick 数渲染成一行中文（拿不到就说清「这个版本没有这个能力」，不装懂）。"""
+    if ticks is None:
+        return "游戏内时间：该服务端不支持 time query（1.13+ 才有），已跳过"
+    hh = ((ticks // 1000) + 6) % 24          # MC 的 0 tick 是清晨 6:00
+    mm = int((ticks % 1000) * 0.06)
+    return f"游戏内时间：{ticks} tick（约 {hh:02d}:{mm:02d}）"
+
+
 def format_results(results: list[CommandResult]) -> str:
     """把结果列表渲染成可读明细（成功分支**也必须**带上，不允许丢明细）。"""
     lines = []
