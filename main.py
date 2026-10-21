@@ -463,6 +463,9 @@ class McControlPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.config = config if isinstance(config, dict) else {}
+        #: v0.24.8（2026-10-21 真机）：最近一次跟本插件交互的会话 UMO。
+        #: 播报目标全部失效时，`_send_to_targets` 回退推送到这里。
+        self._last_umo: str = ""
         # v0.14.0：配置分组索引（扁平键 → 分组名），供 _cfg 读写嵌套配置
         self._cfg_index: dict = load_cfg_group_index(
             Path(__file__).with_name(CFG_SCHEMA_FNAME)
@@ -1166,7 +1169,38 @@ class McControlPlugin(Star):
                     continue
                 delivered = True
                 break
+        if not delivered:
+            # v0.24.8（2026-10-21 真机）：配置里的播报目标可能是**早就失效的旧会话**
+            # （真机实测：`Pirika:FriendMessage:1` / `Pirika:GroupMessage:72`），
+            # 平台没连接时只留一条 WARN —— 用户那边什么都收不到，还以为播报坏了。
+            # 兜底：把消息送到「最近一次跟本插件说过话的会话」（一定活着 ——
+            # 不然这条事件根本不会产生），并明说这是回退。
+            delivered = await self._push_to_last_session(chain)
         return delivered
+
+    async def _push_to_last_session(self, chain) -> bool:
+        """所有配置目标都发不出去时，回退推送到「最近一次交互的会话」。
+
+        记录点：`_inject_permission_hint`（每个 LLM 请求都会经过）。
+        没记录 / 插件已停用 / 同样发不出去 → 返回 False（调用方照旧只留 WARN）。
+        """
+        if _is_terminated(self):
+            return False
+        umo = str(getattr(self, "_last_umo", "") or "").strip()
+        if not umo:
+            return False
+        try:
+            ok = await StarTools.send_message(umo, chain)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("消息推送失败（回退会话 %s）: %s", umo, e)
+            return False
+        if ok is False:
+            self.logger.warning("消息推送失败（回退会话无匹配平台）→ %s", umo)
+            return False
+        self.logger.info(
+            "播报目标全部失效，已回退推送到最近交互的会话：%s", umo
+        )
+        return True
 
     # ================= 配置热更新 =================
 
@@ -2378,6 +2412,15 @@ class McControlPlugin(Star):
         前缀缓存），所有注入统一走 _emit_hint → _append_user_hint；v0.23.3 起
         文案里也不再出现请求者 ID，避免 openid 之类的标识被送进模型与第三方日志。
         """
+        # v0.24.8（2026-10-21 真机）：记下「最近一次跟本插件说话的会话」。
+        # 播报目标全是失效旧会话时，`_send_to_targets` 靠它做回退 ——
+        # 这个会话一定活着（不然本轮请求根本不会发生）。
+        try:
+            _umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+            if _umo:
+                self._last_umo = _umo
+        except Exception:  # noqa: BLE001 —— 记账失败绝不影响注入
+            pass
         try:
             trigger = self._hint_trigger(event)
             if not trigger:

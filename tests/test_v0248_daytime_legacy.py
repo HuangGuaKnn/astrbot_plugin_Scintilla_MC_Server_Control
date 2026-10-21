@@ -89,10 +89,14 @@ def part_one() -> None:
 
 def part_two() -> None:
     print("\n---- 二、真数字要认（0..23999）----")
-    for raw, want in (("1000", 1000), (" 23999 ", 23999), ("0", 0), ("21000", 21000)):
+    for raw, want in (("1000", 1000), (" 23999 ", 23999), ("0", 0), ("21000", 21000),
+                      # 1.20.6 真机原样：1.13+ 原版 en_US 的形态
+                      ("The time is 593", 593), ("the time is 0", 0),
+                      ("The  time  is  23999", 23999)):
         got = parse_daytime_reply(raw)
         check(f"parse_daytime_reply({raw!r}) == {want}", got == want, repr(got))
-    out_of_range = [(r, parse_daytime_reply(r)) for r in ("24000", "-1", "999999")]
+    out_of_range = [(r, parse_daytime_reply(r)) for r in
+                    ("24000", "-1", "999999", "The time is 24000", "The time is -5")]
     check("★越界（24000 / -1 / 999999）一律 None", all(v is None for _, v in out_of_range),
           str(out_of_range))
 

@@ -918,14 +918,24 @@ KNOWN_STATUSES = frozenset(STATUS_LABEL)
 # 由调用方如实说「该版本不支持」，而不是把服务器的用法提示当数据。
 
 _DAYTIME_TICKS = re.compile(r"^\s*(-?\d{1,6})\s*$")
+#: 1.13+ 原版（en_US）的形态是 ``The time is 593`` —— 真机 1.20.6 实测。
+#: 只认裸数字会把它判成「拿不到」，反而把现代服务端误伤（2026-10-21 真机踩到）。
+_DAYTIME_PREFIX = re.compile(r"^\s*the\s+time\s+is\s+(-?\d{1,6})\s*$", re.I)
 
 
 def parse_daytime_reply(raw: str) -> int | None:
     """把 `time query daytime` 的回包解析成 0..23999 的 tick；**解析不出返回 None**。
 
-    只有「整条回包就是一个数字」才算数 —— 用法文本、`Unknown command`、空串一律 None。
+    认两种回包（都是真机抓到的原样）：
+
+    * ``593``                       —— 裸数字；
+    * ``The time is 593``           —— 1.13+ 原版 en_US（1.20.6 实测就是这个）。
+
+    其它一律 None：1.7.10 的用法文本 ``/time <set|add> <value>``、
+    Paper 的 ``Unknown command``、空串、``1000 ticks`` 这种带尾巴的都不算。
     """
-    m = _DAYTIME_TICKS.match(str(raw or ""))
+    text = str(raw or "")
+    m = _DAYTIME_TICKS.match(text) or _DAYTIME_PREFIX.match(text)
     if not m:
         return None
     v = int(m.group(1))
