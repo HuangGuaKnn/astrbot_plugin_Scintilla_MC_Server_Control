@@ -1144,10 +1144,20 @@ class McControlPlugin(Star):
         return [t]
 
     async def _send_to_targets(self, targets, chain) -> bool:
-        """向一组目标会话推送消息；自动补全平台前缀，返回是否至少成功一次。"""
+        """向一组目标会话推送消息；自动补全平台前缀，返回是否至少成功一次。
+
+        v0.24.8（2026-10-21 真机 + 设计裁定）：**不做跨会话回退**。
+        曾写过一个「全部失败就发给最近交互的会话」的兜底，被否掉了 —— 理由是真实场景：
+        同一台服务器可能有两个群，一个只收转发、一个只用命令工具；
+        转发目标挂了就把消息塞给「最近说话的会话」，等于让不该看到的人看到。
+        **消息改道比消息丢失更糟**。所以这里只把「全部失败」升级成 ERROR 日志
+        （管理员在日志里看得见、能去 WebUI 重选会话），绝不替他决定发给谁。
+        """
         delivered = False
+        attempted: list[str] = []
         for target in targets or []:
             for umo in self._target_candidates(target):
+                attempted.append(umo)
                 # v0.24.8（GPT 第三轮复核 P2）：入口检查挡不住「发送途中被停用」，
                 # 一批多目标里前几个发完、后几个照发。每次真实发送前再查一次 ——
                 # 宁可少发，也不让停用后的插件继续往会话里灌消息。
@@ -1169,38 +1179,16 @@ class McControlPlugin(Star):
                     continue
                 delivered = True
                 break
-        if not delivered:
-            # v0.24.8（2026-10-21 真机）：配置里的播报目标可能是**早就失效的旧会话**
-            # （真机实测：某平台下线的私聊 / 群聊会话标识，形如 `<平台>:FriendMessage:1`），
-            # 平台没连接时只留一条 WARN —— 用户那边什么都收不到，还以为播报坏了。
-            # 兜底：把消息送到「最近一次跟本插件说过话的会话」（一定活着 ——
-            # 不然这条事件根本不会产生），并明说这是回退。
-            delivered = await self._push_to_last_session(chain)
+        if not delivered and attempted:
+            # 全部目标都没送出去：这不是「某一条没发成」，而是**播报链路整体失效** ——
+            # 升到 ERROR 让管理员一眼看见，并给出下一步（重选会话 / 查适配器）。
+            self.logger.error(
+                "播报目标全部发送失败（%d 个目标都没送出去）：%s —— "
+                "请检查这些会话是否仍有效（对应平台适配器是否在运行），"
+                "并到 WebUI 重新选择播报会话；插件**不会**把消息改道到其它会话",
+                len(attempted), "、".join(attempted),
+            )
         return delivered
-
-    async def _push_to_last_session(self, chain) -> bool:
-        """所有配置目标都发不出去时，回退推送到「最近一次交互的会话」。
-
-        记录点：`_inject_permission_hint`（每个 LLM 请求都会经过）。
-        没记录 / 插件已停用 / 同样发不出去 → 返回 False（调用方照旧只留 WARN）。
-        """
-        if _is_terminated(self):
-            return False
-        umo = str(getattr(self, "_last_umo", "") or "").strip()
-        if not umo:
-            return False
-        try:
-            ok = await StarTools.send_message(umo, chain)
-        except Exception as e:  # noqa: BLE001
-            self.logger.warning("消息推送失败（回退会话 %s）: %s", umo, e)
-            return False
-        if ok is False:
-            self.logger.warning("消息推送失败（回退会话无匹配平台）→ %s", umo)
-            return False
-        self.logger.info(
-            "播报目标全部失效，已回退推送到最近交互的会话：%s", umo
-        )
-        return True
 
     # ================= 配置热更新 =================
 
@@ -2413,8 +2401,8 @@ class McControlPlugin(Star):
         文案里也不再出现请求者 ID，避免 openid 之类的标识被送进模型与第三方日志。
         """
         # v0.24.8（2026-10-21 真机）：记下「最近一次跟本插件说话的会话」。
-        # 播报目标全是失效旧会话时，`_send_to_targets` 靠它做回退 ——
-        # 这个会话一定活着（不然本轮请求根本不会发生）。
+        # **仅用于诊断/日志**（例如说明「谁在用它」），
+        # 绝不作为播报回退目标 —— 见 `_send_to_targets` 的说明（消息改道比消息丢失更糟）。
         try:
             _umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
             if _umo:
