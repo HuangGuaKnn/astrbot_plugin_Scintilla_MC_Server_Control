@@ -4390,6 +4390,25 @@ class McControlPlugin(Star):
 
     # ================= 整合包特化：词典工具 =================
 
+    def _dictionary_unavailable_reason(self) -> str:
+        """词典拿不到时，**按真实原因**给话 —— 不要一律甩给 server_dir。
+
+        v0.24.8（2026-10-22 真机 + 主人实测）：把「知识库」那一栏整段停用之后，
+        `mc_search_item` 报的是「请先在插件配置中填写 server_dir」—— 而 server_dir 明明填好了。
+        归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。
+        """
+        if not self._cfg_bool("dictionary_enabled", True):
+            return "物品词典已在插件配置中停用（WebUI → 插件设置 → 知识库 → 物品词典）。"
+        if self.is_remote_mode():
+            return "物品词典不可用：异地 RCON 模式下读不到服务端目录（需要 server_dir 在本机）。"
+        sd = str(self._cfg("server_dir", "") or "").strip()
+        if not sd or not Path(sd).is_dir():
+            return (
+                "物品词典未初始化：请先在插件配置中填写 server_dir"
+                "（保存设置后即刻生效，无需重载插件）。"
+            )
+        return "物品词典尚未就绪：可能正在重建或上次构建失败，请稍后重试，或到 WebUI 词典页查看状态。"
+
     @filter.llm_tool(name="mc_list_mods")
     @tolerant_tool
     async def mc_list_mods(self, event: AstrMessageEvent):
@@ -4401,7 +4420,7 @@ class McControlPlugin(Star):
         if _gate:
             return _gate
         if not self._dictionary:
-            return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
+            return self._dictionary_unavailable_reason()
         if hasattr(self._dictionary, "get_mods_snapshot"):
             mods = self._dictionary.get_mods_snapshot()
         else:
@@ -4427,7 +4446,7 @@ class McControlPlugin(Star):
         if _gate:
             return _gate
         if not self._dictionary:
-            return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
+            return self._dictionary_unavailable_reason()
         results = self._dictionary.search_items(keyword)
         if not results:
             return (
@@ -4470,7 +4489,7 @@ class McControlPlugin(Star):
         if _gate:
             return _gate
         if not self._dictionary:
-            return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
+            return self._dictionary_unavailable_reason()
         recipes = self._dictionary.get_recipes(item, direction)
         if not recipes:
             hint = "可能不是配方产物，或未在词典中收录。" if direction == "forward" else "没有找到以它为原料的配方。"
@@ -4496,7 +4515,7 @@ class McControlPlugin(Star):
         if _gate:
             return _gate
         if not self._dictionary:
-            return "物品词典未初始化：请先在插件配置中填写 server_dir（保存设置后即刻生效，无需重载插件）。"
+            return self._dictionary_unavailable_reason()
         stats = await run_blocking_or_raise(
             self._dictionary.build, timeout=DICT_BUILD_TIMEOUT, what="物品词典构建"
         )
