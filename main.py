@@ -457,6 +457,12 @@ async def _start_watcher(plugin, server_dir: str) -> bool:
     return True
 
 
+# v0.24.9：归属「词典与知识库」那一栏的工具（其余工具归「LLM 工具」那一栏）。
+# 刻意放**模块级**而不是类属性：`_tool_enabled` 会被测试替身以「裸方法 + 假 self」调用，
+# 类属性会让替身直接 AttributeError（v0.24.5 的 fail-closed 用例就是这么炸的）。
+_KNOWLEDGE_TOOLS = ("mc_search_knowledge", "mc_save_knowledge", "mc_correct_knowledge")
+
+
 class McControlPlugin(Star):
     """AstrBot Minecraft 服务器控制插件（RCON + 服务器事件转发）。"""
 
@@ -975,8 +981,54 @@ class McControlPlugin(Star):
         return written
 
 
+    def _tools_master_enabled(self) -> bool:
+        """「LLM 工具」栏级总开关（v0.24.9）。
+
+        主人 2026-10-22 实测提出：这一栏 11 个开关，想整段停用得一个个关。
+        语义分工 ——
+          * **单项开关**是 fail-closed 的那一层（`parse_bool` 读不懂 → 关）；
+          * **总开关**只是可用性闸门：`_cfg_bool` 读不懂 → 按默认（开）处理。
+            一次配置手抖不该把所有工具一起关死，而真正危险的能力在单项上仍然关着。
+        它只决定「能不能用」，**不改写**任何单项的原值 —— 重新打开后用户的选择还在。
+        """
+        return self._cfg_bool("enable_all_tools", True)
+
+    def _knowledge_master_enabled(self) -> bool:
+        """「词典与知识库」栏级总开关（v0.24.9）。语义同上，只是管另一栏。"""
+        return self._cfg_bool("enable_all_knowledge", True)
+
+    def _tool_master_off_reason(self, name: str) -> str:
+        """该工具所属那一栏的总开关若关着，返回对应回执；否则空串。"""
+        if name in _KNOWLEDGE_TOOLS:
+            if not self._knowledge_master_enabled():
+                return (
+                    "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
+                    "物品词典与知识库本次都不会被调用。"
+                )
+        elif not self._tools_master_enabled():
+            return (
+                "「LLM 工具」总开关已关闭（WebUI → 插件设置 → AI 能力 → LLM 工具开关）："
+                "所有 MC 工具本次都不会被调用。"
+            )
+        return ""
+
+    def _tool_off_reason(self, name: str) -> str:
+        """工具不可用时的回执（**区分**「被哪一栏的总开关关」与「被单项关」）。空串 = 可用。"""
+        return self._tool_master_off_reason(name) or (
+            "" if self._tool_enabled(name)
+            else "该功能已在插件配置中停用（WebUI → 插件设置 → AI 能力）。"
+        )
+
     def _tool_enabled(self, name: str) -> bool:
         """读取对应 LLM 工具的开关配置（配置变更即时生效）。"""
+        # v0.24.9：先看**所属那一栏**的总开关 —— 关了就一律不可用（单项值原样保留，重开即恢复）。
+        # 这里直接读配置键（不调兄弟方法）：测试与降级装配里常只伪造 `_cfg_bool` / `_cfg`，
+        # 少一层跨方法依赖就少一处崩点。
+        if name in _KNOWLEDGE_TOOLS:
+            if not self._cfg_bool("enable_all_knowledge", True):
+                return False
+        elif not self._cfg_bool("enable_all_tools", True):
+            return False
         # 配置可能来自旧版/手工编辑的 JSON；不能用 ``bool(raw)``，否则
         # ``"false"`` 会变成 True，导致用户明确关闭的工具重新暴露给 LLM。
         # 无法解析时按关闭处理，保证工具开关 fail-closed。
@@ -2659,6 +2711,10 @@ class McControlPlugin(Star):
             request(string): 完整的任务请求描述，例如「给 Steve 满配一把 M4A1 步枪并附上弹药」「把服务器天气设为雷雨」
             player(string): 可选。任务目标玩家名，留空则按请求内容推断
         """
+        _off = self._tool_master_off_reason("mc_workflow")
+        if _off:
+            # v0.24.9：总开关关着时，下面那条「改用具体工具」的指引会误导（那些工具也被同一栏关着）
+            return _off
         if not self._tool_enabled("mc_workflow"):
             return (
                 "【mc_workflow 已停用】本插件配置里已关闭 mc_workflow 工具，请**不要**再调用本工具。"
@@ -2695,8 +2751,9 @@ class McControlPlugin(Star):
             command(string): 要执行的 Minecraft 命令（不含开头的斜杠），例如 "time set noon"、"give Steve netherite_sword 1"
             feedback(string): 可选。展示给游戏内玩家的提示文案（插件自动加「[署名]」，署名取自「反馈署名」配置）。需贴合用户原话，例如用户说「给我发一把锋利5的下界合金剑」时填「已给 Steve 发了一把锋利5的下界合金剑」；无法生成时留空
         """
-        if not self._tool_enabled("mc_execute_command"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_execute_command")
+        if _off:
+            return _off
         # v0.23.5：入参粗筛，放在权限闸门之前（省一次无谓的闸门与 RCON 往返）
         too_long = self._too_long(command, self.MAX_COMMAND_CHARS, "命令")
         if too_long:
@@ -2764,8 +2821,9 @@ class McControlPlugin(Star):
     async def mc_list_players(self, event: AstrMessageEvent):
         """查询 Minecraft 服务器当前在线的玩家列表与人数。
         """
-        if not self._tool_enabled("mc_list_players"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_list_players")
+        if _off:
+            return _off
         try:
             rcon = await self._get_rcon()
             out = await rcon.command("list")
@@ -2778,8 +2836,9 @@ class McControlPlugin(Star):
     async def mc_server_status(self, event: AstrMessageEvent):
         """查询 Minecraft 服务器的运行状态：版本、在线人数、游戏内时间等。
         """
-        if not self._tool_enabled("mc_server_status"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_server_status")
+        if _off:
+            return _off
         try:
             rcon = await self._get_rcon()
             players = (await rcon.command("list")).strip()
@@ -2804,8 +2863,9 @@ class McControlPlugin(Star):
                 chat 模式会固定加上 `[Server]` 前缀（对全服公开说话，不署任务反馈的名字）；
                 title / actionbar 不加任何前缀
         """
-        if not self._tool_enabled("mc_broadcast"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_broadcast")
+        if _off:
+            return _off
         if not str(message or "").strip():
             return "请提供要广播的内容。"
         too_long = self._too_long(message, self.MAX_MESSAGE_CHARS, "广播内容")
@@ -2875,8 +2935,9 @@ class McControlPlugin(Star):
             count(number): 数量，默认 1
             feedback(string): 可选。展示给游戏内玩家的提示文案（插件自动加「[署名]」）。需贴合用户原话，例如「已给 Steve 发了一把锋利5的下界合金剑」；无法生成时留空
         """
-        if not self._tool_enabled("mc_give_item"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_give_item")
+        if _off:
+            return _off
         if not item or not str(item).strip():
             return "请指定要发放的物品ID。"
         try:
@@ -4301,8 +4362,9 @@ class McControlPlugin(Star):
             player(string): 玩家名
             reason(string): 踢出原因，可留空
         """
-        if not self._tool_enabled("mc_kick"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_kick")
+        if _off:
+            return _off
         denied = self._admin_gate(event, tool="mc_kick", action="踢人")
         if denied:
             return denied
@@ -4332,8 +4394,9 @@ class McControlPlugin(Star):
             player(string): 玩家名
             reason(string): 封禁原因，可留空
         """
-        if not self._tool_enabled("mc_ban"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_ban")
+        if _off:
+            return _off
         denied = self._admin_gate(event, tool="mc_ban", action="封禁")
         if denied:
             return denied
@@ -4359,8 +4422,9 @@ class McControlPlugin(Star):
         """
         # v0.24.6（P2）：本工具的配置开关此前**空转** —— 关掉它照样能连能查，
         # 与其它工具的口径不一致（其余工具进门第一句都是 _tool_enabled）。
-        if not self._tool_enabled("mc_connection_status"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_connection_status")
+        if _off:
+            return _off
         try:
             rcon = await self._get_rcon()
             out = await rcon.command("list")
@@ -4381,8 +4445,9 @@ class McControlPlugin(Star):
         Args:
             plugin_name(string): 可选。插件名或目录名，例如 astrbot_plugin_Scintilla_MC_Server_Control；留空 = 全量重载所有插件
         """
-        if not self._tool_enabled("mc_reload_plugin"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_reload_plugin")
+        if _off:
+            return _off
         denied = self._admin_gate(event, tool="mc_reload_plugin", action="热重载")
         if denied:
             return denied
@@ -4397,6 +4462,11 @@ class McControlPlugin(Star):
         `mc_search_item` 报的是「请先在插件配置中填写 server_dir」—— 而 server_dir 明明填好了。
         归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。
         """
+        if not self._knowledge_master_enabled():
+            return (
+                "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
+                "物品词典与知识库本次都不会被调用。"
+            )
         if not self._cfg_bool("dictionary_enabled", True):
             return "物品词典已在插件配置中停用（WebUI → 插件设置 → 知识库 → 物品词典）。"
         if self.is_remote_mode():
@@ -4414,8 +4484,9 @@ class McControlPlugin(Star):
     async def mc_list_mods(self, event: AstrMessageEvent):
         """列出 Minecraft 服务器当前安装的全部 Mod（ID 与显示名）。
         """
-        if not self._tool_enabled("mc_list_mods"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_list_mods")
+        if _off:
+            return _off
         _gate = self._local_gate("Mod 列表查询（mc_list_mods）", "服务端 mods/ 目录")
         if _gate:
             return _gate
@@ -4440,8 +4511,9 @@ class McControlPlugin(Star):
         Args:
             keyword(string): 搜索关键词，例如 "黄铜锭"、"brass"、"create:brass_ingot"
         """
-        if not self._tool_enabled("mc_search_item"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_search_item")
+        if _off:
+            return _off
         _gate = self._local_gate("物品 ID 搜索（mc_search_item）", "服务端 mods/*.jar")
         if _gate:
             return _gate
@@ -4483,8 +4555,9 @@ class McControlPlugin(Star):
             item(string): 物品 ID，例如 "create:brass_ingot"
             direction(string): forward=查询该物品的合成方法（默认）；reverse=查询该物品能作为原料合成什么
         """
-        if not self._tool_enabled("mc_get_recipes"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_get_recipes")
+        if _off:
+            return _off
         _gate = self._local_gate("配方查询（mc_get_recipes）", "服务端 mods/*.jar")
         if _gate:
             return _gate
@@ -4537,8 +4610,9 @@ class McControlPlugin(Star):
         Args:
             topic(string): 检索主题，例如 "tac 枪械 附件 nbt"、"黄铜锭"、"FTB Quests 村民任务"
         """
-        if not self._tool_enabled("mc_search_knowledge"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_search_knowledge")
+        if _off:
+            return _off
         _gate = self._local_gate("知识库检索（mc_search_knowledge）", "服务端 mods/ 目录（用于算整合包指纹）")
         if _gate:
             return _gate
@@ -4586,8 +4660,9 @@ class McControlPlugin(Star):
             topic(string): 知识主题，例如 "tac 满改 sig_mcx_spear nbt 方案"
             content(string): 知识内容（含物品ID、NBT格式、命令示例、注意事项等关键细节）
         """
-        if not self._tool_enabled("mc_save_knowledge"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_save_knowledge")
+        if _off:
+            return _off
         denied = self._admin_gate(event, tool="mc_save_knowledge", action="沉淀知识")
         if denied:
             return denied
@@ -4640,8 +4715,9 @@ class McControlPlugin(Star):
             topic(string): 要纠正的知识主题，例如 "tac 满改 sig_mcx_spear nbt 方案"
             correction(string): 修正后的正确知识内容
         """
-        if not self._tool_enabled("mc_correct_knowledge"):
-            return "该功能已在插件配置中停用。"
+        _off = self._tool_off_reason("mc_correct_knowledge")
+        if _off:
+            return _off
         denied = self._admin_gate(event, tool="mc_correct_knowledge", action="纠正知识")
         if denied:
             return denied

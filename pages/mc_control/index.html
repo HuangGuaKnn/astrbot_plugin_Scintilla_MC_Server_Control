@@ -120,6 +120,8 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 
 /* ===== 卡片 ===== */
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px}
+/* v0.24.9：两栏各自的「总开关」行 —— 左侧色带区分于下面的单项开关 */
+.master-row{border-left:3px solid var(--violet);padding-left:10px;margin:2px 0 8px}
 /* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
@@ -1547,6 +1549,12 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div class="grid g2">
     <div class="card">
       <h3><span class="dot" style="background:var(--violet)"></span>LLM 工具开关</h3>
+      <!-- v0.24.9（主人 2026-10-22 实测提出）：**每栏各一个**总开关。关掉它 = 这一栏整段停用；
+           它不改写下面的单项开关，重新打开后各自的选择还在。 -->
+      <div class="sw-row master-row">
+        <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后：下面每个工具立即不可用（单项选择会原样保留，重开即恢复）</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_tools_master"><span class="sl"></span></label>
+      </div>
       <div class="sw-grid" style="margin-top:2px">
         <div class="sw-row"><div class="sw-t"><b>万能命令执行</b><span>mc_execute_command</span></div><label class="sw"><input type="checkbox" id="cfg_tool_exec"><span class="sl"></span></label></div>
         <div class="sw-row"><div class="sw-t"><b>在线玩家查询</b><span>mc_list_players</span></div><label class="sw"><input type="checkbox" id="cfg_tool_players"><span class="sl"></span></label></div>
@@ -1564,6 +1572,11 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     </div>
     <div class="card kb-card">
       <h3><span class="dot" style="background:var(--violet)"></span>词典与知识库</h3>
+      <!-- v0.24.9：这一栏自己的总开关（与左栏各自独立） -->
+      <div class="sw-row master-row">
+        <div class="sw-t"><b>词典与知识库总开关</b><span>关闭后：物品词典、知识库与三个知识工具立即不可用（单项选择会原样保留）</span></div>
+        <label class="sw"><input type="checkbox" id="cfg_kb_master"><span class="sl"></span></label>
+      </div>
       <!-- v0.21.44：这张卡原先靠 5 段长 hint 堆到 ≈1260px，同排左卡被撑成 814px 空档。
            现在「开关 / 下拉」留在外面、原理与实测数据收进底部折叠区（默认收起），
            7 个开关收成两列两组 —— 默认一眼只看得到「要开哪个」，想看理由再点开。 -->
@@ -2886,6 +2899,9 @@ const CFG_FIELDS = [
   ["cfg_cmd_banlist","enable_banlist_command","b",true],
   ["cfg_cmd_help","enable_help_command","b",true],
   ["cfg_cmd_title","enable_title_command","b",true],
+  // AI 能力 · 两栏各自的栏级总开关（v0.24.9）—— 只掐可用性，不改写下面的单项
+  ["cfg_tools_master","enable_all_tools","b",true],
+  ["cfg_kb_master","enable_all_knowledge","b",true],
   // AI 能力 · LLM 工具
   ["cfg_tool_exec","enable_mc_execute_command","b",true],
   ["cfg_tool_players","enable_mc_list_players","b",true],

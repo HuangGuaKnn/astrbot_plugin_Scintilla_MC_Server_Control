@@ -341,6 +341,12 @@
     "hint": "控制 AI（LLM）能调用哪些 Minecraft 工具；关闭后对应能力立即不可用。",
     "type": "object",
     "items": {
+      "enable_all_tools": {
+        "description": "LLM 工具总开关",
+        "hint": "关掉它 = 这一栏（LLM 工具）整段停用：下面每个工具开关对应的能力立即不可用。它**不改写**下面的单项开关 —— 重新打开后，你原来的勾选还在。语义分工：单项开关是 fail-closed 的那一层（配置读不懂时按关闭处理）；总开关读不懂时按开启处理，避免一次配置手抖把工具一起关死。",
+        "type": "bool",
+        "default": true
+      },
       "enable_mc_execute_command": {
         "description": "万能命令执行",
         "hint": "mc_execute_command：执行任意一条服务器命令",
@@ -420,6 +426,12 @@
     "hint": "整合包特化能力：扫描 mods 构建中英物品词典，并按整合包指纹隔离沉淀知识（换整合包不再自动切换/继承，由用户在 WebUI 知识库页手动指定预设）。",
     "type": "object",
     "items": {
+      "enable_all_knowledge": {
+        "description": "词典与知识库总开关",
+        "hint": "关掉它 = 这一栏（词典与知识库）整段停用：物品词典、学习型知识库与三个知识工具（检索 / 沉淀 / 纠错）立即不可用，依赖词典的物品查询也会如实告知被关。它**不改写**下面的单项开关 —— 重新打开后，你原来的勾选还在。同样：单项 fail-closed，总开关读不懂按开启处理。",
+        "type": "bool",
+        "default": true
+      },
       "dictionary_enabled": {
         "description": "物品词典",
         "hint": "启动时扫描 mods 目录构建中英文物品词典；关闭后物品搜索与配方查询不可用",

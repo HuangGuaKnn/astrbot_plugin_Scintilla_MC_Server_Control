@@ -140,6 +140,10 @@ class FakeSelf:
     def _tool_enabled(self, name):
         return bool(self._enabled.get(name, True))
 
+    def _tool_off_reason(self, name):
+        """v0.24.9：替身版回执（真实实现见 main.McControlPlugin._tool_off_reason）。"""
+        return "" if self._tool_enabled(name) else "该功能已在插件配置中停用。"
+
     def _is_admin(self, event):
         return bool(self._admins) and str(event.get_sender_id()) in self._admins
 
