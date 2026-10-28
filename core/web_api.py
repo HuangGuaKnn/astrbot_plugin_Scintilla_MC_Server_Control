@@ -449,7 +449,7 @@ class McControlWebApi:
 
     # ---- 设置项分类型白名单（与 _conf_schema.json 全量对齐） ----
     BOOL_SETTING_KEYS = (
-        # v0.24.9：两栏各自的栏级总开关（主人 2026-10-22 实测提出）。漏登记的话前端每次都提交、
+        # v0.24.9：两栏各自的栏级总开关（用户实测反馈 2026-10-22）。漏登记的话前端每次都提交、
         # 后端每次都判成「不认识」→ 界面长期误报「后端未接受」，而总开关其实没保存。
         # test_settings_whitelist_contract.py 会把「前端提交键 ⊆ 后端接受键」钉死。
         "enable_all_tools", "enable_all_knowledge",

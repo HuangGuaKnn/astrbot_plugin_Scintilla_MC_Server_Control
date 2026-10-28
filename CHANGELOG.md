@@ -24,6 +24,12 @@
   知识库总开关关时回「「词典与知识库」总开关已关闭（… → 词典与知识库）…」，
   单项关闭时仍是「该功能已在插件配置中停用（…）。」
 - 设置页两栏各加一条 `.master-row`（左侧紫色色带），与下面的单项开关在视觉上分层。
+- **嵌入 / 重排模型下拉跟随各自开关失效**（用户实测反馈（2026-10-28））：「语义增强检索」关着时，
+  「嵌入模型（语义通道）」下拉**变灰且点不开**；「重排序精排」关着时同理锁住「重排序模型（精排）」。
+  两个开关**各管各的**，开一个不影响另一个。
+  实现要点：本页下拉是**自定义卷帘控件**（`.select-pop` 包住视觉隐藏的原生 `<select>`），
+  只设 `select.disabled` 用户根本看不出来 —— 所以新增 `lockAnimatedSelect()`：
+  同时锁 wrapper（`.is-locked`，`setOpen()` 见到它就不展开）+ 原生 disabled + `aria-disabled` + 视觉降级。
 
 ### 测试
 
@@ -31,6 +37,10 @@
   词典归因、只读不改写、总开关 fail-open / 单项 fail-closed、页面控件与 `CFG_FIELDS`、
   后端保存白名单（漏登记会让前端保存被判「未接受」，这条由 `test_settings_whitelist_contract` 兜底）。
 - `tests/test_tool_guard.py` 的替身补 `_tool_off_reason`（守卫改走统一回执后需要）。
+- 新增 `tests/ui_kb_dependent_check.py`（真浏览器 · 硬门禁）：开关关 → 各自下拉 `disabled` / `.is-locked` /
+  `aria-disabled` / trigger 透明度 < 1 / `cursor:not-allowed`，并且**强行点击也不展开**
+  （`.is-open` 仍不存在）；只开一个时另一个仍锁着；关回去立刻再锁。已登记进 `tests/_ui_manifest.py` 的 HARD
+  （未进 CI_OK —— 还没在 CI 上实测过，按「默认不进 CI」的口径先只在本机跑）。
 
 ## [v0.24.8] - 2026-10-19
 

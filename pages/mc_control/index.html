@@ -132,6 +132,18 @@ main{padding:20px;max-width:1280px;margin:0 auto}
   border-radius:6px;
   background:var(--sub);
 }
+/* v0.24.9：语义增强 / 重排序没开时，各自那组模型下拉跟着失效（变灰 + 不可交互）。
+   用 opacity 而不是换色：深 / 浅两套主题都成立，也不用为 disabled 再写一套配色。 */
+.kb-prov.is-off>label,
+.kb-prov.is-off>.hint{opacity:.45}
+/* 真身是自定义下拉：生效的是 .select-trigger（原生 select 是视觉隐藏的） */
+.kb-prov.is-off .select-pop,
+.kb-prov.is-off .select-trigger,
+.kb-prov.is-off .select-pop::after{opacity:.45}
+.kb-prov.is-off .select-trigger{cursor:not-allowed;border-color:var(--border)}
+.kb-prov.is-off .select-trigger:hover{border-color:var(--border)}
+.kb-prov .select-pop.is-locked,
+.kb-prov .select-pop.is-locked .select-trigger{cursor:not-allowed}
 /* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
@@ -1559,7 +1571,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div class="grid g2">
     <div class="card">
       <h3><span class="dot" style="background:var(--violet)"></span>LLM 工具开关</h3>
-      <!-- v0.24.9（主人 2026-10-22 实测提出）：**每栏各一个**总开关。关掉它 = 这一栏整段停用；
+      <!-- v0.24.9（用户实测反馈 2026-10-22）：**每栏各一个**总开关。关掉它 = 这一栏整段停用；
            它不改写下面的单项开关，重新打开后各自的选择还在。 -->
       <div class="sw-row master-row">
         <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后：下面每个工具立即不可用（单项选择会原样保留，重开即恢复）</span></div>
@@ -1604,13 +1616,14 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <option value="bm25">BM25 · 中文二元切分（推荐，默认）</option>
         <option value="legacy">旧版 · 中文单字匹配（兼容）</option>
       </select>
+      <!-- v0.24.9：两组的容器带 .kb-prov —— 开关关着时整组（标签 / 下拉 / 提示）一起变灰且不可交互 -->
       <div class="frow" style="gap:16px;align-items:flex-start;margin-top:12px">
-        <div>
+        <div class="kb-prov" data-kb-switch="cfg_kb_semantic">
           <label class="f" style="margin-top:0">嵌入模型 <span class="sep">（语义通道）</span></label>
           <select id="cfg_kb_embed_p"><option value="">读取中…</option></select>
           <div class="hint" id="kb_embed_p_tip"></div>
         </div>
-        <div>
+        <div class="kb-prov" data-kb-switch="cfg_kb_rerank">
           <label class="f" style="margin-top:0">重排序模型 <span class="sep">（精排）</span></label>
           <select id="cfg_kb_rerank_p"><option value="">读取中…</option></select>
           <div class="hint" id="kb_rerank_p_tip"></div>
@@ -3378,7 +3391,8 @@ function setupAnimatedSelect(wrap, native){
     syncOptionTabStops(wrap.classList.contains("is-open"));
   };
   const setOpen = open=>{
-    const next = !!open;
+    // v0.24.9：被 lockAnimatedSelect() 锁住时，点/键盘都打不开（下拉的「无法互动」就靠这一句）
+    const next = !!open && !wrap.classList.contains("is-locked");
     wrap.classList.toggle("is-open", next);
     trigger.setAttribute("aria-expanded", next ? "true" : "false");
     syncOptionTabStops(next);
@@ -3457,6 +3471,26 @@ function syncAnimatedSelects(){
   document.querySelectorAll(".select-pop").forEach(wrap=>{
     if(typeof wrap.__selectSync === "function") wrap.__selectSync();
   });
+}
+// v0.24.9（用户实测反馈 2026-10-28）：把某个下拉锁成「变灰 + 点不开」。
+// 本页的真身是自定义下拉（.select-pop + .select-trigger），原生 <select> 是视觉隐藏的，
+// 所以光设 native.disabled 用户根本看不出来 —— 必须同时锁 wrapper 并给视觉降级。
+function lockAnimatedSelect(nativeEl, locked){
+  if(!nativeEl) return;
+  const wrap = nativeEl.closest(".select-pop");
+  nativeEl.disabled = !!locked;
+  nativeEl.setAttribute("aria-disabled", locked ? "true" : "false");
+  if(!wrap) return;
+  wrap.classList.toggle("is-locked", !!locked);
+  wrap.setAttribute("aria-disabled", locked ? "true" : "false");
+  if(locked){
+    wrap.classList.remove("is-open");
+    const tr = wrap.querySelector(".select-trigger");
+    if(tr){
+      tr.setAttribute("aria-expanded", "false");
+      if(document.activeElement && tr === document.activeElement) tr.blur();
+    }
+  }
 }
 function initPermissionModePicker(){
   const wrap = $("perm_hint_mode_select"), native = $("cfg_perm_hint_mode");
@@ -4019,6 +4053,21 @@ function fillProviderSelect(id, kind){
   sel.value = saved || "";
   renderKbModelTips();
 }
+// v0.24.9（用户实测反馈 2026-10-28）：嵌入 / 重排模型下拉跟着各自的开关走 ——
+// 开关关着时整组变灰且不可交互（不是「选了也不生效」那种隐性失效）。
+function syncKbProviderLocks(){
+  for(const box of document.querySelectorAll(".kb-prov")){
+    const swId = box.dataset.kbSwitch;
+    const sw = swId ? $(swId) : null;
+    const sel = box.querySelector("select");
+    if(!sw || !sel) continue;
+    const on = !!sw.checked;
+    box.classList.toggle("is-off", !on);
+    lockAnimatedSelect(sel, !on);
+    if(on) sel.removeAttribute("title");
+    else sel.title = "先打开上面的开关，才选得了模型";
+  }
+}
 function renderKbModelTips(){
   const pairs = [
     ["kb_embed_p_tip","cfg_kb_embed_p","embedding","语义增强检索","纯 BM25"],
@@ -4221,6 +4270,11 @@ async function loadSettings(){
   ["cfg_kb_embed_p","cfg_kb_rerank_p"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderKbModelTips;
   });
+  // v0.24.9：嵌入 / 重排模型下拉跟随各自开关（变灰 + 不可交互）；载入时先同步一次
+  ["cfg_kb_semantic","cfg_kb_rerank"].forEach(id=>{
+    const el = $(id); if(el) el.addEventListener("change", syncKbProviderLocks);
+  });
+  syncKbProviderLocks();
   // 工作流 Provider 下拉：改动后即时刷新提示（v0.23.7 · B7）
   WF_MODEL_SEL_IDS.forEach(id=>{
     const el = $(id); if(el) el.onchange = renderWfModelTip;
@@ -5214,6 +5268,8 @@ function bind(){
   bindTargets();
   // 统一把可见原生下拉升级成同一套卷帘控件；底层 select 仍保留用于配置读取 / 写回。
   initAnimatedSelects();
+  // v0.24.9：卷帘控件包好之后再同步一次「跟随开关失效」——否则早于包装时锁不上 wrapper
+  if(typeof syncKbProviderLocks === "function") syncKbProviderLocks();
 }
 
 // ============ 主题切换（v0.21.13 / v0.23.4）============

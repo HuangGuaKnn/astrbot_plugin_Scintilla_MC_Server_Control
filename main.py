@@ -984,7 +984,7 @@ class McControlPlugin(Star):
     def _tools_master_enabled(self) -> bool:
         """「LLM 工具」栏级总开关（v0.24.9）。
 
-        主人 2026-10-22 实测提出：这一栏 11 个开关，想整段停用得一个个关。
+        用户实测反馈（2026-10-22）：这一栏 11 个开关，想整段停用得一个个关。
         语义分工 ——
           * **单项开关**是 fail-closed 的那一层（`parse_bool` 读不懂 → 关）；
           * **总开关**只是可用性闸门：`_cfg_bool` 读不懂 → 按默认（开）处理。
@@ -4458,7 +4458,7 @@ class McControlPlugin(Star):
     def _dictionary_unavailable_reason(self) -> str:
         """词典拿不到时，**按真实原因**给话 —— 不要一律甩给 server_dir。
 
-        v0.24.8（2026-10-22 真机 + 主人实测）：把「知识库」那一栏整段停用之后，
+        v0.24.8（2026-10-22 真机 + 用户实测）：把「知识库」那一栏整段停用之后，
         `mc_search_item` 报的是「请先在插件配置中填写 server_dir」—— 而 server_dir 明明填好了。
         归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。
         """

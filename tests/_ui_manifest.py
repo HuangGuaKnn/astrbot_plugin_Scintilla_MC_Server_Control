@@ -47,6 +47,8 @@ HARD = [
     "ui_broadcast_order_check",
     "ui_fp_notice_check",
     "ui_kb_detail_check",
+    # v0.24.9：语义 / 精排开关 → 各自模型下拉的失效联动（纯 DOM 状态契约，无像素阈值）
+    "ui_kb_dependent_check",
     "ui_plain_format_check",
     "ui_rcon_adv_fold_check",
     "ui_remote_blur_check",
