@@ -580,8 +580,14 @@ class MCWorkflow:
         except TypeError:
             player, online_players = await self._resolve_player(player, request)
         online_text = ", ".join(online_players) if online_players else ""
-        kb = self.plugin._knowledge
-        dictionary = self.plugin._dictionary
+        # v0.24.9（外部复核 P1）：多 Agent 路径原先**直读** plugin 的两个对象，绕过了总开关 ——
+        # 关掉「词典与知识库」之后，工具已经停手，工作流却照旧检索知识库、用词典反查 ID。
+        # 这里与工具闸门同口径：总开关关着就当这两个对象不存在（AI 侧一视同仁）。
+        # 替身/降级装配里可能没有这个方法 —— 按「开」处理（总开关是可用性闸门，不是安全边界）
+        _master_fn = getattr(self.plugin, "_knowledge_master_enabled", None)
+        _kb_ok = bool(_master_fn()) if callable(_master_fn) else True
+        kb = self.plugin._knowledge if _kb_ok else None
+        dictionary = self.plugin._dictionary if _kb_ok else None
 
         # ---- 检索知识库 ----
         kb_entries = []

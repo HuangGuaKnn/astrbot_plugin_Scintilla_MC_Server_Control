@@ -201,6 +201,37 @@ def part_five() -> None:
     check("后端保存白名单两项都登记", '"enable_all_tools"' in api and '"enable_all_knowledge"' in api)
 
 
+def part_six() -> None:
+    print("\n---- 八、外部复核的「绕过路径」与 F9 诊断层 ----")
+    wf = (PLUGIN_DIR / "core" / "workflow.py").read_text(encoding="utf-8")
+    check("★工作流不再无条件直读 plugin._knowledge",
+          "self.plugin._knowledge if _kb_ok else None" in wf, "workflow.py 未加闸门")
+    _q = wf.find('_master_fn = getattr(self.plugin, "_knowledge_master_enabled"')
+    _u = wf.find("kb = self.plugin._knowledge if _kb_ok")
+    check("★先问总开关、再取对象（顺序不能反）", _q >= 0 and _u >= 0 and _q < _u,
+          f"问总开关@{_q} 取对象@{_u}")
+
+    rcon_src = (PLUGIN_DIR / "core" / "rcon.py").read_text(encoding="utf-8")
+    check("★读失败处打了现场诊断", "[RCON 读失败诊断]" in rcon_src)
+    check("★诊断在关连接之前（否则现场已被清空）",
+          rcon_src.find("[RCON 读失败诊断]")
+          < rcon_src.find("self._socket_diag(type(e).__name__))\n                self._close_socket()")
+          if "[RCON 读失败诊断]" in rcon_src else False)
+
+    from astrbot_plugin_Scintilla_MC_Server_Control.core import rcon as R  # noqa: WPS433
+    c = R.AsyncRcon.__new__(R.AsyncRcon)   # 类名是 AsyncRcon（不是 RconClient）
+    c._reader = None
+    c._writer = None
+    c._connected = False
+    c._connected_at = 0.0
+    c._probe_misses = 0
+    c._idle_unconfirmed_count = 0
+    s = c._socket_diag("IncompleteReadError")
+    check("_socket_diag 在 reader/writer 都为 None 时不抛且带原因",
+          isinstance(s, str) and "IncompleteReadError" in s and "writer=None" in s, s)
+    check("诊断里带连接年龄与代数", "连接年龄" in s and "connected=" in s, s)
+
+
 def main() -> int:
     print("=" * 78)
     print("v0.24.9 回归 · 两栏各自的栏级总开关（含词典类 AND 语义）")
@@ -210,6 +241,7 @@ def main() -> int:
     part_three()
     part_four()
     part_five()
+    part_six()
     print("\n================ 汇总 ================")
     print("通过 %d 项，失败 %d 项" % (PASSED[0], len(FAILED)))
     if FAILED:

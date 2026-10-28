@@ -188,6 +188,7 @@ class AsyncRcon:
         self._lock = asyncio.Lock()
         self._req_id = 0
         self._connected = False
+        self._connected_at = 0.0      # v0.24.9：建连时刻（诊断「连接年龄」用）
 
     @property
     def connected(self) -> bool:
@@ -271,6 +272,7 @@ class AsyncRcon:
                 phase=RconError.PHASE_CONNECT,
             )
         self._connected = True
+        self._connected_at = time.monotonic()
         return self
 
     async def _send_packet(self, req_id: int, ptype: int, payload: str) -> None:
@@ -283,6 +285,39 @@ class AsyncRcon:
         assert self._writer is not None
         self._writer.write(packet)
         await self._writer.drain()
+
+    def _socket_diag(self, reason: str = "") -> str:
+        """出错瞬间的连接现场 —— **纯观测**，不产生任何网络流量。
+
+        v0.24.9（F9）：偶发 ``RCON 读取失败: 0 bytes read on a total of 4 expected bytes``
+        至今根因未证伪 —— 「服务端掐掉空闲连接」已被专项实验排除（空转 5 分钟不掉线），
+        试过的「reset 时主动建连」又破坏了既有不变式（连接数会膨胀）已回退。
+        所以这里只加证据：把 reader/writer 的本地状态、连接年龄、连接代数一次打出来，
+        下次再现就能分清是「对端真的 FIN 了」还是「本地流被谁关了」。
+        """
+        parts = [f"原因={reason or '-'}"]
+        try:
+            if self._writer is not None:
+                parts.append(f"is_closing={self._writer.is_closing()}")
+                parts.append(f"peer={self._writer.get_extra_info('peername')}")
+                sock = self._writer.get_extra_info("socket")
+                if sock is not None:
+                    parts.append(f"fileno={sock.fileno()}")
+            else:
+                parts.append("writer=None")
+        except Exception as e:  # noqa: BLE001 —— 诊断本身绝不能抛
+            parts.append(f"writer状态读取失败({type(e).__name__})")
+        try:
+            parts.append(f"at_eof={self._reader.at_eof() if self._reader is not None else None}")
+        except Exception as e:  # noqa: BLE001
+            parts.append(f"reader状态读取失败({type(e).__name__})")
+        try:
+            parts.append(f"连接年龄={time.monotonic() - self._connected_at:.1f}s")
+        except Exception:  # noqa: BLE001
+            pass
+        parts.append(f"connected={self._connected} 哨兵漏={self._probe_misses} "
+                     f"idle未确认={self._idle_unconfirmed_count}")
+        return " ".join(parts)
 
     async def _read_packet(self) -> tuple[int, int, str]:
         assert self._reader is not None
@@ -413,6 +448,11 @@ class AsyncRcon:
                 self._close_socket()
                 raise
             except (asyncio.IncompleteReadError, OSError) as e:
+                # v0.24.9（F9 诊断层）：**只加观测、不改行为** —— 现场必须在关连接之前抓。
+                # logger 可能是 None（单元测试用裸对象装配），所以这里不能直接点上去。
+                _lg = getattr(self, "logger", None)
+                if _lg is not None:
+                    _lg.warning("[RCON 读失败诊断] %s", self._socket_diag(type(e).__name__))
                 self._close_socket()
                 raise RconError(
                     f"RCON 读取失败: {e}", phase=RconError.PHASE_READ
