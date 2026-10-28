@@ -120,8 +120,18 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 
 /* ===== 卡片 ===== */
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px}
-/* v0.24.9：两栏各自的「总开关」行 —— 左侧色带区分于下面的单项开关 */
-.master-row{border-left:3px solid var(--violet);padding-left:10px;margin:2px 0 8px}
+/* v0.24.9：两栏各自的「总开关」行 —— 左侧色带 + 卡内浅色块，与下面的单项开关分层。
+   用复合选择器 .sw-row.master-row 是**故意的**：`.sw-row` 的 `padding:11px 2px` 简写
+   定义在后面（第 10045 字符处），单类选择器的 padding-left 会被它整体覆盖 ——
+   那正是「文字紧贴紫色竖杠」的原因。复合选择器优先级更高，才压得住。 */
+.sw-row.master-row{
+  border-left:3px solid var(--violet);
+  border-bottom:none;
+  padding:11px 12px 11px 14px;   /* 左侧 14px 留白：文字不再贴色带 */
+  margin:2px 0 6px;
+  border-radius:6px;
+  background:var(--sub);
+}
 /* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
