@@ -38,6 +38,16 @@
   `setOpen()` 改为返回「到底开没开」，方向键分支据此提前返回；`setValue()` 自身也挡住
   —— 菜单点击与菜单内 Enter/Space 都直接走它，只挡 `setOpen` 不够。
 - `mc_list_mods` 在 `mods/` 为空时不再说「纯原版」，改为说明「可能是装好了加载器/插件但没放 mod」。
+- **多 Agent 工作流不再绕开总开关**（外部复核 P1）：`core/workflow.py` 原先直读
+  `plugin._knowledge` / `_dictionary`，关掉「词典与知识库」后工具已停手、工作流却照旧检索知识库、
+  用词典反查 ID。现在先问 `_knowledge_master_enabled()`（替身/降级装配里没有该方法时按「开」处理），
+  关了就当这两个对象不存在。
+- **F9 只加观测、不改行为**：偶发 `RCON 读取失败: 0 bytes read on a total of 4 expected bytes`
+  至今根因未证伪（「服务端掐空闲连接」已被实验排除；「`reset_rcon()` 主动建连」会破坏连接数不变式，已回退）。
+  读失败那一刻先把现场打进日志再关连接：`is_closing` / `peer` / `fileno` / `at_eof` / 连接年龄 /
+  哨兵漏 / idle 未确认数（`logger` 为 None 时跳过，诊断不会变成新崩点）。
+  实样：`原因=IncompleteReadError is_closing=False peer=('127.0.0.1', 59039) fileno=488 at_eof=True 连接年龄=0.0s …`
+  —— `at_eof=True` 且 `is_closing=False` 就是「对端先挂断、本地没关」的指纹。
 
 ### 测试
 
@@ -54,6 +64,9 @@
 - `tests/test_v0245_tool_enable_failclosed.py` 的替身补「总开关固定回 True」—— 否则 8 条断言里 7 条会被
   总开关先一步短路，退化成空断言（外部复核 P2 指出）。
 - `docs/faq.md` 新增第 13 条：1.21.x 起「命令不存在」与「语法写错」回包文本相同，怎么自查。
+- 新增 `tests/test_v0249_rcon_diag.py`：起一个「认证成功 → 命令不回、直接挂断」的假 RCON 服务端，
+  断言读失败一定留下 `[RCON 读失败诊断]`、诊断里含 `is_closing` / `at_eof` / 连接年龄，
+  且 `logger=None` 时仍只抛 RconError（诊断不会自己崩）。
 
 ## [v0.24.8] - 2026-10-19
 
