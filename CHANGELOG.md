@@ -3,6 +3,26 @@
 本项目的所有重要变更都记录在这里。格式参考
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [v0.24.10] - 2026-10-28
+
+> 一句话：**修一个 UI bug** —— 设置页「物品语法世代」下拉展开后菜单被折叠容器切掉，
+> 下半截消失、下面还透出别的文字。
+
+### 修复
+
+- **卷帘下拉被祖先 `overflow:hidden` 裁剪**（用户截图实测）：该下拉藏在「高级」折叠容器
+  `.adv-fold-body-inner`（`overflow:hidden`）里，而菜单是 `position:absolute` —— 只画到容器底边。
+  探针实测：菜单高度的 60% / 85% / 100% 三处 `elementFromPoint` 命中的都是菜单**外面**的元素。
+  → 新增 `syncClipRelax()`：任一下拉展开时给**整条祖先链**里有裁剪的节点加
+  `.select-clip-relaxed`（`overflow:visible`），全部收起后撤掉；不依赖 CSS `:has()`（兼容性）。
+- 同类问题一次性覆盖：`.kb-fold-body-inner` / `.rmt-collapsible` / `#row_allow_unknown`
+  这些折叠容器里的下拉也一并受益（同一套祖先链放开）。
+
+### 测试
+
+- 新增 `tests/ui_select_clip_check.py`（真浏览器 · 硬门禁）：展开后菜单 25/50/75/95% 四处**全部**
+  命中菜单内部（旧 bug 后三处会落在外面）、祖先链确实被加类、收起后一个不留、普通下拉没被修崩。
+
 ## [v0.24.9] - 2026-10-28
 
 > 一句话：**设置页「AI 能力」两栏各自多了一个栏级总开关**（「LLM 工具」一个、「词典与知识库」一个），

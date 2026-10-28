@@ -148,6 +148,11 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 .kb-master-banner{margin:0 0 12px;padding:10px 14px;border-radius:8px;border:1px solid var(--border2);
   border-left:3px solid var(--warn);background:var(--sub);font-size:12.5px;line-height:1.65;color:var(--dim)}
 .kb-master-banner b{color:var(--text)}
+
+/* v0.24.9（bug）：卷帘下拉展开时会被祖先的 overflow:hidden 切掉 —— 实测「物品语法世代」在
+   `.adv-fold-body-inner`（折叠容器）里，菜单只画到容器底边就没了，下面还透出别的文字。
+   打开时由 syncClipRelax() 给整条祖先链加这个类，关掉就撤掉。 */
+.select-clip-relaxed{overflow:visible!important}
 /* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
@@ -3409,6 +3414,8 @@ function setupAnimatedSelect(wrap, native){
       const active = options().find(opt=>opt.dataset.value === native.value);
       if(active) active.focus({preventScroll:true});
     }
+    // v0.24.9（bug）：菜单是绝对定位，展开时得先把祖先的裁剪放开，否则会被折叠容器切掉
+    syncClipRelax();
     // v0.24.9（外部复核 P1）：返回「到底开没开」—— 键盘分支据此提前返回。
     // 关着时 .select-menu 只是 max-height:0（不是 display:none），被裁剪的选项仍**能获得焦点**，
     // 于是「方向键 → 回车」能把灰掉的下拉改掉值（真 Edge 实测过）。
@@ -3488,6 +3495,28 @@ function syncAnimatedSelects(){
     if(typeof wrap.__selectSync === "function") wrap.__selectSync();
   });
 }
+// v0.24.9（bug 修复）：卷帘下拉是 position:absolute，会被任何 overflow!=visible 的祖先切掉。
+// 实测：设置页「物品语法世代」藏在 `.adv-fold-body-inner`（折叠容器，overflow:hidden）里，
+// 菜单只画到容器底边，下半截直接没了、下面还透出别的文字。
+// 做法：展开时给**整条祖先链**加 .select-clip-relaxed（overflow:visible），全部收起后撤掉。
+// 不用 CSS :has()：本项目要兼容没有 :has() 的浏览器内核。
+function syncClipRelax(){
+  const open = document.querySelectorAll(".select-pop.is-open");
+  if(!open.length){
+    document.querySelectorAll(".select-clip-relaxed")
+      .forEach(el=>el.classList.remove("select-clip-relaxed"));
+    return;
+  }
+  open.forEach(pop=>{
+    let p = pop.parentElement;
+    while(p && p !== document.body && p !== document.documentElement){
+      const cs = getComputedStyle(p);
+      if(cs.overflow !== "visible" || cs.overflowY !== "visible") p.classList.add("select-clip-relaxed");
+      p = p.parentElement;
+    }
+  });
+}
+
 // v0.24.9（用户实测反馈 2026-10-28）：把某个下拉锁成「变灰 + 点不开」。
 // 本页的真身是自定义下拉（.select-pop + .select-trigger），原生 <select> 是视觉隐藏的，
 // 所以光设 native.disabled 用户根本看不出来 —— 必须同时锁 wrapper 并给视觉降级。

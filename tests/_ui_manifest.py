@@ -52,6 +52,7 @@ HARD = [
     "ui_plain_format_check",
     "ui_rcon_adv_fold_check",
     "ui_remote_blur_check",
+    "ui_select_clip_check",
     "ui_settings_secpick_check",
     "ui_settings_structure_check",
     "ui_theme_check",
