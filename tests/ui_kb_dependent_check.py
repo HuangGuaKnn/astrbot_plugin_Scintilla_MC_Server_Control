@@ -168,13 +168,31 @@ def main() -> int:
             check(f"{sel_id}：鼠标样式 not-allowed", s.get("triggerCursor") == "not-allowed", s)
             check(f"{sel_id}：给了 title 提示", s.get("hasTitle") is True, s)
 
-        print("      [2.2] 真的点不开（不是样子灰了还能点）")
+        print("      [2.2] 真的改不了（不是样子灰了还能改）")
         for _, sel_id in PAIRS:
             _click_trigger(pg, sel_id)
             st = pg.evaluate(STATE_JS)
             check(f"{sel_id}：点 trigger 后菜单仍不展开",
                   st["cfg_kb_semantic"]["isOpen"] is False and st["cfg_kb_rerank"]["isOpen"] is False,
                   st)
+
+        print("      [2.2b] 键盘路径也堵住了（外部复核 P1：方向键 → 回车曾能把灰掉的下拉改掉）")
+        before = pg.evaluate(
+            """() => ({a: document.getElementById('cfg_kb_embed_p').value,
+                      b: document.getElementById('cfg_kb_rerank_p').value})""")
+        for sel_id in ("cfg_kb_embed_p", "cfg_kb_rerank_p"):
+            trg = _trigger(pg, sel_id)
+            trg.focus()
+            for key in ("ArrowDown", "ArrowDown", "Enter", "Enter"):
+                pg.keyboard.press(key)
+                pg.wait_for_timeout(120)
+            st = pg.evaluate(STATE_JS)
+            key_id = "cfg_kb_semantic" if sel_id == "cfg_kb_embed_p" else "cfg_kb_rerank"
+            check(f"{sel_id}：方向键+回车后菜单仍未展开", st[key_id]["isOpen"] is False, st[key_id])
+        after = pg.evaluate(
+            """() => ({a: document.getElementById('cfg_kb_embed_p').value,
+                      b: document.getElementById('cfg_kb_rerank_p').value})""")
+        check("★键盘操作后两个下拉的值都没被改", before == after, f"{before} → {after}")
 
         print("      [2.3] 只开语义 → 嵌入能点开、重排仍点不开（各管各的）")
         _set_switch(pg, "cfg_kb_semantic", True)

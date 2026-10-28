@@ -21,7 +21,14 @@ class _FakePlugin:
         self.value = value
 
     def _cfg_bool(self, key, default=False):
-        """替身版严格布尔解析（v0.24.6：生产侧把布尔配置收口到 _cfg_bool）。"""
+        """替身版严格布尔解析（v0.24.6：生产侧把布尔配置收口到 _cfg_bool）。
+
+        v0.24.9（外部复核 P2）：总开关两个键**固定回 True**。
+        否则本用例会退化成空断言 —— 替身对任何键都回 `self.value`，`enable_all_tools` 先一步
+        把工具挡掉，8 条断言里 7 条就不再检验「单项开关的 fail-closed 语义」了（实测如此）。
+        """
+        if key in ("enable_all_tools", "enable_all_knowledge"):
+            return True
         value = self._cfg(key, default)
         if isinstance(value, str):
             return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")

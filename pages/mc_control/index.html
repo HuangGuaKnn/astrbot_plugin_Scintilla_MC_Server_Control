@@ -144,6 +144,10 @@ main{padding:20px;max-width:1280px;margin:0 auto}
 .kb-prov.is-off .select-trigger:hover{border-color:var(--border)}
 .kb-prov .select-pop.is-locked,
 .kb-prov .select-pop.is-locked .select-trigger{cursor:not-allowed}
+/* v0.24.9：知识库页的「AI 调用已停用」横幅（左侧琥珀色带，跟普通提示区分开） */
+.kb-master-banner{margin:0 0 12px;padding:10px 14px;border-radius:8px;border:1px solid var(--border2);
+  border-left:3px solid var(--warn);background:var(--sub);font-size:12.5px;line-height:1.65;color:var(--dim)}
+.kb-master-banner b{color:var(--text)}
 /* 垂直堆叠的卡片留 14px 间距；网格里的卡片由 grid 的 gap 负责（v0.21.12 修复）
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
@@ -1094,6 +1098,11 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 <!-- ================= 知识库 ================= -->
 <div class="page" id="page_knowledge">
   <div id="kb_alert"></div>
+  <!-- v0.24.9：AI 调用被总开关掐掉时只**说明事实**，不拦管理操作（关掉 AI 往往正是为了整理数据） -->
+  <div class="kb-master-banner" id="kb_master_banner" style="display:none">
+    <b>AI 调用已停用</b>：总开关关着，AI 不会检索 / 写入知识库，也用不到物品词典。
+    <span class="muted">下面的管理操作不受影响；要恢复 AI 调用，去「设置 → AI 能力 → 词典与知识库」打开总开关。</span>
+  </div>
   <div class="card" id="kb_preset_card">
     <h3><span class="dot" style="background:var(--cyan)"></span>知识库预设 · 一个预设服务一个服务端<span class="right" id="kb_srv_fp"></span></h3>
     <div class="pre-bar" id="kb_presets"><span class="muted">加载中…</span></div>
@@ -1574,7 +1583,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <!-- v0.24.9（用户实测反馈 2026-10-22）：**每栏各一个**总开关。关掉它 = 这一栏整段停用；
            它不改写下面的单项开关，重新打开后各自的选择还在。 -->
       <div class="sw-row master-row">
-        <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后：下面每个工具立即不可用（单项选择会原样保留，重开即恢复）</span></div>
+        <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后：<b>AI 无法调用</b>下面任何一个工具（单项选择会原样保留，重开即恢复）</span></div>
         <label class="sw"><input type="checkbox" id="cfg_tools_master"><span class="sl"></span></label>
       </div>
       <div class="sw-grid" style="margin-top:2px">
@@ -1596,7 +1605,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <h3><span class="dot" style="background:var(--violet)"></span>词典与知识库</h3>
       <!-- v0.24.9：这一栏自己的总开关（与左栏各自独立） -->
       <div class="sw-row master-row">
-        <div class="sw-t"><b>词典与知识库总开关</b><span>关闭后：物品词典、知识库与三个知识工具立即不可用（单项选择会原样保留）</span></div>
+        <div class="sw-t"><b>词典与知识库总开关</b><span>关闭后：<b>AI 不再调用</b>词典 / 知识库与 3 个知识工具（本页的管理操作照常可用；单项选择会原样保留）</span></div>
         <label class="sw"><input type="checkbox" id="cfg_kb_master"><span class="sl"></span></label>
       </div>
       <!-- v0.21.44：这张卡原先靠 5 段长 hint 堆到 ≈1260px，同排左卡被撑成 814px 空档。
@@ -3400,8 +3409,15 @@ function setupAnimatedSelect(wrap, native){
       const active = options().find(opt=>opt.dataset.value === native.value);
       if(active) active.focus({preventScroll:true});
     }
+    // v0.24.9（外部复核 P1）：返回「到底开没开」—— 键盘分支据此提前返回。
+    // 关着时 .select-menu 只是 max-height:0（不是 display:none），被裁剪的选项仍**能获得焦点**，
+    // 于是「方向键 → 回车」能把灰掉的下拉改掉值（真 Edge 实测过）。
+    return next;
   };
   const setValue = value=>{
+    // v0.24.9（外部复核 P1）：锁住/disabled 时**任何路径**都不许改值 ——
+    // 菜单点击与菜单内 Enter/Space 都直接调这里，光挡 setOpen 不够。
+    if(native.disabled || wrap.classList.contains("is-locked")) return;
     if(!Array.from(native.options).some(opt=>opt.value === value)) return;
     native.value = value;
     native.dispatchEvent(new Event("change", {bubbles:true}));
@@ -3412,7 +3428,7 @@ function setupAnimatedSelect(wrap, native){
     if(e.key === "Enter" || e.key === " "){ e.preventDefault(); setOpen(trigger.getAttribute("aria-expanded") !== "true"); return; }
     if(e.key === "ArrowDown" || e.key === "ArrowUp"){
       e.preventDefault();
-      setOpen(true);
+      if(!setOpen(true)) return;   // 锁着/已 disabled → 一个键都不接
       const list = options(), idx = list.findIndex(opt=>opt.dataset.value === native.value);
       const next = list[Math.max(0, Math.min(list.length-1, idx + (e.key === "ArrowDown" ? 1 : -1)))];
       if(next) next.focus({preventScroll:true});
@@ -4067,6 +4083,9 @@ function syncKbProviderLocks(){
     if(on) sel.removeAttribute("title");
     else sel.title = "先打开上面的开关，才选得了模型";
   }
+  // v0.24.9：知识库页顶部横幅跟着「词典与知识库」总开关走（只说明事实，不禁用任何按钮）
+  const banner = $("kb_master_banner"), kbMaster = $("cfg_kb_master");
+  if(banner) banner.style.display = (kbMaster && !kbMaster.checked) ? "" : "none";
 }
 function renderKbModelTips(){
   const pairs = [

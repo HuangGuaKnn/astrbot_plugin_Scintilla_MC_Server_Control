@@ -462,6 +462,27 @@ async def _start_watcher(plugin, server_dir: str) -> bool:
 # 类属性会让替身直接 AttributeError（v0.24.5 的 fail-closed 用例就是这么炸的）。
 _KNOWLEDGE_TOOLS = ("mc_search_knowledge", "mc_save_knowledge", "mc_correct_knowledge")
 
+# v0.24.9（外部复核 P1）：**要用物品词典**的工具。「词典与知识库」总开关关掉时它们也必须停手 ——
+# 否则会出现「总开关关了，mc_search_item 照样查得到东西」这种自相矛盾（复核实测过）。
+# 归属说明：这些工具的单项开关在「LLM 工具」栏（enable_mc_search_item 等），
+# 但它们的能力来源是「词典与知识库」栏 → **两个总开关都得开**才放行（AND，不是二选一）。
+_DICTIONARY_TOOLS = ("mc_search_item", "mc_get_recipes", "mc_list_mods", "mc_rescan_dictionary")
+
+# v0.24.9：总开关的回执文案 —— **单一来源**。三处分支各抄一份会漂，
+# 也让「回执点名哪一栏」的变异锚点变歧义（外部复核时 M3 就是这么变成 INFRA-ERR 的）。
+_MSG_TOOLS_MASTER_OFF = (
+    "「LLM 工具」总开关已关闭（WebUI → 插件设置 → AI 能力 → LLM 工具开关）："
+    "所有 MC 工具本次都不会被调用。"
+)
+_MSG_KB_MASTER_OFF = (
+    "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
+    "物品词典与知识库本次都不会被调用（WebUI 知识库页的管理操作不受影响）。"
+)
+_MSG_KB_MASTER_OFF_FOR_DICT = (
+    "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
+    "这个工具要用物品词典，所以本次不会被调用（WebUI 知识库页的管理操作不受影响）。"
+)
+
 
 class McControlPlugin(Star):
     """AstrBot Minecraft 服务器控制插件（RCON + 服务器事件转发）。"""
@@ -1001,15 +1022,15 @@ class McControlPlugin(Star):
         """该工具所属那一栏的总开关若关着，返回对应回执；否则空串。"""
         if name in _KNOWLEDGE_TOOLS:
             if not self._knowledge_master_enabled():
-                return (
-                    "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
-                    "物品词典与知识库本次都不会被调用。"
-                )
+                return _MSG_KB_MASTER_OFF
+        elif name in _DICTIONARY_TOOLS:
+            # 词典类工具：先说「工具栏」再说「词典栏」，两条都关了也说得清是哪个先挡的
+            if not self._tools_master_enabled():
+                return _MSG_TOOLS_MASTER_OFF
+            if not self._knowledge_master_enabled():
+                return _MSG_KB_MASTER_OFF_FOR_DICT
         elif not self._tools_master_enabled():
-            return (
-                "「LLM 工具」总开关已关闭（WebUI → 插件设置 → AI 能力 → LLM 工具开关）："
-                "所有 MC 工具本次都不会被调用。"
-            )
+            return _MSG_TOOLS_MASTER_OFF
         return ""
 
     def _tool_off_reason(self, name: str) -> str:
@@ -1025,6 +1046,12 @@ class McControlPlugin(Star):
         # 这里直接读配置键（不调兄弟方法）：测试与降级装配里常只伪造 `_cfg_bool` / `_cfg`，
         # 少一层跨方法依赖就少一处崩点。
         if name in _KNOWLEDGE_TOOLS:
+            if not self._cfg_bool("enable_all_knowledge", True):
+                return False
+        elif name in _DICTIONARY_TOOLS:
+            # 词典类：工具被关、或词典被关，都不放行（两个总开关是 AND 关系）
+            if not self._cfg_bool("enable_all_tools", True):
+                return False
             if not self._cfg_bool("enable_all_knowledge", True):
                 return False
         elif not self._cfg_bool("enable_all_tools", True):
@@ -4463,10 +4490,7 @@ class McControlPlugin(Star):
         归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。
         """
         if not self._knowledge_master_enabled():
-            return (
-                "「词典与知识库」总开关已关闭（WebUI → 插件设置 → AI 能力 → 词典与知识库）："
-                "物品词典与知识库本次都不会被调用。"
-            )
+            return _MSG_KB_MASTER_OFF
         if not self._cfg_bool("dictionary_enabled", True):
             return "物品词典已在插件配置中停用（WebUI → 插件设置 → 知识库 → 物品词典）。"
         if self.is_remote_mode():
@@ -4497,7 +4521,10 @@ class McControlPlugin(Star):
         else:
             mods = getattr(self._dictionary, "mods", [])
         if not mods:
-            return "服务器当前未安装任何 Mod（纯原版）。"
+            # v0.24.9（外部复核）：fabric / paper 上 mods/ 为空但装了加载器/插件，
+            # 说「纯原版」不够准 —— 它可能只是没用 Mod。
+            return ("服务器当前没有安装任何 Mod（mods/ 为空）—— 注意这不等于「纯原版」："
+                    "Fabric / Forge / NeoForge 加载器或 Paper 插件服都可能装好了却没放 mod。")
         lines = [f"- {m['id']} ({m['name']})" for m in mods]
         return f"已安装 Mod 共 {len(mods)} 个：\n" + "\n".join(lines)
 
@@ -4581,6 +4608,11 @@ class McControlPlugin(Star):
 
         更换整合包、新增 Mod 或插件后使用。
         """
+        _off = self._tool_off_reason("mc_rescan_dictionary")
+        if _off:
+            # v0.24.9（外部复核 P1）：它是 17 个工具里唯一「连单项开关都没有」的，
+            # 之前两个总开关都拦不住 —— 管理员之外没人能调，但总开关的承诺得兑现。
+            return _off
         denied = self._admin_gate(event, tool="mc_rescan_dictionary", action="重建词典")
         if denied:
             return denied
