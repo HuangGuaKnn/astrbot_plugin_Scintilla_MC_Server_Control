@@ -396,6 +396,9 @@ class McControlWebApi:
         # 多 Agent 提示词正文由「提示词」页单独读取（v0.15.0），
         # 这里剔除，避免设置页一次性搬运近 2 万字提示词。
         flat = {k: v for k, v in flat.items() if not str(k).startswith("agent_prompt_")}
+        # 沿用 AI 闸门的解析规则，回填时使用本次从内存或磁盘读取的配置。
+        flat["enable_all_tools"] = self.plugin._tools_master_enabled(flat)
+        flat["enable_all_knowledge"] = self.plugin._knowledge_master_enabled(flat)
         # v0.23.5：RCON 密码是「只写」配置 —— 永不回传给前端。
         # 此前这里把整个摊平配置抛出去，密码明文落进页面输入框：任何能打开
         # 本页面 / 直接打这个接口的人，凭据就跟着走了。现在只回一个布尔，
@@ -990,6 +993,16 @@ class McControlWebApi:
 
     # ================= 多Agent工作流 =================
 
+    def _workflow_tool_status(self) -> dict:
+        master_enabled = self.plugin._tools_master_enabled()
+        tool_setting_enabled = self.plugin._tool_single_enabled("mc_workflow")
+        return {
+            "master_enabled": master_enabled,
+            # 页面上的单项开关需要回填存储值。
+            "tool_setting_enabled": tool_setting_enabled,
+            "tool_enabled": tool_setting_enabled and master_enabled,
+        }
+
     async def get_workflow_status(self):
         wf = getattr(self.plugin, "_workflow", None)
         if wf is None:
@@ -997,7 +1010,7 @@ class McControlWebApi:
         return json_response({
             "ok": True,
             "enabled": strict_bool(self._cfg("agent_workflow_enabled", True), True),
-            "tool_enabled": strict_bool(self._cfg("enable_mc_workflow", True), True),
+            **self._workflow_tool_status(),
             "main_provider": self._cfg("llm_provider_id", ""),
             "agents": {
                 "classifier": self._cfg("agent_classifier_provider_id", ""),
@@ -1113,28 +1126,30 @@ class McControlWebApi:
         """概览页：插件信息 + 关键模块状态 + 最近事件。"""
         plugin = self.plugin
 
+        knowledge_master_enabled = plugin._knowledge_master_enabled()
+
         # 词典
-        dict_info = None
+        dict_info = {
+            "enabled": strict_bool(self._cfg("dictionary_enabled", True), True),
+            "master_enabled": knowledge_master_enabled,
+        }
         d = getattr(plugin, "_dictionary", None)
         if d is not None:
             try:
-                dict_info = {
-                    "enabled": strict_bool(self._cfg("dictionary_enabled", True), True),
-                    "mods": len(d.mods),
-                    "items": len(d.items),
-                    "recipes": len(d.recipes),
-                }
+                dict_info.update(mods=len(d.mods), items=len(d.items), recipes=len(d.recipes))
             except Exception:
-                dict_info = {"enabled": True, "error": "词典数据读取失败"}
+                dict_info["error"] = "词典数据读取失败"
 
         # 知识库
         kb = self._kb()
-        kb_info = None
+        kb_info = {
+            "enabled": strict_bool(self._cfg("knowledge_enabled", True), True),
+            "master_enabled": knowledge_master_enabled,
+        }
         if kb is not None:
             try:
                 st = kb.stats()
-                kb_info = {
-                    "enabled": strict_bool(self._cfg("knowledge_enabled", True), True),
+                kb_info.update({
                     "server_id": kb.server_id,
                     "state": kb.state.as_dict(),
                     "stats": st,
@@ -1142,14 +1157,14 @@ class McControlWebApi:
                     "fingerprint": st.get("fingerprint"),
                     "match": st.get("match"),
                     "server_content": self.plugin.server_content_text(),
-                }
+                })
                 man = self._kbman()
                 if man is not None:
                     n = man.notice()
                     kb_info["notice_show"] = n["show"]              # 本轮「还没弹过」的全屏提示
                     kb_info["fingerprint_mismatch"] = n["changed"]   # 只要不匹配就一直为 True（概览常驻标记）
             except Exception as e:
-                kb_info = {"error": str(e)}
+                kb_info["error"] = str(e)
 
         # 工作流
         wf = getattr(plugin, "_workflow", None)
@@ -1161,7 +1176,7 @@ class McControlWebApi:
             running = [l for l in logs if l.get("status") == "running"]
             wf_info = {
                 "enabled": strict_bool(self._cfg("agent_workflow_enabled", True), True),
-                "tool_enabled": strict_bool(self._cfg("enable_mc_workflow", True), True),
+                **self._workflow_tool_status(),
                 "main_provider": self._cfg("llm_provider_id", ""),
                 "agents": {
                     "classifier": self._cfg("agent_classifier_provider_id", ""),

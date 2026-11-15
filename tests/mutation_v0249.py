@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.24.9 判据变异凭据：5 处关键边界逐条翻错，看专项用例会不会红。
+"""栏级总开关判据变异凭据：6 处关键边界逐条翻错，看专项用例会不会红。
 
 为什么要有这支脚本
 -----------------
@@ -79,28 +79,26 @@ class Case:
         self.note = note
 
 
-# v0.24.9 的 5 处锚点。多行锚点一律按 **LF** 写（仓库文件是纯 LF），
+# 多行锚点一律按 **LF** 写（仓库文件是纯 LF），
 # run_case() 里保留了「LF 找不到就试 CRLF」的自动适配，无害。
 CASES = [
     Case(
         "M1", "main.py",
-        # 带上下文切片：单行 `        if name in _KNOWLEDGE_TOOLS:` 在 main.py 里出现 2 次
-        # （_tool_master_off_reason 与 _tool_enabled），只贴单行会直接判「锚点不唯一」。
-        "        # 这里直接读配置键（不调兄弟方法）：测试与降级装配里常只伪造 `_cfg_bool` / `_cfg`，\n"
-        "        # 少一层跨方法依赖就少一处崩点。\n"
         "        if name in _KNOWLEDGE_TOOLS:",
-        "        # 这里直接读配置键（不调兄弟方法）：测试与降级装配里常只伪造 `_cfg_bool` / `_cfg`，\n"
-        "        # 少一层跨方法依赖就少一处崩点。\n"
         "        if False:",
         "tests/test_v0249_master_switch.py",
-        "_tool_enabled 里知识库那一栏的分派失效 → 两栏各管各栏的判据必须红",
+        "_master_gate 的知识工具分派失效 → 两栏各管各栏的判据必须红",
     ),
     Case(
         "M2", "main.py",
-        '        elif not self._cfg_bool("enable_all_tools", True):',
-        "        elif False:",
+        "        elif name in _DICTIONARY_TOOLS:\n"
+        "            # 词典类工具：先说「工具栏」再说「词典栏」，两条都关了也说得清是哪个先挡的\n"
+        "            if not self._tools_master_enabled():",
+        "        elif name in _DICTIONARY_TOOLS:\n"
+        "            # 词典类工具：先说「工具栏」再说「词典栏」，两条都关了也说得清是哪个先挡的\n"
+        "            if False:",
         "tests/test_v0249_master_switch.py",
-        "工具总开关不再掐工具 → 「13 个工具全部不可用」必须红",
+        "工具栏总开关放过词典工具 → 词典工具的双闸门判据必须红",
     ),
     Case(
         "M3", "main.py",
@@ -112,16 +110,14 @@ CASES = [
     ),
     Case(
         "M4", "main.py",
-        # 单行 `        if not self._knowledge_master_enabled():` 的 str.count 会被
-        # 12 空格那处的**尾部**也算进去（=2），必须带上下文。
-        "        归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。\n"
-        '        """\n'
-        "        if not self._knowledge_master_enabled():",
-        "        归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。\n"
-        '        """\n'
-        "        if False:",
-        "tests/test_v0249_master_switch.py",
-        "词典不可用的归因不再看总开关 → 「报总开关已关闭」必须红",
+        '        if not self._cfg_bool("dictionary_enabled", True):\n'
+        '            return "物品词典已在插件配置中停用',
+        "        if not self._knowledge_master_enabled():\n"
+        "            return _MSG_KB_MASTER_OFF\n"
+        '        if not self._cfg_bool("dictionary_enabled", True):\n'
+        '            return "物品词典已在插件配置中停用',
+        "tests/test_v0248_dictionary_reason.py",
+        "词典缺失的归因重新让总开关抢答 → 单项归因判据必须红",
     ),
     Case(
         "M5", "core/web_api.py",
@@ -129,6 +125,15 @@ CASES = [
         '        "enable_all_knowledge",',
         "tests/test_settings_whitelist_contract.py",
         "后端保存白名单漏登记 enable_all_tools → 「没有『提交了但后端不认』的键」必须红",
+    ),
+    Case(
+        "M6", "main.py",
+        "        elif not self._tools_master_enabled():\n"
+        "            return _MSG_TOOLS_MASTER_OFF",
+        "        elif not self._tools_master_enabled():\n"
+        '            return ""',
+        "tests/test_v0249_master_switch.py",
+        "_master_gate 放过工具栏关闭时的纯工具 → 可用性和拒绝回执的判据必须红",
     ),
 ]
 

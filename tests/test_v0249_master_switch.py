@@ -24,9 +24,12 @@
 """
 from __future__ import annotations
 
+import ast
+import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
@@ -148,17 +151,23 @@ def part_three() -> None:
     check("★单项关闭 → 回执不提总开关", "总开关" not in msg_s and "停用" in msg_s, msg_s)
     check("可用工具回执为空串", single._tool_off_reason("mc_ban") == "")
 
-    print("\n---- 五、词典不可用的归因也跟着总开关走（叠加态） ----")
-    p = _plug(**{**_all_on(), "enable_all_knowledge": False})
-    p._dictionary = None
-    check("★总开关关 + 词典缺失 → 报总开关，而不是「请填 server_dir」",
-          "「词典与知识库」总开关已关闭" in p._dictionary_unavailable_reason(),
-          p._dictionary_unavailable_reason())
-    dic_off = _plug(**{**_all_on(), "dictionary_enabled": False})
-    dic_off._dictionary = None
-    check("单项（词典）关 → 报单项，不甩锅总开关",
-          "总开关" not in dic_off._dictionary_unavailable_reason(),
-          dic_off._dictionary_unavailable_reason())
+    msg_stub = "测试总开关拒绝"
+    single._master_gate = lambda _name: msg_stub
+    check("工具可用性与回执均使用同一栏级判据",
+          single._tool_enabled("mc_ban") is False and single._tool_off_reason("mc_ban") == msg_stub)
+
+    print("\n---- 五、工具入口的回执与配置分层 ----")
+    kb_off._dictionary = None
+    msg_item = asyncio.run(kb_off.mc_search_item(None, "stone"))
+    check("★知识栏关且词典缺失 → 词典工具入口仍拒于总开关",
+          "「词典与知识库」总开关已关闭" in msg_item, msg_item)
+
+    reload_off = _plug(**{**_all_on(), "enable_mc_reload_plugin": False})
+    reload_off._admin_gate = lambda *args, **kwargs: ""
+    reload_off._schedule_hot_reload = lambda _name: "即将重载"
+    msg_reload = asyncio.run(reload_off.mc_reload_plugin(None))
+    check("热重载单项关闭 → 工具入口给出单项停用回执",
+          "该功能已在插件配置中停用" in msg_reload and "总开关" not in msg_reload, msg_reload)
 
 
 def part_four() -> None:
@@ -169,7 +178,7 @@ def part_four() -> None:
     p = _plug(**cfg)
     _ = [p._tool_enabled(t) for t in ALL_TOOLS]
     _ = p._tool_off_reason("mc_kick")
-    check("★调用前后配置字典一模一样（只读，不写回）", cfg == snap)
+    check("★调用前后配置字典一模一样（只读，不写回）", p.config == snap)
 
     weird_master = _plug(**{**_all_on(), "enable_all_tools": "maybe"})
     check("工具栏值读不懂 → 按默认（开），单项仍生效",
@@ -179,6 +188,35 @@ def part_four() -> None:
           weird_kb._tool_enabled("mc_save_knowledge") is True)
     bad_single = _plug(**{**_all_on(), "enable_mc_ban": "maybe"})
     check("单项值读不懂 → fail-closed（关）", bad_single._tool_enabled("mc_ban") is False)
+
+    for key, get_master, tool in (
+        ("enable_all_tools", M.McControlPlugin._tools_master_enabled, "mc_ban"),
+        ("enable_all_knowledge", M.McControlPlugin._knowledge_master_enabled, "mc_save_knowledge"),
+    ):
+        for raw, expected in (("", True), (None, True), ("false", False)):
+            plug = _plug(**{**_all_on(), key: raw})
+            actual = (get_master(plug), plug._tool_enabled(tool))
+            check(f"{key}={raw!r} → 总开关与 {tool} 均为 {expected}",
+                  actual == (expected, expected), str(actual))
+
+
+def llm_tool_guards(src: str) -> tuple[set[str], set[str]]:
+    """逐个检查装饰器登记的工具，其函数体入口要调用本工具的闸门并返回拒绝。"""
+    registered, guarded = set(), set()
+    for fn in ast.walk(ast.parse(src)):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in fn.decorator_list:
+            if not isinstance(dec, ast.Call) or ast.unparse(dec.func) != "filter.llm_tool":
+                continue
+            name = next((ast.literal_eval(kw.value) for kw in dec.keywords if kw.arg == "name"), fn.name)
+            registered.add(name)
+            gate = "_master_gate" if name == "mc_workflow" else "_tool_off_reason"
+            body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+            guard = f"_off = self.{gate}({name!r})\nif _off:\n    return _off"
+            if ast.unparse(ast.Module(body=body[:2], type_ignores=[])) == guard:
+                guarded.add(name)
+    return registered, guarded
 
 
 def part_five() -> None:
@@ -192,11 +230,10 @@ def part_five() -> None:
           and '["cfg_kb_master","enable_all_knowledge","b",true]' in html)
 
     src = (PLUGIN_DIR / "main.py").read_text(encoding="utf-8")
-    check("★`mc_rescan_dictionary` 也过闸门（原来两个总开关都拦不住）",
-          '_off = self._tool_off_reason("mc_rescan_dictionary")' in src)
     check("旧的合并实现已清零", "_ai_master_enabled" not in src and '"ai_enabled"' not in src)
-    check("15 个工具守卫仍走统一回执", src.count("self._tool_off_reason(") >= 16,
-          f"{src.count('self._tool_off_reason(')} 处")
+    registered, guarded = llm_tool_guards(src)
+    check("每个 @filter.llm_tool 都在入口经过本工具的闸门",
+          bool(registered) and registered == guarded, "缺少闸门：" + ", ".join(sorted(registered - guarded)))
     api = (PLUGIN_DIR / "core" / "web_api.py").read_text(encoding="utf-8")
     check("后端保存白名单两项都登记", '"enable_all_tools"' in api and '"enable_all_knowledge"' in api)
 
@@ -232,6 +269,25 @@ def part_six() -> None:
     check("诊断里带连接年龄与代数", "连接年龄" in s and "connected=" in s, s)
 
 
+def part_seven() -> None:
+    print("\n---- 九、白名单权限提示跟随配置 ----")
+    for master_on in (False, True):
+        extra = {}
+        event = SimpleNamespace(get_extra=extra.get, set_extra=extra.__setitem__)
+        request = SimpleNamespace(extra_user_content_parts=[])
+        p = _plug(**{**_all_on(), "enable_all_knowledge": master_on, "permission_hint_mode": "always"})
+        p._admins = set()
+        p.local_files_degraded_reason = lambda: ""
+        asyncio.run(p._inject_permission_hint(event, request))
+        hint = "\n".join(part["text"] if isinstance(part, dict) else part.text
+                         for part in request.extra_user_content_parts)
+        check(f"知识栏总开关为 {master_on} → 查询名单{'含' if master_on else '省略'} mc_search_knowledge",
+              ("mc_search_knowledge" in hint) == master_on and "mc_list_players" in hint, hint)
+        if not master_on:
+            check("关闭知识栏 → 权限提示明确说明部分工具已被配置停用",
+                  "部分工具已被配置停用" in hint, hint)
+
+
 def main() -> int:
     print("=" * 78)
     print("v0.24.9 回归 · 两栏各自的栏级总开关（含词典类 AND 语义）")
@@ -242,6 +298,7 @@ def main() -> int:
     part_four()
     part_five()
     part_six()
+    part_seven()
     print("\n================ 汇总 ================")
     print("通过 %d 项，失败 %d 项" % (PASSED[0], len(FAILED)))
     if FAILED:

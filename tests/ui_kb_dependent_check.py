@@ -1,95 +1,96 @@
 # -*- coding: utf-8 -*-
-"""v0.24.9 回归：嵌入 / 重排模型下拉「跟随开关失效」（真浏览器实跑）。
-
-主人的要求（2026-10-28）：
-  「重排序和嵌入模型开关关闭时，下面对应的选择模型下拉框也随即跟随失效，
-    表现差不多就是变灰 + 无法互动。」
-
-为什么值得一条硬门禁用例：
-  这是典型的**隐性失效** —— 开关没开时下拉还亮着、还能选，用户选了却发现不生效，
-  只会怀疑「是不是配错了」。把「能不能交互」跟「开没开」绑死，界面自己就不会骗人。
-
-一个必须先搞清的事实（第一版用例在这里翻过车）：
-  本页的下拉是**自定义卷帘控件**（`.select-pop` 包住原生 `<select>`，可见的是 `.select-trigger`，
-  原生 select 被 `.select-native` 置成 `opacity:0; pointer-events:none`）。
-  所以「变灰 + 点不开」必须作用在 wrapper / trigger 上；只设 `select.disabled` 用户**完全看不出来**。
-
-判据（全部在真浏览器里量）：
-  1) 开关关着 → 原生 select `disabled`、wrapper 带 `.is-locked` + `aria-disabled="true"`、
-     容器带 `.is-off`，且 **trigger 计算透明度 < 1、cursor = not-allowed**（看得见的变灰）；
-  2) **真的点不开**：点 trigger 之后 `.is-open` 仍然不存在（不是「样子灰了但还能点」）；
-  3) 两个开关**各管各的**：只开语义 → 嵌入能点开、重排仍点不开；
-  4) 再关回去 → 立刻回到锁死（不是一次性初始化）；
-  5) 页面无 JS 异常。
-"""
+"""模型下拉回归。用真实浏览器验开关联动、可见提示、焦点和菜单状态。"""
 from __future__ import annotations
 
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import ui_theme_check as F  # noqa: E402  复用同一套假后端夹具与驱动补丁
+import ui_theme_check as F  # noqa: E402
 
 from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_LAUNCH_KWARGS  # noqa: E402
 
 HTML = F.PLUGIN / "pages" / "mc_control" / "index.html"
-SHOTS = F.SHOTS
-
+PAGE_URL = "http://mc-control.test/index.html"
 PAIRS = (
     ("cfg_kb_semantic", "cfg_kb_embed_p"),
     ("cfg_kb_rerank", "cfg_kb_rerank_p"),
 )
+MASTER = "cfg_kb_master"
+WATCHED = [MASTER, *(sw for sw, _ in PAIRS)]
 
-STATE_JS = r"""
-() => {
-  // 真身是自定义下拉：.select-pop（wrapper）+ .select-trigger（可见按钮）；原生 <select> 是视觉隐藏的
-  const out = {};
-  for (const [swId, selId] of [["cfg_kb_semantic","cfg_kb_embed_p"],
-                               ["cfg_kb_rerank","cfg_kb_rerank_p"]]) {
-    const sw = document.getElementById(swId);
-    const sel = document.getElementById(selId);
-    if (!sw || !sel) { out[swId] = { err: "missing" }; continue; }
-    const box = sel.closest(".kb-prov");
-    const pop = sel.closest(".select-pop");
-    const trg = pop ? pop.querySelector(".select-trigger") : null;
-    const tcs = trg ? getComputedStyle(trg) : null;
-    out[swId] = {
-      on: !!sw.checked,
-      nativeDisabled: sel.disabled,
-      nativeAria: sel.getAttribute("aria-disabled"),
-      boxOff: !!(box && box.classList.contains("is-off")),
-      locked: !!(pop && pop.classList.contains("is-locked")),
-      popAria: pop ? pop.getAttribute("aria-disabled") : null,
-      triggerOpacity: tcs ? parseFloat(tcs.opacity) : null,
-      triggerCursor: tcs ? tcs.cursor : null,
-      isOpen: !!(pop && pop.classList.contains("is-open")),
-      hasTitle: sel.hasAttribute("title"),
-    };
+# 仅在测试页面上暴露闭包函数，允许不触发 document click，直接锁定展开中的菜单。
+TEST_HOOKS = """
+window.__kbTest = {lock: lockAnimatedSelect, handler: syncKbProviderLocks, loads: 0};
+const originalLoadSettings = loadSettings;
+loadSettings = async function(){
+  await originalLoadSettings();
+  ++window.__kbTest.loads;
+};
+"""
+
+WATCH_CHANGE_JS = """
+(ids => {
+  const watched = new Set(ids);
+  const adds = window.__kbChangeAdds = Object.fromEntries(ids.map(id => [id, 0]));
+  const add = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type, ...args){
+    if(type === "change" && watched.has(this.id)) ++adds[this.id];
+    return add.call(this, type, ...args);
+  };
+})
+"""
+
+STATE_JS = """
+(select => {
+  const box = select.closest(".kb-prov");
+  const pop = select.closest(".select-pop");
+  const trigger = pop.querySelector(".select-trigger");
+  let opacity = 1;
+  for(let el = trigger; el && box.contains(el); el = el.parentElement){
+    opacity *= Number(getComputedStyle(el).opacity);
   }
-  return out;
-}
+  return {
+    nativeDisabled: select.disabled,
+    boxOff: box.classList.contains("is-off"),
+    locked: pop.classList.contains("is-locked"),
+    popAria: pop.getAttribute("aria-disabled"),
+    triggerOpacity: opacity,
+    triggerCursor: getComputedStyle(trigger).cursor,
+    triggerTabIndex: trigger.tabIndex,
+    isOpen: pop.classList.contains("is-open"),
+    expanded: trigger.getAttribute("aria-expanded"),
+    optionTabStops: Array.from(pop.querySelectorAll(".select-option"), opt => opt.tabIndex),
+    value: select.value,
+  };
+})
 """
 
 FAILED: list[str] = []
 
 
-def check(desc: str, cond: bool, extra: str = "") -> None:
+def check(desc: str, cond: bool, extra="") -> None:
     print(f"  {'✓' if cond else '✗'} {desc}{('  ← ' + str(extra)) if (extra and not cond) else ''}")
     if not cond:
         FAILED.append(desc)
 
 
-def _set_switch(pg, sw_id: str, on: bool) -> None:
-    """把开关点成想要的状态（幂等）。
+def _route(route) -> None:
+    if route.request.url.endswith("/kb/models"):
+        def channel(kind):
+            return {"active": f"{kind}-1", "choices": [{"id": f"{kind}-1"}, {"id": f"{kind}-2"}]}
 
-    真实的 `<input type=checkbox>` 在 `.sw` 里是**视觉隐藏**的（靠 `span.sl` 画开关），
-    直接点 input 会被 Playwright 判「not visible」而超时 —— 点它的 `<label>` 才对。
-    """
+        route.fulfill(json={"ok": True, "embedding": channel("embed"), "rerank": channel("rerank")})
+    else:
+        F.route(route)
+
+
+def _set_switch(pg, sw_id: str, on: bool) -> None:
     sw = pg.locator(f"#{sw_id}")
-    if bool(sw.is_checked()) != on:
+    if sw.is_checked() != on:
+        # 隐藏的 input 由可见 label 接收鼠标操作。
         sw.locator("xpath=ancestor::label[1]").click()
-        pg.wait_for_timeout(220)
 
 
 def _trigger(pg, sel_id: str):
@@ -97,152 +98,186 @@ def _trigger(pg, sel_id: str):
 
 
 def _click_trigger(pg, sel_id: str) -> None:
-    """点可见的卷帘下拉按钮。
-
-    用 `force=True`：锁住时我们给 wrapper 打了 `aria-disabled="true"`（无障碍语义正确），
-    Playwright 的可操作性检查会因此判「element is not enabled」而拒绝点击 ——
-    但那恰恰是要验的场景：**强行点也不该展开**。真实鼠标点击不受 aria 阻拦，
-    拦它的是 `setOpen()` 里的 `is-locked` 判断，所以这里必须把点击真的发出去。
-    """
-    _trigger(pg, sel_id).click(force=True)
-    pg.wait_for_timeout(220)
+    trigger = _trigger(pg, sel_id)
+    trigger.evaluate("el => el.scrollIntoView({block:'center'})")
+    # 真实鼠标点击不被 aria-disabled 拦住，force 只跳过 Playwright 的 enabled 检查。
+    trigger.click(force=True)
 
 
-def _opacity_ok(v) -> bool:
-    return isinstance(v, (int, float)) and v < 1
+def _state(pg, sel_id: str) -> dict:
+    return pg.locator(f"#{sel_id}").evaluate(STATE_JS)
+
+
+def _focus_state(pg, sel_id: str) -> dict:
+    trigger = _trigger(pg, sel_id)
+    pg.keyboard.press("Tab")
+    return trigger.evaluate("""async el => {
+        el.focus({preventScroll:true});
+        getComputedStyle(el).boxShadow;
+        await Promise.all(el.getAnimations().map(animation => animation.finished.catch(() => {})));
+        return {
+          focused: document.activeElement === el && el.matches(":focus-visible"),
+          boxShadow: getComputedStyle(el).boxShadow,
+          outline: getComputedStyle(el).outlineStyle,
+        };
+    }""")
+
+
+def _lock_hint(pg, sel_id: str) -> dict:
+    return _trigger(pg, sel_id).evaluate("""el => {
+        el.scrollIntoView({block:"center"});
+        const hitTest = node => {
+          const rect = node.getBoundingClientRect();
+          return node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+        };
+        const hint = document.getElementById(el.getAttribute("aria-describedby"));
+        return {
+          triggerHit: hitTest(el),
+          hintHit: !!hint && hitTest(hint),
+          text: hint ? hint.textContent.trim() : "",
+        };
+    }""")
+
+
+def _load_settings_tab(pg) -> None:
+    previous = pg.evaluate("window.__kbTest.loads")
+    pg.locator('button.tab[data-page="settings"]').click()
+    pg.wait_for_function("previous => window.__kbTest.loads > previous", arg=previous)
+
+
+def _bindings(pg) -> dict:
+    return pg.evaluate("""ids => Object.fromEntries(ids.map(id => {
+        const propertyHandler = document.getElementById(id).onchange === window.__kbTest.handler;
+        return [id, {propertyHandler, addCalls: window.__kbChangeAdds[id]}];
+    }))""", WATCHED)
 
 
 def main() -> int:
     src = HTML.read_text(encoding="utf-8")
+    entry = '"use strict";\nconst bridge ='
+    if src.count(entry) != 1:
+        raise AssertionError("找不到设置页脚本入口，无法安装浏览器测试探针")
+    src = src.replace(entry, '"use strict";\n' + TEST_HOOKS + "\nconst bridge =")
 
-    print("[1] 静态：接线、锁与样式都在")
-    check("两个容器都带 .kb-prov", src.count('class="kb-prov"') >= 2, src.count('class="kb-prov"'))
-    check("容器用 data-kb-switch 指明跟哪个开关",
-          'data-kb-switch="cfg_kb_semantic"' in src and 'data-kb-switch="cfg_kb_rerank"' in src)
-    check("有同步函数 syncKbProviderLocks", "function syncKbProviderLocks()" in src)
-    check("有下拉锁 lockAnimatedSelect（自定义下拉必须走它）", "function lockAnimatedSelect(" in src)
-    check("卷帘控件的 setOpen 认 is-locked（点／键盘都打不开）",
-          'next = !!open && !wrap.classList.contains("is-locked")' in src)
-    check("两个开关都挂了 change 监听",
-          '["cfg_kb_semantic","cfg_kb_rerank"]' in src
-          and 'addEventListener("change", syncKbProviderLocks)' in src)
-    check("包完卷帘控件后会再同步一次（否则锁不上 wrapper）",
-          "if(typeof syncKbProviderLocks === \"function\") syncKbProviderLocks();" in src)
-    check("样式里有 .kb-prov.is-off 的变灰规则", ".kb-prov.is-off" in src)
-
-    print("\n[2] 动态：真浏览器里验行为")
     with sync_playwright() as pw:
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
-        except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因
+        except Exception as e:  # noqa: BLE001
             print(f"⚠ 通道起不来（{e}），退回自带 Chromium")
             browser = pw.chromium.launch()
-        ctx = browser.new_context(viewport={"width": 1360, "height": 950})
+        ctx = browser.new_context(viewport={"width": 1360, "height": 950}, reduced_motion="reduce")
+        ctx.add_init_script(f"{WATCH_CHANGE_JS}({WATCHED!r})")
         pg = ctx.new_page()
         errs: list[str] = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.route(F.API_GLOB, F.route)
-        pg.goto(F.PAGE_URL)
-        pg.wait_for_timeout(700)
-        for sel in ('[data-page="settings"]', "#nav_settings", "text=设置"):
-            try:
-                if pg.locator(sel).count():
-                    pg.click(sel, timeout=1500)
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-        pg.wait_for_timeout(700)
+        pg.route(PAGE_URL, lambda route: route.fulfill(content_type="text/html; charset=utf-8", body=src))
+        pg.route("**/bridge-sdk.js", lambda route: route.fulfill(content_type="text/javascript", body=""))
+        pg.route(F.API_GLOB, _route)
+        pg.goto(PAGE_URL)
+        pg.wait_for_function("window.__kbTest.loads >= 1")
+        _load_settings_tab(pg)
+        pg.wait_for_function("document.getElementById('cfg_kb_rerank_p').options.length >= 3")
 
-        print("      [2.1] 两个开关都关 → 两个下拉都该锁死（灰 + 点不开）")
-        _set_switch(pg, "cfg_kb_semantic", False)
-        _set_switch(pg, "cfg_kb_rerank", False)
-        st = pg.evaluate(STATE_JS)
+        print("[1] 单项开关关闭时，下拉不可用且有可见说明")
+        _set_switch(pg, MASTER, True)
         for sw_id, sel_id in PAIRS:
-            s = st.get(sw_id) or {}
-            check(f"{sel_id}：原生 select disabled", s.get("nativeDisabled") is True, s)
-            check(f"{sel_id}：wrapper 带 .is-locked", s.get("locked") is True, s)
-            check(f"{sel_id}：wrapper aria-disabled=true", s.get("popAria") == "true", s)
-            check(f"{sel_id}：容器带 .is-off", s.get("boxOff") is True, s)
-            check(f"{sel_id}：看得见的变灰（trigger opacity<1）",
-                  _opacity_ok(s.get("triggerOpacity")), s)
-            check(f"{sel_id}：鼠标样式 not-allowed", s.get("triggerCursor") == "not-allowed", s)
-            check(f"{sel_id}：给了 title 提示", s.get("hasTitle") is True, s)
-
-        print("      [2.2] 真的改不了（不是样子灰了还能改）")
-        for _, sel_id in PAIRS:
+            _set_switch(pg, sw_id, False)
+            st = _state(pg, sel_id)
+            check(f"{sel_id}：锁定同步到原生控件、wrapper 和容器",
+                  st["nativeDisabled"] and st["locked"] and st["popAria"] == "true" and st["boxOff"], st)
+            check(f"{sel_id}：锁定透明度只淡化一次",
+                  0.35 < st["triggerOpacity"] < 0.55, st["triggerOpacity"])
+            check(f"{sel_id}：锁定 trigger 移出 Tab 顺序", st["triggerTabIndex"] == -1, st["triggerTabIndex"])
+            check(f"{sel_id}：鼠标样式 not-allowed", st["triggerCursor"] == "not-allowed", st["triggerCursor"])
+            hint = _lock_hint(pg, sel_id)
+            label = "语义增强检索" if sw_id == "cfg_kb_semantic" else "重排序精排"
+            check(f"{sel_id}：命中可见触发器和解锁提示",
+                  hint["triggerHit"] and hint["hintHit"] and f"打开「{label}」开关后可选择模型" in hint["text"], hint)
             _click_trigger(pg, sel_id)
-            st = pg.evaluate(STATE_JS)
-            check(f"{sel_id}：点 trigger 后菜单仍不展开",
-                  st["cfg_kb_semantic"]["isOpen"] is False and st["cfg_kb_rerank"]["isOpen"] is False,
-                  st)
-
-        print("      [2.2b] 键盘路径也堵住了（外部复核 P1：方向键 → 回车曾能把灰掉的下拉改掉）")
-        before = pg.evaluate(
-            """() => ({a: document.getElementById('cfg_kb_embed_p').value,
-                      b: document.getElementById('cfg_kb_rerank_p').value})""")
-        for sel_id in ("cfg_kb_embed_p", "cfg_kb_rerank_p"):
-            trg = _trigger(pg, sel_id)
-            trg.focus()
+            check(f"{sel_id}：锁定后鼠标打不开菜单", not _state(pg, sel_id)["isOpen"])
+            focus = _focus_state(pg, sel_id)
+            check(f"{sel_id}：锁定后无焦点光晕",
+                  focus["focused"] and focus["boxShadow"] == "none" and focus["outline"] == "none", focus)
             for key in ("ArrowDown", "ArrowDown", "Enter", "Enter"):
                 pg.keyboard.press(key)
-                pg.wait_for_timeout(120)
-            st = pg.evaluate(STATE_JS)
-            key_id = "cfg_kb_semantic" if sel_id == "cfg_kb_embed_p" else "cfg_kb_rerank"
-            check(f"{sel_id}：方向键+回车后菜单仍未展开", st[key_id]["isOpen"] is False, st[key_id])
-        after = pg.evaluate(
-            """() => ({a: document.getElementById('cfg_kb_embed_p').value,
-                      b: document.getElementById('cfg_kb_rerank_p').value})""")
-        check("★键盘操作后两个下拉的值都没被改", before == after, f"{before} → {after}")
+            after = _state(pg, sel_id)
+            check(f"{sel_id}：方向键和回车打不开菜单、也改不了值",
+                  not after["isOpen"] and after["value"] == st["value"], after)
 
-        print("      [2.3] 只开语义 → 嵌入能点开、重排仍点不开（各管各的）")
-        _set_switch(pg, "cfg_kb_semantic", True)
-        st = pg.evaluate(STATE_JS)
-        check("嵌入：不再锁定", st["cfg_kb_semantic"]["locked"] is False, st["cfg_kb_semantic"])
-        check("嵌入：透明度回到 1",
-              (st["cfg_kb_semantic"]["triggerOpacity"] or 0) >= 0.99, st["cfg_kb_semantic"])
-        check("重排：仍锁定", st["cfg_kb_rerank"]["locked"] is True, st["cfg_kb_rerank"])
-        _click_trigger(pg, "cfg_kb_embed_p")
-        st1 = pg.evaluate(STATE_JS)
-        check("嵌入：点得开（.is-open 出现）", st1["cfg_kb_semantic"]["isOpen"] is True, st1["cfg_kb_semantic"])
-        _click_trigger(pg, "cfg_kb_embed_p")   # 再点一次收起，免得影响后续
-        _click_trigger(pg, "cfg_kb_rerank_p")
-        st2 = pg.evaluate(STATE_JS)
-        check("重排：点不开（.is-open 仍不出现）", st2["cfg_kb_rerank"]["isOpen"] is False, st2["cfg_kb_rerank"])
+        print("\n[2] 解锁恢复交互、可读性和键盘反馈")
+        for sw_id, sel_id in PAIRS:
+            _set_switch(pg, sw_id, True)
+            st = _state(pg, sel_id)
+            focus = _focus_state(pg, sel_id)
+            check(f"{sel_id}：解锁恢复透明度、Tab 顺序和焦点光晕",
+                  not st["locked"] and not st["boxOff"] and st["triggerOpacity"] == 1
+                  and st["triggerTabIndex"] == 0 and focus["focused"] and focus["boxShadow"] != "none"
+                  and "当前生效" in _lock_hint(pg, sel_id)["text"],
+                  {"state": st, "focus": focus})
+            _click_trigger(pg, sel_id)
+            check(f"{sel_id}：解锁后鼠标可打开菜单", _state(pg, sel_id)["isOpen"])
+            _click_trigger(pg, sel_id)
 
-        print("      [2.4] 再开重排 → 两个都能点开")
-        _set_switch(pg, "cfg_kb_rerank", True)
-        st = pg.evaluate(STATE_JS)
-        check("重排：不再锁定", st["cfg_kb_rerank"]["locked"] is False, st["cfg_kb_rerank"])
-        check("两个容器都没有 .is-off",
-              not st["cfg_kb_semantic"]["boxOff"] and not st["cfg_kb_rerank"]["boxOff"], st)
+        print("\n[3] 总开关优先，单项选择保留")
+        _set_switch(pg, MASTER, False)
+        for sw_id, sel_id in PAIRS:
+            st = _state(pg, sel_id)
+            check(f"{sel_id}：总开关关闭，单项保持开启且下拉仍锁定",
+                  pg.locator(f"#{sw_id}").is_checked() and st["locked"] and st["nativeDisabled"], st)
+            _click_trigger(pg, sel_id)
+            check(f"{sel_id}：总开关关闭后鼠标打不开菜单", not _state(pg, sel_id)["isOpen"])
+        _set_switch(pg, MASTER, True)
+        for _, sel_id in PAIRS:
+            _click_trigger(pg, sel_id)
+            check(f"{sel_id}：总开关恢复后菜单能打开", _state(pg, sel_id)["isOpen"])
+            _click_trigger(pg, sel_id)
 
-        print("      [2.5] 再关回去 → 立刻锁死（不是一次性初始化）")
-        _set_switch(pg, "cfg_kb_rerank", False)
-        st = pg.evaluate(STATE_JS)
-        check("重排：又锁定", st["cfg_kb_rerank"]["locked"] is True, st["cfg_kb_rerank"])
-        check("嵌入：没被误伤", st["cfg_kb_semantic"]["locked"] is False, st["cfg_kb_semantic"])
+        print("\n[4] 直接锁定展开菜单后复位所有选项的 Tab 顺序")
+        for _, sel_id in PAIRS:
+            _click_trigger(pg, sel_id)
+            before = _state(pg, sel_id)
+            check(f"{sel_id}：展开时选项均在 Tab 顺序",
+                  before["isOpen"] and len(before["optionTabStops"]) >= 3 and all(
+                      index == 0 for index in before["optionTabStops"]), before)
+            pg.locator(f"#{sel_id}").evaluate("sel => window.__kbTest.lock(sel, true)")
+            after = _state(pg, sel_id)
+            check(f"{sel_id}：直接锁定后关闭菜单并移除全部选项的 Tab 停靠点",
+                  not after["isOpen"] and after["expanded"] == "false"
+                  and after["optionTabStops"] == [-1] * len(before["optionTabStops"]), after)
+            pg.locator(f"#{sel_id}").evaluate("sel => window.__kbTest.lock(sel, false)")
 
-        print("      [2.6] 截图留档（观察用）")
-        try:
-            SHOTS.mkdir(parents=True, exist_ok=True)
-            box = pg.locator(".kb-card").first
-            if box.count():
-                box.screenshot(path=str(SHOTS / "kb_dependent_off.png"))
-                print(f"      {SHOTS / 'kb_dependent_off.png'}")
-        except Exception as e:  # noqa: BLE001
-            print(f"      截图失败（不影响判据）：{e}")
+        print("\n[5] 往返三个页签周期，监听保持一个且仍有效")
+        before_bind = _bindings(pg)
+        for _ in range(3):
+            pg.locator('button.tab[data-page="overview"]').click()
+            _load_settings_tab(pg)
+        after_bind = _bindings(pg)
+        expected = {sw: {"propertyHandler": True, "addCalls": 0} for sw in WATCHED}
+        check("往返三次仍只有一个 onchange 槽，重复 addEventListener 注册次数为 0",
+              before_bind == after_bind == expected, f"{before_bind} → {after_bind}")
+        _set_switch(pg, MASTER, True)
+        for sw_id, _ in PAIRS:
+            _set_switch(pg, sw_id, True)
+        for sw_id, sel_id in PAIRS:
+            _set_switch(pg, sw_id, False)
+            other = next(s for _, s in PAIRS if s != sel_id)
+            states = [_state(pg, s) for s in (sel_id, other)]
+            check(f"{sel_id}：切页后关单项立即锁定，另一项仍可用",
+                  states[0]["locked"] and not states[1]["locked"], states)
+            _set_switch(pg, sw_id, True)
+        _set_switch(pg, MASTER, False)
+        check("切页后关总开关仍立即锁定两个模型",
+              all(_state(pg, sel_id)["locked"] for _, sel_id in PAIRS))
 
-        print("      [2.7] 页面无 JS 异常")
-        check("pageerror 为空", not errs, str(errs[:2]))
-
+        print("\n[6] 页面无 JS 异常")
+        check("pageerror 为空", not errs, errs[:2])
         ctx.close()
         browser.close()
 
-    print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项未通过：" + "、".join(FAILED))
         return 1
-    print("✅ 全部通过（开关关 → 下拉变灰且点不开；两个开关各管各的）")
+    print("✅ 全部通过")
     return 0
 
 

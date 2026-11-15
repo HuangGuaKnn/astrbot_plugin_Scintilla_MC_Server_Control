@@ -63,9 +63,8 @@ def part_one() -> None:
     print("---- 一、四种原因各说各的话（互不串台）----")
     off = _plug(dictionary_enabled=False, server_dir=str(PLUGIN_DIR))
     msg = off._dictionary_unavailable_reason()
-    check("★词典开关被关 → 说「已在配置中停用」", "停用" in msg, msg)
-    check("★并且指出该去哪看（WebUI → 插件设置 → 知识库）",
-          "WebUI" in msg and "知识库" in msg, msg)
+    check("★词典单项被关 → 点名单项停用",
+          "物品词典已在插件配置中停用" in msg and "总开关" not in msg, msg)
     check("★不再甩锅 server_dir", "填写 server_dir" not in msg, msg)
 
     remote = _plug(dictionary_enabled=True, remote_rcon_mode=True,
@@ -86,6 +85,15 @@ def part_one() -> None:
     msg_ready = ready._dictionary_unavailable_reason()
     check("配置都对但词典还没就绪 → 说「尚未就绪，稍后重试」",
           "尚未就绪" in msg_ready and "填写 server_dir" not in msg_ready, msg_ready)
+
+    both_off = _plug(enable_all_knowledge=False, dictionary_enabled=False, server_dir=str(PLUGIN_DIR))
+    both_off._dictionary = None
+    msg_both = both_off._dictionary_unavailable_reason()
+    check("★总开关关且词典缺失 → 词典 helper 仍报单项停用",
+          "物品词典已在插件配置中停用" in msg_both and "总开关" not in msg_both, msg_both)
+    msg_gate = both_off._tool_off_reason("mc_search_item")
+    check("★总开关关且词典缺失 → 工具闸门报总开关关闭",
+          "总开关已关闭" in msg_gate, msg_gate)
 
 
 def part_two() -> None:

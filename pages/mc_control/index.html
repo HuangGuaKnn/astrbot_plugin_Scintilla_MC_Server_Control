@@ -132,16 +132,11 @@ main{padding:20px;max-width:1280px;margin:0 auto}
   border-radius:6px;
   background:var(--sub);
 }
-/* v0.24.9：语义增强 / 重排序没开时，各自那组模型下拉跟着失效（变灰 + 不可交互）。
-   用 opacity 而不是换色：深 / 浅两套主题都成立，也不用为 disabled 再写一套配色。 */
+/* 模型下拉锁定时仅淡化可见控件，提示仍保持清晰。 */
 .kb-prov.is-off>label,
-.kb-prov.is-off>.hint{opacity:.45}
-/* 真身是自定义下拉：生效的是 .select-trigger（原生 select 是视觉隐藏的） */
-.kb-prov.is-off .select-pop,
 .kb-prov.is-off .select-trigger,
 .kb-prov.is-off .select-pop::after{opacity:.45}
 .kb-prov.is-off .select-trigger{cursor:not-allowed;border-color:var(--border)}
-.kb-prov.is-off .select-trigger:hover{border-color:var(--border)}
 .kb-prov .select-pop.is-locked,
 .kb-prov .select-pop.is-locked .select-trigger{cursor:not-allowed}
 /* v0.24.9：知识库页的「AI 调用已停用」横幅（左侧琥珀色带，跟普通提示区分开） */
@@ -450,6 +445,7 @@ summary:hover{text-decoration:underline}
 .select-trigger{display:block;width:100%;min-height:38px;padding:9px 38px 9px 12px;text-align:left;font-size:12.5px;line-height:1.45;color:var(--text);border:1px solid rgba(243,187,82,.35);border-radius:10px;background:linear-gradient(110deg,rgba(243,187,82,.08),var(--panel2) 60%);cursor:pointer;transition:transform .26s var(--motion-ease),border-color .24s ease,box-shadow .24s ease,background .24s ease}
 .select-trigger:hover{border-color:var(--cyan)}
 .select-trigger:focus-visible{transform:translateY(-1px);border-color:var(--cyan);background:linear-gradient(110deg,rgba(101,201,255,.1),var(--panel2) 64%);box-shadow:0 0 0 4px rgba(101,201,255,.09),0 10px 24px rgba(0,0,0,.12)}
+.select-pop.is-locked .select-trigger:focus-visible{transform:none;border-color:var(--border);box-shadow:none;outline:none}
 .select-trigger:active{transform:translateY(0) scale(.995)}
 .select-menu{position:absolute;left:0;right:0;top:calc(100% + 7px);z-index:3;max-height:0;overflow:hidden;padding:0 8px;opacity:0;pointer-events:none;transform:translateY(-8px) scaleY(.86);transform-origin:top;background:var(--panel);border:1px solid transparent;border-radius:12px;box-shadow:0 16px 36px rgba(0,0,0,.24);transition:max-height .34s var(--motion-ease),padding .34s var(--motion-ease),opacity .2s ease,transform .34s var(--motion-ease),border-color .24s ease}
 .select-pop.is-open .select-menu{max-height:180px;padding:8px;opacity:1;pointer-events:auto;transform:none;border-color:var(--border2)}
@@ -1588,7 +1584,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <!-- v0.24.9（用户实测反馈 2026-10-22）：**每栏各一个**总开关。关掉它 = 这一栏整段停用；
            它不改写下面的单项开关，重新打开后各自的选择还在。 -->
       <div class="sw-row master-row">
-        <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后：<b>AI 无法调用</b>下面任何一个工具（单项选择会原样保留，重开即恢复）</span></div>
+        <div class="sw-t"><b>LLM 工具总开关</b><span>关闭后，<b>AI 无法调用</b>下方 12 个工具（含 mc_reload_plugin）、工作流分组的 mc_workflow 和词典重建 mc_rescan_dictionary。单项开关保留原设置。</span></div>
         <label class="sw"><input type="checkbox" id="cfg_tools_master"><span class="sl"></span></label>
       </div>
       <div class="sw-grid" style="margin-top:2px">
@@ -1603,6 +1599,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <div class="sw-row"><div class="sw-t"><b>物品ID搜索</b><span>mc_search_item</span></div><label class="sw"><input type="checkbox" id="cfg_tool_search"><span class="sl"></span></label></div>
         <div class="sw-row"><div class="sw-t"><b>配方查询</b><span>mc_get_recipes</span></div><label class="sw"><input type="checkbox" id="cfg_tool_recipes"><span class="sl"></span></label></div>
         <div class="sw-row"><div class="sw-t"><b>Mod 列表</b><span>mc_list_mods</span></div><label class="sw"><input type="checkbox" id="cfg_tool_mods"><span class="sl"></span></label></div>
+        <div class="sw-row"><div class="sw-t"><b>重载插件</b><span>mc_reload_plugin</span></div><label class="sw"><input type="checkbox" id="cfg_tool_reload"><span class="sl"></span></label></div>
       </div>
       <div class="hint" style="margin-top:10px">这些开关控制 AI（LLM）能调用的工具；关闭后对应能力立即不可用</div>
     </div>
@@ -2086,13 +2083,19 @@ async function loadOverview(){
   const dSub = d.mods!=null
     ? (d.mods===0 && d.items>0 ? `原版物品表 / ${d.items} 物品` : `${d.mods} mods / ${d.items} 物品`)
     : (rmt?"需服务端本地目录":"未初始化");
+  const dictionaryRunning = d.master_enabled!==false && d.enabled!==false && !rmt && d.mods!=null;
+  const knowledgeActive = k.master_enabled!==false && k.enabled!==false && !!(k.state&&k.state.enabled);
+  const dictionaryStatus = d.master_enabled===false?"总开关已关闭"
+    : d.enabled===false?"已停用":rmt?"异地模式禁用":dictionaryRunning?"运行中":"未初始化";
+  const knowledgeStatus = k.master_enabled===false?"总开关已关闭":knowledgeActive?"已开启":"已停用";
+  const workflowStatus = w.master_enabled===false?"总开关已关闭":w.enabled===false?"已停用":"运行中";
   const mods = [
-    ["物品词典", d.enabled===false?"已停用":(rmt?"异地模式禁用":"运行中"), dSub, d.mods!=null && !rmt, (d.enabled===false||rmt)?"b":"g"],
-    ["知识库", k.enabled===false?"已停用":(k.state&&k.state.enabled?"已开启":"已停用"),
+    ["物品词典", dictionaryStatus, dSub, dictionaryRunning, dictionaryRunning?"g":"b"],
+    ["知识库", knowledgeStatus,
       kMis ? `⚠ 指纹不匹配（预设 ${k.preset_name||"?"}）`
         : (k.preset_name?`${k.preset_name} · ${k.fingerprint? "指纹 "+k.fingerprint : "未绑定"}${k.server_content?`（${k.server_content}）`:""}`:(k.server_id?`指纹 ${k.server_id}${k.server_content?`（${k.server_content}）`:""}`:(rmt?"异地模式禁用":"未初始化"))),
-      !!(k.stats&&k.stats.total), (kMis?"b":(k.state&&k.state.enabled?"g":"b"))],
-    ["多Agent工作流", w.enabled===false?"已停用":"运行中", `近${w.recent_total??0}次·${w.recent_done??0}成功`, w.recent_done>0, "c"],
+      knowledgeActive && !!(k.stats&&k.stats.total), knowledgeActive && !kMis?"g":"b"],
+    ["多Agent工作流", workflowStatus, `近${w.recent_total??0}次·${w.recent_done??0}成功`, w.recent_done>0, "c"],
     // v0.23.5：监听健康度 —— 对象还在、循环却死了的情况要看得见（此前只报「未运行」，
     // 不说为什么）。有错就把最后一条错误挂在副行上。
     ["服务器事件转发",
@@ -2710,15 +2713,20 @@ async function loadWorkflow(silent){
   const done = logs.filter(l=>l.status==="done").length;
   const bad = logs.filter(l=>l.status==="failed"||l.status==="error").length;
   const run = logs.filter(l=>l.status==="running").length;
+  const masterOff = r.master_enabled===false;
+  const toolStatus = masterOff?"总开关已关闭":r.tool_enabled===false?"工具不可用":"工具已开放";
   $("wf_stats").innerHTML =
-    statHTML("流水线", r.enabled===false?"停用":"启用", r.tool_enabled===false?"工具不可用":"工具已开放", r.enabled!==false, r.enabled!==false?"g":"b") +
+    statHTML("流水线", r.enabled===false?"停用":"启用", toolStatus, r.enabled!==false, r.enabled!==false?"g":"b") +
     statHTML("主 Provider", esc(r.main_provider||"自动"), "各 Agent 可独立指定", undefined, "c") +
     statHTML("近 15 次任务", done, `${run} 执行中 · ${bad} 失败`, done>0?done/Math.max(logs.length,1):"", done>0?"g":"");
   $("sw_wf_enabled").checked = r.enabled!==false;
-  $("sw_wf_tool").checked = r.tool_enabled!==false;
-  // 持续性状态横幅：停用时长期可见，说明「复杂任务会退化成什么」
+  $("sw_wf_tool").checked = (r.tool_setting_enabled ?? r.tool_enabled)!==false;
+  // 持续性状态横幅：停用时长期可见，并指向实际生效的开关。
   const banner = $("wf_banner");
-  if(r.enabled===false || r.tool_enabled===false){
+  if(masterOff){
+    banner.className = "banner show warn";
+    banner.innerHTML = `<span class="bi">⚠</span><span class="bx">LLM 工具总开关已关闭，AI 无法调用 <code>mc_workflow</code>。可在「插件设置 → AI 能力」中重新开启总开关。</span>`;
+  }else if(r.enabled===false || r.tool_enabled===false){
     const off = r.enabled===false ? "总开关 agent_workflow_enabled" : "工具开关 enable_mc_workflow";
     const lvl = r.enabled===false ? "bad" : "warn";
     const list = r.enabled===false
@@ -2951,6 +2959,7 @@ const CFG_FIELDS = [
   ["cfg_tool_search","enable_mc_search_item","b",true],
   ["cfg_tool_recipes","enable_mc_get_recipes","b",true],
   ["cfg_tool_mods","enable_mc_list_mods","b",true],
+  ["cfg_tool_reload","enable_mc_reload_plugin","b",true],
   // AI 能力 · 词典与知识库
   ["cfg_dict_en","dictionary_enabled","b",true],
   ["cfg_kb_en","knowledge_enabled","b",true],
@@ -3404,22 +3413,25 @@ function setupAnimatedSelect(wrap, native){
     sync();
     syncOptionTabStops(wrap.classList.contains("is-open"));
   };
-  const setOpen = open=>{
-    // v0.24.9：被 lockAnimatedSelect() 锁住时，点/键盘都打不开（下拉的「无法互动」就靠这一句）
-    const next = !!open && !wrap.classList.contains("is-locked");
-    wrap.classList.toggle("is-open", next);
-    trigger.setAttribute("aria-expanded", next ? "true" : "false");
-    syncOptionTabStops(next);
-    if(next){
-      const active = options().find(opt=>opt.dataset.value === native.value);
-      if(active) active.focus({preventScroll:true});
-    }
-    // v0.24.9（bug）：菜单是绝对定位，展开时得先把祖先的裁剪放开，否则会被折叠容器切掉
+  const closeMenu = ()=>{
+    wrap.classList.remove("is-open");
+    trigger.setAttribute("aria-expanded", "false");
+    syncOptionTabStops(false);
     syncClipRelax();
-    // v0.24.9（外部复核 P1）：返回「到底开没开」—— 键盘分支据此提前返回。
-    // 关着时 .select-menu 只是 max-height:0（不是 display:none），被裁剪的选项仍**能获得焦点**，
-    // 于是「方向键 → 回车」能把灰掉的下拉改掉值（真 Edge 实测过）。
-    return next;
+  };
+  const setOpen = open=>{
+    if(!open || wrap.classList.contains("is-locked")){
+      closeMenu();
+      return false;
+    }
+    wrap.classList.add("is-open");
+    trigger.setAttribute("aria-expanded", "true");
+    syncOptionTabStops(true);
+    const active = options().find(opt=>opt.dataset.value === native.value);
+    if(active) active.focus({preventScroll:true});
+    // 菜单展开时放开祖先容器的裁剪，避免被折叠容器切掉。
+    syncClipRelax();
+    return true;
   };
   const setValue = value=>{
     // v0.24.9（外部复核 P1）：锁住/disabled 时**任何路径**都不许改值 ——
@@ -3466,6 +3478,7 @@ function setupAnimatedSelect(wrap, native){
   }
   document.addEventListener("click", e=>{ if(!wrap.contains(e.target)) setOpen(false); });
   wrap.__selectSync = sync;
+  wrap.__selectClose = closeMenu;
   wrap.dataset.bound = "1";
   renderOptions();
 }
@@ -3528,13 +3541,11 @@ function lockAnimatedSelect(nativeEl, locked){
   if(!wrap) return;
   wrap.classList.toggle("is-locked", !!locked);
   wrap.setAttribute("aria-disabled", locked ? "true" : "false");
+  const tr = wrap.querySelector(".select-trigger");
+  if(tr) tr.tabIndex = locked ? -1 : 0;
   if(locked){
-    wrap.classList.remove("is-open");
-    const tr = wrap.querySelector(".select-trigger");
-    if(tr){
-      tr.setAttribute("aria-expanded", "false");
-      if(document.activeElement && tr === document.activeElement) tr.blur();
-    }
+    if(typeof wrap.__selectClose === "function") wrap.__selectClose();
+    if(wrap.contains(document.activeElement)) document.activeElement.blur();
   }
 }
 function initPermissionModePicker(){
@@ -4098,23 +4109,25 @@ function fillProviderSelect(id, kind){
   sel.value = saved || "";
   renderKbModelTips();
 }
-// v0.24.9（用户实测反馈 2026-10-28）：嵌入 / 重排模型下拉跟着各自的开关走 ——
-// 开关关着时整组变灰且不可交互（不是「选了也不生效」那种隐性失效）。
+// 总开关和对应的单项开关都开启时，才可选择模型。
 function syncKbProviderLocks(){
+  const kbMaster = $("cfg_kb_master");
+  const masterOn = !kbMaster || kbMaster.checked;
   for(const box of document.querySelectorAll(".kb-prov")){
     const swId = box.dataset.kbSwitch;
     const sw = swId ? $(swId) : null;
     const sel = box.querySelector("select");
     if(!sw || !sel) continue;
-    const on = !!sw.checked;
+    const on = sw.checked && masterOn;
     box.classList.toggle("is-off", !on);
     lockAnimatedSelect(sel, !on);
-    if(on) sel.removeAttribute("title");
-    else sel.title = "先打开上面的开关，才选得了模型";
+    const trigger = box.querySelector(".select-trigger");
+    const tip = box.querySelector(".hint");
+    if(trigger && tip) trigger.setAttribute("aria-describedby", tip.id);
   }
-  // v0.24.9：知识库页顶部横幅跟着「词典与知识库」总开关走（只说明事实，不禁用任何按钮）
-  const banner = $("kb_master_banner"), kbMaster = $("cfg_kb_master");
-  if(banner) banner.style.display = (kbMaster && !kbMaster.checked) ? "" : "none";
+  renderKbModelTips();
+  const banner = $("kb_master_banner");
+  if(banner) banner.style.display = masterOn ? "none" : "";
 }
 function renderKbModelTips(){
   const pairs = [
@@ -4122,8 +4135,15 @@ function renderKbModelTips(){
     ["kb_rerank_p_tip","cfg_kb_rerank_p","rerank","重排序精排","召回顺序"],
   ];
   for(const [tipId, selId, kind, chName, degrade] of pairs){
-    const tip = $(tipId);
+    const tip = $(tipId), sel = $(selId);
     if(!tip) continue;
+    if(sel && sel.disabled){
+      const master = $("cfg_kb_master");
+      tip.textContent = master && !master.checked
+        ? "打开「词典与知识库」总开关后可选择模型。"
+        : "打开「" + chName + "」开关后可选择模型。";
+      continue;
+    }
     if(!KB_MODELS){
       tip.innerHTML = KB_MODELS_ERR
         ? `读不到模型列表（${esc(KB_MODELS_ERR)}）—— 不影响功能：留空即自动使用第一个已加载的模型`
@@ -4132,7 +4152,6 @@ function renderKbModelTips(){
     }
     const s = KB_MODELS[kind] || {};
     const list = s.choices || [];
-    const sel = $(selId);
     const picked = sel ? sel.value : "";
     if(!list.length){
       tip.innerHTML = `<b>没检测到已加载的 ${kind==="embedding"?"Embedding":"Rerank"} 模型</b>：`
@@ -4318,9 +4337,8 @@ async function loadSettings(){
   ["cfg_kb_embed_p","cfg_kb_rerank_p"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderKbModelTips;
   });
-  // v0.24.9：嵌入 / 重排模型下拉跟随各自开关（变灰 + 不可交互）；载入时先同步一次
-  ["cfg_kb_semantic","cfg_kb_rerank"].forEach(id=>{
-    const el = $(id); if(el) el.addEventListener("change", syncKbProviderLocks);
+  ["cfg_kb_master","cfg_kb_semantic","cfg_kb_rerank"].forEach(id=>{
+    const el = $(id); if(el) el.onchange = syncKbProviderLocks;
   });
   syncKbProviderLocks();
   // 工作流 Provider 下拉：改动后即时刷新提示（v0.23.7 · B7）

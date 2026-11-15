@@ -13,11 +13,11 @@
   2) 动态：真浏览器里 `#page_settings .set-sec` 数量 = 静态次数（没有掉出容器）；
   3) 动态：设置页六大分组标题按序齐全（连接 / 播报 / 指令 / 工具 / 知识库 / 外观 / 自动化全都在）；
   4) 动态：新增的「检索引擎」下拉真的渲染出来、且两档选项齐全；
-  5) 动态：页面无 JS 异常（pageerror）。
+  5) 动态：工具总开关的范围说明与重载插件开关，后者从配置回填且能保存。
+  6) 动态：页面无 JS 异常（pageerror）。
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import re
 import sys
@@ -38,6 +38,18 @@ def check(desc: str, cond: bool, extra: str = "") -> None:
     print(f"  {'✓' if cond else '✗'} {desc}{('  ← ' + str(extra)) if (extra and not cond) else ''}")
     if not cond:
         FAILED.append(desc)
+
+
+def _settings_route(route) -> None:
+    url = route.request.url.split("?", 1)[0]
+    if url.endswith("/settings"):
+        payload = F.settings()
+        payload["settings"]["enable_mc_reload_plugin"] = True
+        route.fulfill(json=payload)
+    elif url.endswith("/settings/save"):
+        route.fulfill(json={"ok": True, "applied": route.request.post_data_json["settings"]})
+    else:
+        F.route(route)
 
 
 def main() -> int:
@@ -63,7 +75,7 @@ def main() -> int:
         pg = ctx.new_page()
         errs: list[str] = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.route(F.API_GLOB, F.route)
+        pg.route(F.API_GLOB, _settings_route)
         pg.goto(F.PAGE_URL)
         pg.wait_for_timeout(1000)
         pg.click('button.tab[data-page="settings"]')
@@ -94,7 +106,32 @@ def main() -> int:
             check(f"两档选项齐全（实际 {info['options']}）", info["options"] == ["bm25", "legacy"])
             check("挂在设置页容器内（没掉出去）", info["inSettings"], str(info))
 
-        print("\n[4] 页面无 JS 异常")
+        print("\n[4] LLM 工具总开关说明范围，重载插件开关参与设置读写")
+        tool_card = pg.locator("#cfg_tools_master").locator("xpath=ancestor::div[contains(@class,'card')]")
+        caption = tool_card.locator(".master-row .sw-t > span").inner_text()
+        check("总开关说明列明 12 个单项、插件重载、工作流和词典重建",
+              all(name in caption for name in ("12 个工具", "mc_reload_plugin", "mc_workflow", "mc_rescan_dictionary")),
+              caption)
+        tool_count = tool_card.locator(".sw-grid input[type=checkbox]").count()
+        check("工具栏显示 12 个单项开关", tool_count == 12, str(tool_count))
+
+        toggle = tool_card.locator(".sw-grid #cfg_tool_reload[type=checkbox]")
+        check("工具栏有重载插件单项开关 cfg_tool_reload", toggle.count() == 1)
+        fields = re.search(r"const CFG_FIELDS\s*=\s*\[(.*?)\n\];", src, re.S)
+        check("CFG_FIELDS 以布尔字段关联 enable_mc_reload_plugin",
+              bool(fields and re.search(r'\["cfg_tool_reload"\s*,\s*"enable_mc_reload_plugin"\s*,\s*"b"\s*,\s*true\]',
+                                        fields.group(1))))
+        if toggle.count() == 1:
+            check("读取 enable_mc_reload_plugin=True 回填为开启", toggle.is_checked())
+            if toggle.is_checked():
+                toggle.locator("xpath=ancestor::label[1]").click()
+            with pg.expect_request(lambda request: request.method == "POST" and "/settings/save" in request.url) as sent:
+                pg.locator("#btn_save_cfg_top").click()
+            settings = sent.value.post_data_json["settings"]
+            check("关闭重载插件开关后保存发送 enable_mc_reload_plugin=False",
+                  settings.get("enable_mc_reload_plugin") is False, str(settings.get("enable_mc_reload_plugin")))
+
+        print("\n[5] 页面无 JS 异常")
         check("pageerror 为空", not errs, str(errs[:2]))
 
         ctx.close()

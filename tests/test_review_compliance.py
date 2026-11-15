@@ -112,12 +112,31 @@ check("注入出口用的是 extra_user_content_parts，且元素走官方文本
       "extra_user_content_parts" in main_src
       and "parts.append(_make_text_part(block))" in main_src
       and 'parts.append({"type": "text", "text": block})' not in main_src)
-check("注入出口收口到 _emit_hint：_append_user_hint 只在内部调用一次（唯一出口）",
-      main_src.count("self._append_user_hint(req, blocks)") == 1,
-      f"→ 实际 {main_src.count('self._append_user_hint(req, blocks)')} 处")
-check("三处注入分支都经 _emit_hint（v0.23.3：管理员 / 无启用工具 / 权限提醒）",
-      main_src.count("self._emit_hint(") == 3,
-      f"→ 实际 {main_src.count('self._emit_hint(')} 处")
+plugin_ast = next(
+    node for node in ast.parse(main_src).body
+    if isinstance(node, ast.ClassDef) and node.name == "McControlPlugin"
+)
+
+
+def hint_callers(helper):
+    return {
+        method.name
+        for method in plugin_ast.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
+            and node.func.attr == helper
+            for node in ast.walk(method)
+        )
+    }
+
+
+append_callers = hint_callers("_append_user_hint")
+check("只有 _emit_hint 直接调用 _append_user_hint",
+      append_callers == {"_emit_hint"}, "→ 实际 " + ", ".join(sorted(append_callers)))
+check("权限前置提醒经 _emit_hint 注入",
+      "_inject_permission_hint" in hint_callers("_emit_hint"))
 check("老版本 AstrBot 无该字段时宁可不提醒、也不回退写 system_prompt",
       "extra_user_content_parts" in main_src and "跳过权限前置提醒" in main_src)
 

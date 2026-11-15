@@ -484,6 +484,12 @@ _MSG_KB_MASTER_OFF_FOR_DICT = (
 )
 
 
+def _query_tool(fn):
+    """标记白名单策略下可提示模型使用的查询工具。"""
+    fn.__mc_query__ = True
+    return fn
+
+
 class McControlPlugin(Star):
     """AstrBot Minecraft 服务器控制插件（RCON + 服务器事件转发）。"""
 
@@ -1002,23 +1008,28 @@ class McControlPlugin(Star):
         return written
 
 
-    def _tools_master_enabled(self) -> bool:
+    def _tools_master_enabled(self, settings: dict | None = None) -> bool:
         """「LLM 工具」栏级总开关（v0.24.9）。
 
         用户实测反馈（2026-10-22）：这一栏 11 个开关，想整段停用得一个个关。
         语义分工 ——
           * **单项开关**是 fail-closed 的那一层（`parse_bool` 读不懂 → 关）；
-          * **总开关**只是可用性闸门：`_cfg_bool` 读不懂 → 按默认（开）处理。
+          * **总开关**只是可用性闸门：`strict_bool` 读不懂 → 按默认（开）处理。
             一次配置手抖不该把所有工具一起关死，而真正危险的能力在单项上仍然关着。
         它只决定「能不能用」，**不改写**任何单项的原值 —— 重新打开后用户的选择还在。
         """
-        return self._cfg_bool("enable_all_tools", True)
+        # 手工配置残留的空串视为缺省值，与单项开关的保守解析分开。
+        key = "enable_all_tools"
+        raw = self._cfg(key, True) if settings is None else settings.get(key, True)
+        return raw == "" or strict_bool(raw, True, key=key, logger=self.logger)
 
-    def _knowledge_master_enabled(self) -> bool:
+    def _knowledge_master_enabled(self, settings: dict | None = None) -> bool:
         """「词典与知识库」栏级总开关（v0.24.9）。语义同上，只是管另一栏。"""
-        return self._cfg_bool("enable_all_knowledge", True)
+        key = "enable_all_knowledge"
+        raw = self._cfg(key, True) if settings is None else settings.get(key, True)
+        return raw == "" or strict_bool(raw, True, key=key, logger=self.logger)
 
-    def _tool_master_off_reason(self, name: str) -> str:
+    def _master_gate(self, name: str) -> str:
         """该工具所属那一栏的总开关若关着，返回对应回执；否则空串。"""
         if name in _KNOWLEDGE_TOOLS:
             if not self._knowledge_master_enabled():
@@ -1035,27 +1046,17 @@ class McControlPlugin(Star):
 
     def _tool_off_reason(self, name: str) -> str:
         """工具不可用时的回执（**区分**「被哪一栏的总开关关」与「被单项关」）。空串 = 可用。"""
-        return self._tool_master_off_reason(name) or (
-            "" if self._tool_enabled(name)
+        return self._master_gate(name) or (
+            "" if self._tool_single_enabled(name)
             else "该功能已在插件配置中停用（WebUI → 插件设置 → AI 能力）。"
         )
 
     def _tool_enabled(self, name: str) -> bool:
         """读取对应 LLM 工具的开关配置（配置变更即时生效）。"""
-        # v0.24.9：先看**所属那一栏**的总开关 —— 关了就一律不可用（单项值原样保留，重开即恢复）。
-        # 这里直接读配置键（不调兄弟方法）：测试与降级装配里常只伪造 `_cfg_bool` / `_cfg`，
-        # 少一层跨方法依赖就少一处崩点。
-        if name in _KNOWLEDGE_TOOLS:
-            if not self._cfg_bool("enable_all_knowledge", True):
-                return False
-        elif name in _DICTIONARY_TOOLS:
-            # 词典类：工具被关、或词典被关，都不放行（两个总开关是 AND 关系）
-            if not self._cfg_bool("enable_all_tools", True):
-                return False
-            if not self._cfg_bool("enable_all_knowledge", True):
-                return False
-        elif not self._cfg_bool("enable_all_tools", True):
-            return False
+        return not self._master_gate(name) and self._tool_single_enabled(name)
+
+    def _tool_single_enabled(self, name: str) -> bool:
+        """仅判断工具自己的开关，供已通过栏级闸门的调用方使用。"""
         # 配置可能来自旧版/手工编辑的 JSON；不能用 ``bool(raw)``，否则
         # ``"false"`` 会变成 True，导致用户明确关闭的工具重新暴露给 LLM。
         # 无法解析时按关闭处理，保证工具开关 fail-closed。
@@ -2495,6 +2496,22 @@ class McControlPlugin(Star):
             if event.get_extra("_mc_perm_hint_done"):
                 return  # 同一次事件只注入一轮（降级提醒也一并只注一次）
             blocks: list[str] = []
+            is_admin = self._is_admin(event)
+            whitelist = not is_admin and self._is_whitelist_policy()
+            available = {}
+            configured_off = False
+            if whitelist:
+                # 名字取自 @filter.llm_tool 写入的注册表，查询资格由工具本身标记。
+                from astrbot.core.provider.register import llm_tools
+
+                registered = {
+                    entry.name: entry.handler for entry in llm_tools.func_list
+                    if McControlPlugin._llm_tool_entry_is_ours(entry)
+                }
+                available = {name: handler for name, handler in registered.items()
+                             if not self._tool_off_reason(name)}
+                configured_off = len(available) < len(registered)
+
             # v0.21.15：本地文件类能力被禁用（异地 RCON 模式 / 目录校验未通过）时，
             # 同样在请求阶段先告知，省得模型反复调用注定失败的查询工具。与权限无关，
             # 管理员也会注入；与权限提醒共用同一套触发判定（v0.23.3 起同受
@@ -2507,40 +2524,52 @@ class McControlPlugin(Star):
                 except Exception:
                     reason = ""
             if reason:
+                local_tools = " / ".join(
+                    name for name in _DICTIONARY_TOOLS + _KNOWLEDGE_TOOLS
+                    if not whitelist or name in available
+                )
+                degraded_tools = (
+                    f"因此 {local_tools} 当前**不可用**（调用会直接返回禁用说明，"
+                    "重试与换工具都无效）；" if local_tools else ""
+                )
                 blocks.append(
                     "【能力降级提醒 · 由 MC 控制插件注入】\n"
-                    f"{reason}。\n"
-                    "因此 mc_search_item / mc_get_recipes / mc_list_mods / "
-                    "mc_rescan_dictionary / mc_search_knowledge / mc_save_knowledge / "
-                    "mc_correct_knowledge 当前**不可用**（调用会直接返回禁用说明，重试与"
-                    "换工具都无效）；mc_server_status 里的版本 / 内存 / CPU / 运行时长也会缺失。\n"
-                    "指令下发、发物品、广播、查询在线玩家、踢人封禁等 RCON 能力不受影响，"
-                    "该用就用。若用户问起，请如实说明原因（异地 RCON 模式或服务端目录未配置/"
+                    f"{reason}。\n{degraded_tools}"
+                    "服务器状态里的版本 / 内存 / CPU / 运行时长会缺失。\n"
+                    "若用户问起，请如实说明原因（异地 RCON 模式或服务端目录未配置/"
                     "结构不符），并提示「关闭异地 RCON 模式或修正服务器目录即可恢复」。"
                 )
-            if self._is_admin(event):
+            if is_admin:
                 self._emit_hint(req, event, blocks, trigger)
                 return
-            enabled = [t for t in COMMAND_TOOLS if self._tool_enabled(t)]
-            if not enabled:
-                self._emit_hint(req, event, blocks, trigger)
-                return
-            if self._is_whitelist_policy():
-                hint = (
-                    "【权限前置提醒 · 由 MC 控制插件注入】\n"
-                    "当前请求者**不是管理员**（不在插件 admin_ids 中），命令工具策略 = 白名单："
-                    "mc_execute_command / mc_give_item / mc_broadcast / mc_workflow 会被权限闸门"
-                    "**直接拒绝**（与参数、措辞、重试次数无关，重试与换工具都无效）。\n"
-                    "遇到「发物品 / 执行指令 / 广播 / 满配枪械 / 改服务器设置」这类请求时，"
-                    "请**不要尝试调用**上述工具，直接如实告知用户「已被权限限制」，"
-                    f"并给出替代方式：{ALTERNATIVES}，或请管理员把该账号加入 admin_ids、"
-                    "把策略切换为 blacklist。\n"
-                    "查询类工具（mc_list_players / mc_server_status / mc_connection_status / "
-                    "mc_search_item / mc_get_recipes / mc_list_mods / mc_search_knowledge）不受影响，"
-                    "该用就用。"
+            if whitelist:
+                commands = " / ".join(name for name in COMMAND_TOOLS if name in available)
+                queries = " / ".join(
+                    name for name, handler in available.items()
+                    if getattr(getattr(handler, "func", handler), "__mc_query__", False)
+                    and not (reason and name in _DICTIONARY_TOOLS + _KNOWLEDGE_TOOLS)
                 )
-            else:
-                hint = (
+                hint = [
+                    "【权限前置提醒 · 由 MC 控制插件注入】\n"
+                    "当前请求者**不是管理员**（不在插件 admin_ids 中），命令工具策略 = 白名单。"
+                ]
+                if commands:
+                    hint.append(
+                        f"{commands} 会被权限闸门**直接拒绝**（与参数、措辞、重试次数无关，"
+                        "重试与换工具都无效）。\n"
+                        "遇到「发物品 / 执行指令 / 广播 / 满配枪械 / 改服务器设置」这类请求时，"
+                        "请**不要尝试调用**上述工具，直接如实告知用户「已被权限限制」，"
+                        f"并给出替代方式：{ALTERNATIVES}，或请管理员把该账号加入 admin_ids、"
+                        "把策略切换为 blacklist。"
+                    )
+                if configured_off:
+                    hint.append("部分工具已被配置停用。")
+                if queries:
+                    hint.append(f"可用的查询类工具：{queries}。")
+                if len(hint) > 1:
+                    blocks.append("\n".join(hint))
+            elif any(self._tool_enabled(name) for name in COMMAND_TOOLS):
+                blocks.append(
                     "【权限前置提醒 · 由 MC 控制插件注入】\n"
                     "当前请求者**不是管理员**，命令工具策略 = 黑名单："
                     "命令工具本身可用，但 stop / op / ban / kick / whitelist 等危险命令与"
@@ -2549,7 +2578,6 @@ class McControlPlugin(Star):
                     "mc_save_knowledge / mc_correct_knowledge / mc_workflow 也不可用。\n"
                     "被拒绝时请如实告知用户，不要改写参数重试，也不要换成别的工具绕过。"
                 )
-            blocks.append(hint)
             self._emit_hint(req, event, blocks, trigger)
         except Exception as e:  # 提示注入失败绝不能影响正常对话
             self.logger.warning("权限前置提醒注入失败: %s", e)
@@ -2738,11 +2766,11 @@ class McControlPlugin(Star):
             request(string): 完整的任务请求描述，例如「给 Steve 满配一把 M4A1 步枪并附上弹药」「把服务器天气设为雷雨」
             player(string): 可选。任务目标玩家名，留空则按请求内容推断
         """
-        _off = self._tool_master_off_reason("mc_workflow")
+        _off = self._master_gate("mc_workflow")
         if _off:
             # v0.24.9：总开关关着时，下面那条「改用具体工具」的指引会误导（那些工具也被同一栏关着）
             return _off
-        if not self._tool_enabled("mc_workflow"):
+        if not self._tool_single_enabled("mc_workflow"):
             return (
                 "【mc_workflow 已停用】本插件配置里已关闭 mc_workflow 工具，请**不要**再调用本工具。"
                 "请改用以下具体工具分步完成复杂任务："
@@ -2844,6 +2872,7 @@ class McControlPlugin(Star):
             return f"命令执行失败：{e}"
 
     @filter.llm_tool(name="mc_list_players")
+    @_query_tool
     @tolerant_tool
     async def mc_list_players(self, event: AstrMessageEvent):
         """查询 Minecraft 服务器当前在线的玩家列表与人数。
@@ -2859,6 +2888,7 @@ class McControlPlugin(Star):
             return f"查询失败：{e}"
 
     @filter.llm_tool(name="mc_server_status")
+    @_query_tool
     @tolerant_tool
     async def mc_server_status(self, event: AstrMessageEvent):
         """查询 Minecraft 服务器的运行状态：版本、在线人数、游戏内时间等。
@@ -4443,6 +4473,7 @@ class McControlPlugin(Star):
             return f"操作失败：{e}"
 
     @filter.llm_tool(name="mc_connection_status")
+    @_query_tool
     @tolerant_tool
     async def mc_connection_status(self, event: AstrMessageEvent):
         """测试与 Minecraft 服务器的 RCON 连接是否正常。
@@ -4488,9 +4519,8 @@ class McControlPlugin(Star):
         v0.24.8（2026-10-22 真机 + 用户实测）：把「知识库」那一栏整段停用之后，
         `mc_search_item` 报的是「请先在插件配置中填写 server_dir」—— 而 server_dir 明明填好了。
         归因错了，用户就会跑去改一个没问题的配置项（这正是真机/真人交互才照得出来的洞）。
+        总开关的拒绝由 `_master_gate()` 统一负责，这里只归因词典本身的状态。
         """
-        if not self._knowledge_master_enabled():
-            return _MSG_KB_MASTER_OFF
         if not self._cfg_bool("dictionary_enabled", True):
             return "物品词典已在插件配置中停用（WebUI → 插件设置 → 知识库 → 物品词典）。"
         if self.is_remote_mode():
@@ -4504,6 +4534,7 @@ class McControlPlugin(Star):
         return "物品词典尚未就绪：可能正在重建或上次构建失败，请稍后重试，或到 WebUI 词典页查看状态。"
 
     @filter.llm_tool(name="mc_list_mods")
+    @_query_tool
     @tolerant_tool
     async def mc_list_mods(self, event: AstrMessageEvent):
         """列出 Minecraft 服务器当前安装的全部 Mod（ID 与显示名）。
@@ -4529,6 +4560,7 @@ class McControlPlugin(Star):
         return f"已安装 Mod 共 {len(mods)} 个：\n" + "\n".join(lines)
 
     @filter.llm_tool(name="mc_search_item")
+    @_query_tool
     @tolerant_tool
     async def mc_search_item(self, event: AstrMessageEvent, keyword: str):
         """搜索 Minecraft 服务器物品的精确 ID，支持中文名、英文名或 ID 片段。
@@ -4572,6 +4604,7 @@ class McControlPlugin(Star):
         return f"找到 {len(results)} 个匹配物品：\n" + "\n".join(lines)
 
     @filter.llm_tool(name="mc_get_recipes")
+    @_query_tool
     @tolerant_tool
     async def mc_get_recipes(
         self, event: AstrMessageEvent, item: str, direction: str = "forward"
@@ -4633,6 +4666,7 @@ class McControlPlugin(Star):
     # ================= 学习型知识库工具（LLM 智能路由） =================
 
     @filter.llm_tool(name="mc_search_knowledge")
+    @_query_tool
     @tolerant_tool
     async def mc_search_knowledge(self, event: AstrMessageEvent, topic: str):
         """检索本整合包的模组知识库（已沉淀的经验：物品ID、NBT格式、枪械配件方案、任务信息等）。
