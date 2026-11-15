@@ -49,12 +49,12 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 PAGE_URL = os.environ.get("KB_FOLD_TEST_PAGE") or (
-    PLUGIN / "pages" / "mc_control" / "index.html"
-).as_uri()
+    serve_plugin_root() + "/pages/mc_control/index.html"
+)
 
 ROW_MAX_GAP = 120          # 同排两卡的内容高度差上限（px）
 KB_CONTENT_MAX = 620       # 知识库卡内容高度上限（px）—— 长文案回流会立刻超标

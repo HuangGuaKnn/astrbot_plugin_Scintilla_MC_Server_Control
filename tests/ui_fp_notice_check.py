@@ -46,14 +46,14 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 # 允许用环境变量指向别处的 index.html —— 便于验证「这个用例真的能抓到 bug」
 # （把未修复的页面拷出来跑同一套断言，应当失败）。
 PAGE_URL = os.environ.get("FP_TEST_PAGE") or (
-    PLUGIN / "pages" / "mc_control" / "index.html"
-).as_uri()
+    serve_plugin_root() + "/pages/mc_control/index.html"
+)
 API_GLOB = "**/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/**"
 
 PID = "p_default"

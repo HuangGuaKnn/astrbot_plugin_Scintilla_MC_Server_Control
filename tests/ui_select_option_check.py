@@ -43,10 +43,10 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-PAGE = (PLUGIN / "pages" / "mc_control" / "index.html").as_uri()
+PAGE = serve_plugin_root() + "/pages/mc_control/index.html"
 SHOTS = PLUGIN / "tests" / "_shots"
 SHOTS.mkdir(exist_ok=True)
 

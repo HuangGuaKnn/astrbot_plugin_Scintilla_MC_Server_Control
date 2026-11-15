@@ -45,12 +45,12 @@ def _patch_pw_driver() -> None:
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 PAGE_URL = os.environ.get("THEME_TEST_PAGE") or (
-    PLUGIN / "pages" / "mc_control" / "index.html"
-).as_uri()
+    serve_plugin_root() + "/pages/mc_control/index.html"
+)
 API_GLOB = "**/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/**"
 SHOTS = PLUGIN / "tests" / "_shots"
 

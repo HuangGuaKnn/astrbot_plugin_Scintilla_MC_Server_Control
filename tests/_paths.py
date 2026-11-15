@@ -60,6 +60,35 @@ UI_CHANNEL = os.environ.get("SCINTILLA_UI_CHANNEL", "msedge")
 UI_LAUNCH_KWARGS = {} if UI_CHANNEL.strip().lower() in ("", "bundled") else {"channel": UI_CHANNEL}
 
 
+# ── UI 用例的页面地址：走本地 HTTP，而不是 file:// ───────────────────────────
+# 为什么必须这样（v0.24.11 连栽三次的坑）：页面用 `fetch("/api/...")` 打后端，
+# 在 file:// 下会被解析成 file:///<盘符>/api/... —— Chromium 直接拒绝
+# （"Fetch API cannot load ... URL scheme \"file\" is not supported"），
+# playwright 的 page.route 也拦不到，于是表现为「点了保存却没有请求」的假红。
+# 换成 http://127.0.0.1:<port> 后：同源 fetch 正常、route 能拦、localStorage/cookie
+# 也跟真实环境一致（主题持久化那几个用例同样受益）。
+_page_server = None
+
+
+def serve_plugin_root() -> str:
+    """起一个只读的本地 HTTP 服务（懒启动、进程内单例），返回插件根 URL。"""
+    global _page_server
+    if _page_server is None:
+        import functools
+        import http.server
+        import threading
+
+        class _Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *args):  # 静音：用例输出里不需要访问日志
+                pass
+
+        handler = functools.partial(_Quiet, directory=str(PLUGIN_DIR))
+        _page_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=_page_server.serve_forever, daemon=True).start()
+    host, port = _page_server.server_address[:2]
+    return f"http://{host}:{port}"
+
+
 def add_sys_paths() -> None:
     """把「插件根的上级」（供 import 包名）与 AstrBot app 目录塞进 sys.path。"""
     for p in (str(PLUGIN_DIR.parent), str(APP_DIR) if APP_DIR else None):
