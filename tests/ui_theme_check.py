@@ -19,9 +19,21 @@ import pathlib
 
 # 本机 AstrBot 内嵌 Python 的 site-packages 在 sys.path 里带 \\?\ 前缀，
 # Playwright 的 node 驱动拿它当入口脚本会解析成 "C:" 而崩 → 先剥掉前缀。
+#
+# v0.24.11（CI 红了才发现）：这层补丁**只有 Windows 需要**；而且 playwright 1.65 起把
+# `playwright._impl._transport` 移走了 —— 老写法在 Linux/CI 上直接 ModuleNotFoundError，
+# 四个 CI_OK 的 UI 用例连 import 都过不去（v0.24.11 发版第一次就栽在这）。
+# 改成：非 Windows 直接返回；取不到内部模块也静默跳过（判据本身不依赖这层补丁）。
 def _patch_pw_driver() -> None:
-    import playwright._impl._transport as t
-    orig = t.compute_driver_executable
+    if os.name != "nt":
+        return
+    try:
+        import playwright._impl._transport as t
+    except ModuleNotFoundError:
+        return
+    orig = getattr(t, "compute_driver_executable", None)
+    if orig is None:
+        return
 
     def patched():
         node, cli = orig()
