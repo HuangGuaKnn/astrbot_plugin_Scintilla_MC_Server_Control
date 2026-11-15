@@ -80,6 +80,12 @@ def main() -> int:
         pg.wait_for_timeout(1000)
         pg.click('button.tab[data-page="settings"]')
         pg.wait_for_timeout(600)
+        # v0.24.11（CI 红了才发现）：慢 runner 上「设置页绑定还没挂完」就点保存 → 点了没反应，
+        # 30s 后 expect_request 超时。这里显式等「保存按钮已挂上 onclick」再往下走，
+        # 避免把加载竞态误判成功能 bug（本机快、CI 慢，所以只有 CI 红）。
+        pg.wait_for_function(
+            "() => { const b = document.getElementById('btn_save_cfg_top');"
+            " return !!(b && typeof b.onclick === 'function'); }", timeout=20000)
 
         live = pg.evaluate(
             "() => [...document.querySelectorAll('#page_settings .set-sec')].map(e => e.textContent)")
