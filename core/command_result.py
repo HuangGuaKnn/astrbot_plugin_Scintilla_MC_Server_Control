@@ -941,7 +941,10 @@ KNOWN_STATUSES = frozenset(STATUS_LABEL)
 _DAYTIME_TICKS = re.compile(r"^\s*(-?\d{1,6})\s*$")
 #: 1.13+ 原版（en_US）的形态是 ``The time is 593`` —— 真机 1.20.6 实测。
 #: 只认裸数字会把它判成「拿不到」，反而把现代服务端误伤（2026-10-21 真机踩到）。
-_DAYTIME_PREFIX = re.compile(r"^\s*the\s+time\s+is\s+(-?\d{1,6})\s*$", re.I)
+# v0.24.12（外部评估提出，本机真机日志复核）：1.12.2 的实测回包是 `The time is N`，
+# 但同族变体 `Time is N`（不带 The）在部分实现/本地化下也会出现 —— 把 The 设为可选，
+# 只多认一种写法，不会把「用法文本」误认（那条不含 time is）。
+_DAYTIME_PREFIX = re.compile(r"^\s*(?:the\s+)?time\s+is\s+(-?\d{1,6})\s*$", re.I)
 
 
 def parse_daytime_reply(raw: str) -> int | None:
@@ -950,7 +953,8 @@ def parse_daytime_reply(raw: str) -> int | None:
     认两种回包（都是真机抓到的原样）：
 
     * ``593``                       —— 裸数字；
-    * ``The time is 593``           —— 1.13+ 原版 en_US（1.20.6 实测就是这个）。
+    * ``The time is 593``           —— 1.13+ 原版 en_US（1.20.6 实测就是这个）；
+    * ``Time is 593``               —— 同一句话不带冠词的变体（The 可选）。
 
     其它一律 None：1.7.10 的用法文本 ``/time <set|add> <value>``、
     Paper 的 ``Unknown command``、空串、``1000 ticks`` 这种带尾巴的都不算。

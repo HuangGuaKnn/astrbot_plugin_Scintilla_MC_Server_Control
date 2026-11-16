@@ -92,6 +92,8 @@ def part_two() -> None:
     for raw, want in (("1000", 1000), (" 23999 ", 23999), ("0", 0), ("21000", 21000),
                       # 1.20.6 真机原样：1.13+ 原版 en_US 的形态
                       ("The time is 593", 593), ("the time is 0", 0),
+        # v0.24.12：不带冠词的变体也要认（外部评估提出，见 command_result 的注释）
+        ("Time is 593", 593), ("TIME IS 0", 0),
                       ("The  time  is  23999", 23999)):
         got = parse_daytime_reply(raw)
         check(f"parse_daytime_reply({raw!r}) == {want}", got == want, repr(got))
