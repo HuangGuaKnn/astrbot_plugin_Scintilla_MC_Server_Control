@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, add_sys_paths  # noqa: E402
+from _ui_page import make_router  # noqa: E402
 
 add_sys_paths()
 import ui_theme_check as F  # noqa: E402  复用：驱动补丁 + 假后端夹具（导入即打补丁）
@@ -57,34 +58,33 @@ def status_payload() -> dict:
             "version_caps": caps, "list": {"online": 0, "max": 20, "players": []}}
 
 
-def route(r) -> None:
-    url = r.request.url.split("/page/", 1)[-1].split("?")[0]
-    method = r.request.method
+# v0.24.11 技术债收尾：分发统一走 _ui_page.make_router（未知 GET 落回 ui_theme_check.GETS）
+def _settings_get():
+    s = F.settings()
+    s["settings"]["server_version_override"] = STATE["ov"]
+    s["settings"]["item_syntax_override"] = STATE["syn"]
+    return s
 
-    def send(obj: dict) -> None:
-        r.fulfill(status=200, content_type="application/json",
-                  body=json.dumps(obj, ensure_ascii=False))
 
-    if url == "settings" and method == "GET":
-        s = F.settings()
-        s["settings"]["server_version_override"] = STATE["ov"]
-        s["settings"]["item_syntax_override"] = STATE["syn"]
-        return send(s)
-    if url == "settings/save" and method == "POST":
-        payload = json.loads(r.request.post_data or "{}")
-        got = payload.get("settings") or {}
-        STATE["saves"].append(got)
-        if "server_version_override" in got:
-            STATE["ov"] = str(got.get("server_version_override") or "").strip()
-        if "item_syntax_override" in got:
-            STATE["syn"] = str(got.get("item_syntax_override") or "auto").strip()
-        return send({"ok": True, "applied": got, "notice": "设置已保存"})
-    if url == "server/status":
-        STATE["status_calls"] += 1
-        return send(status_payload())
-    fn = F.GETS.get(url, lambda: {"ok": False, "error": "mock: 未实现 " + url})
-    return send(fn())
+def _status_get():
+    STATE["status_calls"] += 1
+    return status_payload()
 
+
+def _post(url, body):
+    got = body.get("settings") or {}
+    STATE["saves"].append(got)
+    if "server_version_override" in got:
+        STATE["ov"] = str(got.get("server_version_override") or "").strip()
+    if "item_syntax_override" in got:
+        STATE["syn"] = str(got.get("item_syntax_override") or "auto").strip()
+    return {"ok": True, "applied": got, "notice": "设置已保存"}
+
+
+route = make_router(
+    {**F.GETS, "settings": _settings_get, "server/status": _status_get},
+    post=_post,
+)
 
 def save_and_wait(page) -> None:
     page.click("#btn_save_cfg_top")

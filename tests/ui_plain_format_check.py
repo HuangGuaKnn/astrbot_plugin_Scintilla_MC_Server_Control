@@ -29,7 +29,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
-from _ui_page import API_GLOB  # noqa: E402
+from _ui_page import API_GLOB, make_router  # noqa: E402
 
 
 _patch_pw_driver()
@@ -82,32 +82,27 @@ def _json(route_obj, payload: dict) -> None:
                       body=json.dumps(payload, ensure_ascii=False))
 
 
-def route(route_obj) -> None:
-    url = route_obj.request.url.split("/page/", 1)[-1].split("?")[0]
-    if route_obj.request.method == "POST":
-        try:
-            body = json.loads(route_obj.request.post_data or "{}")
-        except Exception:
-            body = {}
-        if url == "colors/save":
-            state["saves"].append(body)
-            COLORS["plain"]["format"] = str(body.get("plain_color_format") or "hex")
-            payload = dict(COLORS)
-            payload.update({"notice": "mock：设置已保存并即时生效", "save_warning": ""})
-            _json(route_obj, payload)
-            return
-        _json(route_obj, {"ok": True})
-        return
-    if url == "colors":
-        _json(route_obj, COLORS)
-    elif url == "settings":
-        _json(route_obj, {"ok": True, "settings": SETTINGS,
-                          "rcon_password_configured": True})
-    elif url == "overview":
-        _json(route_obj, {"ok": True, "config": SETTINGS, "server": {},
-                          "counts": {}, "version": "1.13.2"})
-    else:
-        _json(route_obj, {"ok": True})
+# v0.24.11 技术债收尾：GET/POST 分发统一走 _ui_page.make_router（未知路径约定回 {"ok": True}）
+def _post(url, body):
+    if url == "colors/save":
+        state["saves"].append(body)
+        COLORS["plain"]["format"] = str(body.get("plain_color_format") or "hex")
+        payload = dict(COLORS)
+        payload.update({"notice": "mock：设置已保存并即时生效", "save_warning": ""})
+        return payload
+    return {"ok": True}
+
+
+route = make_router(
+    {
+        "colors": lambda: COLORS,
+        "settings": lambda: {"ok": True, "settings": SETTINGS, "rcon_password_configured": True},
+        "overview": lambda: {"ok": True, "config": SETTINGS, "server": {},
+                             "counts": {}, "version": "1.13.2"},
+    },
+    post=_post,
+    default_get=lambda url: {"ok": True},
+)
 
 
 def opts(page, sel: str):

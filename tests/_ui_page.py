@@ -47,20 +47,25 @@ def fulfill(route_obj, payload) -> None:
                       body=json.dumps(payload, ensure_ascii=False))
 
 
-def make_router(gets: dict, post=None, on_call=None):
+def make_router(gets: dict, post=None, on_call=None, default_get=None):
     """造一个 `route(route_obj)` 处理函数。
 
-    gets: {相对路径: () -> payload}；未命中回 `mock: 未实现`。
+    gets: {相对路径: () -> payload}；未命中用 default_get（默认回 `mock: 未实现`）。
     post: (url, body) -> payload；不给就一律回 `mock: 未实现 POST`。
     on_call: (method, url) 回调（用例用它记录调用序列）。
+    default_get: 未知 GET 的回包工厂 —— 有的用例约定「未知路径一律 {"ok": True}」，
+                 把这条差异显式交出来，而不是让每个用例自己写一遍分发。
     """
+    if default_get is None:
+        default_get = lambda url: {"ok": False, "error": "mock: 未实现 " + url}  # noqa: E731
+
     def route(route_obj):
         url = split_url(route_obj)
         if on_call is not None:
             on_call(route_obj.request.method, url)
         if route_obj.request.method == "GET":
-            fn = gets.get(url, lambda: {"ok": False, "error": "mock: 未实现 " + url})
-            return fulfill(route_obj, fn())
+            fn = gets.get(url)
+            return fulfill(route_obj, fn() if fn is not None else default_get(url))
         try:
             body = json.loads(route_obj.request.post_data or "{}")
         except Exception:  # noqa: BLE001 —— 请求体坏了就当空对象，别让用例炸在 mock 上
