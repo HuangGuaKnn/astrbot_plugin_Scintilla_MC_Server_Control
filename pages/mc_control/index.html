@@ -408,6 +408,25 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 .kv .v{font-family:var(--mono);font-weight:600;font-size:12px;text-align:right;word-break:break-all}
 .ply{display:inline-flex;align-items:center;gap:5px;font-size:11px;background:var(--panel3);border:1px solid var(--border2);border-radius:99px;padding:2px 10px;margin:0 5px 5px 0;color:var(--dim)}
 .ply::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}
+/* ===== 实时服务器卡（v0.25.0）：四字段 · 五态 =====
+   状态色只用现有色板：绿=正常、灰=空服 / 无来源、黄=世代能力缺失、
+   橙=回包认不出、红=连不上。措辞一律来自后端（STATE_LABEL），这里只管配色。 */
+.sc-head{display:flex;align-items:center;gap:8px;padding:0 2px 9px;border-bottom:1px solid var(--border);font-size:12.5px}
+.sc-head .sc-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.sc-head .sc-sum{color:var(--faint);font-size:11px}
+.sc-head .sc-time{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.sc-row{display:grid;grid-template-columns:1fr auto;gap:3px 10px;padding:9px 2px;border-bottom:1px dashed var(--border)}
+.sc-row:last-child{border-bottom:none}
+.sc-k{display:flex;align-items:baseline;gap:8px;min-width:0}
+.sc-k b{font-size:12.5px;font-weight:600}
+.sc-src{font-family:var(--mono);font-size:10px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-v{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.sc-val{font-family:var(--mono);font-size:13px;font-weight:600;text-align:right}
+.sc-note{grid-column:1/-1;font-size:10.5px;line-height:1.55;color:var(--faint)}
+.sc-raw{grid-column:1/-1;margin-top:3px;padding:6px 9px;border-radius:6px;border:1px solid var(--border);
+  border-left:2px solid var(--warn);background:var(--panel2);font-family:var(--mono);font-size:11px;
+  color:var(--dim);white-space:pre-wrap;word-break:break-all}
+.sc-raw b{display:block;margin-bottom:2px;font-family:var(--sans);font-size:10px;font-weight:600;color:var(--faint)}
 .bc-modes{display:flex;gap:6px;margin-bottom:10px}
 .bc-mode{font-size:11.5px;font-weight:600;padding:5px 13px;border-radius:8px;border:1px solid var(--border2);color:var(--faint);transition:.15s}
 .bc-mode.active{background:var(--cyan);border-color:var(--cyan);color:#fff}
@@ -2141,6 +2160,44 @@ function testRconInto(elId){
   };
 }
 
+// ============ 实时服务器卡（v0.25.0） ============
+// 后端（core/server_card.py）已经把「状态 → 措辞」算好了，这里只做
+// **状态 → 徽章配色** 的映射。绝不在前端另写一份措辞：同一个状态在接口里叫
+// 「世代不支持」、在页面上叫「不支持」，验收时就没人说得清哪边是对的。
+// 四种必须分开说的状态（对应验收单）：
+//   ok 绿 / empty 灰（空服，正常）/ unsupported 黄（世代能力缺失）
+//   unrecognized 橙（回包认不出，必须带原文）/ unreachable 红（连不上）
+const CARD_BADGE = {ok:"ok", empty:"dim", unsupported:"amb", unrecognized:"warn", unreachable:"bad", no_source:"dim"};
+const CARD_DOT = {ok:"var(--ok)", empty:"var(--faint)", unsupported:"var(--amber)",
+                  unrecognized:"var(--warn)", unreachable:"var(--bad)", no_source:"var(--faint)"};
+
+function renderServerCard(card){
+  const host = $("sv_status");
+  if(!host) return;
+  if(!card || !Array.isArray(card.fields) || !card.fields.length){
+    host.innerHTML = `<span class="muted">实时状态数据缺失</span>`;
+    return;
+  }
+  const head = `<div class="sc-head">
+      <span class="sc-dot" style="background:${CARD_DOT[card.overall]||"var(--faint)"}"></span>
+      <span>${esc(card.overall_label||"—")}</span>
+      <span class="sc-sum">${esc(card.summary||"")}</span>
+      <span class="sc-time">${esc(card.sampled_at||"")}</span>
+    </div>`;
+  const rows = card.fields.map(f=>{
+    const cls = CARD_BADGE[f.state]||"dim";
+    // 原文是「认不出」这一态的唯一线索 —— 后端给了就必须显示，不许折叠。
+    const raw = f.raw ? `<div class="sc-raw"><b>服务器原文</b>${esc(f.raw)}</div>` : "";
+    const note = f.note ? `<div class="sc-note">${esc(f.note)}</div>` : "";
+    return `<div class="sc-row" data-key="${esc(f.key)}" data-state="${esc(f.state)}">
+      <div class="sc-k"><b>${esc(f.label)}</b><span class="sc-src" title="采样来源：${esc(f.source||"")}">${esc(f.source||"")}</span></div>
+      <div class="sc-v"><span class="sc-val">${esc(f.value||"—")}</span><span class="badge ${cls}">${esc(f.state_label||f.state)}</span></div>
+      ${note}${raw}
+    </div>`;
+  }).join("");
+  host.innerHTML = head + rows;
+}
+
 // ============ 服务器页 ============
 async function loadServer(){
   if(loadServer._pending) return;
@@ -2158,16 +2215,31 @@ async function loadServer(){
     // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
     renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
     if(!r.ok){
-      status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+      // v0.25.0：连不上也要把卡画出来 —— 「连不上」是这张卡的第一种状态，
+      // 四个字段各自为什么拿不到（版本字段甚至与 RCON 无关）都在卡里说清；
+      // 只弹一句错误会把「版本能力还能看」这条信息一起吞掉。
+      if(r.card){
+        renderServerCard(r.card);
+        status.insertAdjacentHTML("beforeend",
+          `<div class="hint" style="color:var(--warn);margin-top:6px">${esc(r.error||"未知错误")}</div>`);
+      }else{
+        status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+      }
       players.innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
       $("sv_online_tag").innerHTML = "";
       return;
     }
     const list = r.list||{};
-    status.innerHTML = `
+    if(r.card){
+      renderServerCard(r.card);
+    }else{
+      // 兼容兜底：接口没给 card（旧后端 / 假后端）时退回原来那三行，
+      // 页面不会因为少一个字段就白屏。
+      status.innerHTML = `
       <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
-      <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime||"-")}</span></div>
+      <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime_clock||r.daytime||"-")}</span></div>
       <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+    }
     // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
     // 等于「版本未知」这条最重要的提示根本没到用户眼前。
     if(r.version_hint){
@@ -2178,9 +2250,23 @@ async function loadServer(){
     if(RMT.on) status.insertAdjacentHTML("beforeend",
       `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
       + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
-    $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
+    // 在线人数徽章：0 人不是「异常」，是「空服」—— 两种说法在界面里必须一样清楚。
+    const onlineField = ((r.card&&r.card.fields)||[]).find(f=>f.key==="online") || null;
+    if(onlineField && onlineField.state==="empty"){
+      $("sv_online_tag").innerHTML = `<span class="badge dim">空服 · 0 人</span>`;
+    }else{
+      $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
+    }
     const pls = list.players||[];
-    players.innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
+    // 名单拿不到时不许显示「当前没有玩家在线」—— 那是把「认不出」说成了「空服」，
+    // 正是这张卡要消灭的那类误读。
+    if(r.list_error && !onlineField){
+      players.innerHTML = `<span class="muted">玩家名单拿不到：${esc(r.list_error)}</span>`;
+    }else if(onlineField && onlineField.state!=="ok" && onlineField.state!=="empty"){
+      players.innerHTML = `<span class="muted">玩家名单拿不到：${esc(onlineField.note||"list 回包认不出")}</span>`;
+    }else{
+      players.innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
+    }
     // 事件流
     loadServerEvents();
   }finally{

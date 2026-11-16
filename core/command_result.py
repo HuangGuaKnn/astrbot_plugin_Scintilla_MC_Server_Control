@@ -967,13 +967,22 @@ def parse_daytime_reply(raw: str) -> int | None:
     return v if 0 <= v < 24000 else None
 
 
+def daytime_clock(ticks: int) -> str:
+    """tick → ``"HH:MM"`` 的墙上时间（MC 的 0 tick 是清晨 06:00）。
+
+    v0.25.0：实时服务器卡也要这个换算，公式**只允许有一处实现** ——
+    两处各写一遍，迟早一处改了另一处没改，页面与回执就会给出两个时间。
+    """
+    hh = ((int(ticks) // 1000) + 6) % 24
+    mm = int((int(ticks) % 1000) * 0.06)
+    return f"{hh:02d}:{mm:02d}"
+
+
 def format_daytime_line(ticks: int | None) -> str:
     """把 tick 数渲染成一行中文（拿不到就说清「这个版本没有这个能力」，不装懂）。"""
     if ticks is None:
         return "游戏内时间：该服务端不支持 time query（1.13+ 才有），已跳过"
-    hh = ((ticks // 1000) + 6) % 24          # MC 的 0 tick 是清晨 6:00
-    mm = int((ticks % 1000) * 0.06)
-    return f"游戏内时间：{ticks} tick（约 {hh:02d}:{mm:02d}）"
+    return f"游戏内时间：{ticks} tick（约 {daytime_clock(ticks)}）"
 
 
 def format_results(results: list[CommandResult]) -> str:

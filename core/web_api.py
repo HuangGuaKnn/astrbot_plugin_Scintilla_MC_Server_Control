@@ -15,6 +15,7 @@ from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .command_result import classify_command_output, parse_daytime_reply
+from . import server_card
 from .knowledge_base import knowledge_length_error, normalize_status
 from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
@@ -193,6 +194,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/rcon/reset", self.reset_rcon, ["POST"], "重建RCON连接（清除自动降级）")
         reg(f"{PAGE_PREFIX}/events", self.get_events, ["GET"], "最近服务器事件")
         reg(f"{PAGE_PREFIX}/server/status", self.get_server_status, ["GET"], "服务器实时状态")
+        reg(f"{PAGE_PREFIX}/server/card", self.get_server_card, ["GET"], "实时服务器卡（四字段 · 四态）")
         reg(f"{PAGE_PREFIX}/server/broadcast", self.broadcast, ["POST"], "服务器广播")
         reg(f"{PAGE_PREFIX}/colors", self.get_colors, ["GET"], "读取文本颜色")
         reg(f"{PAGE_PREFIX}/colors/save", self.save_colors, ["POST"], "保存文本颜色")
@@ -228,17 +230,21 @@ class McControlWebApi:
 
     @staticmethod
     def _parse_list_output(out: str) -> dict:
-        """解析 RCON list 输出 → {online, max, players:[...]}。"""
-        players: list[str] = []
-        online = maxp = 0
-        m = re.search(r"(\d+)\s+of\s+a\s+max(?:imum)?\s+of\s+(\d+)", out or "")
-        if m:
-            online, maxp = int(m.group(1)), int(m.group(2))
-        colon = (out or "").rfind(":")
-        if colon != -1:
-            tail = out[colon + 1:].strip()
-            players = [p.strip() for p in tail.split(",") if p.strip()]
-        return {"online": online, "max": maxp, "players": players}
+        """解析 RCON list 输出 → {online, max, players:[...]}。
+
+        v0.25.0：解析实现上移到 ``core/server_card.parse_list_reply`` ——
+        实时服务器卡与这里解析的是**同一句回包**，两处各写一份的话，
+        1.7.10 / 1.12.2 的 ``There are 2/20 players online:`` 迟早只在一处被认出来
+        （旧实现只认 1.16+ 的 ``of a max of``，旧世代会被读成 0 人 —— 而 0 人
+        在新口径里是「空服」，会被当成一个**结论**显示出去）。
+
+        认不出时仍返回旧形状（0 / 0 / []）并附 ``unparsed=True``：调用方按既有契约
+        工作即可；需要「认不出」这件事本身的（实时服务器卡）走 ``server_card`` 那条路。
+        """
+        parsed = server_card.parse_list_reply(out)
+        if parsed is not None:
+            return parsed
+        return {"online": 0, "max": 0, "players": [], "unparsed": True}
 
     # ================= 状态 =================
 
@@ -1330,8 +1336,25 @@ class McControlWebApi:
             events = []
         return json_response({"ok": True, "events": events})
 
+    async def get_server_card(self):
+        """实时服务器卡（v0.25.0）：四个字段 + 每个字段自己的状态。
+
+        单独开一个入口而不是只塞进 ``/server/status`` 的理由：这张卡的判据
+        （四字段 · 四态 · 采样来源 · 认不出必带原文）将来要被玩家管理页复用，
+        有一个**只回答这一件事**的接口，验收时 curl 一次就能取证。
+        """
+        return json_response(await server_card.sample(self.plugin))
+
     async def get_server_status(self):
-        """服务器实时状态：在线玩家、游戏时间、版本。"""
+        """服务器实时状态：在线玩家、游戏时间、版本 + 实时服务器卡。
+
+        v0.25.0 结构变更：原先这里自己发 ``list`` / ``time query daytime`` 两条探针、
+        再把结果拍平成字符串；现在改为**一次采样喂两个消费者** ——
+        ``server_card.sample_with()`` 采一次，历史字段（``list`` / ``daytime``）
+        与卡片（``card``）都从同一份采样里取。理由有两条：
+        采样两遍等于对服务端连打 6 条探针；更要紧的是两个消费者会看到**不同时刻**的数据
+        （卡片说 3 人、上面的 kv 说 4 人，用户没法判断哪个是真的）。
+        """
         plugin = self.plugin
         # v0.22.7：**版本能力与 RCON 无关**（读的是配置 + 服务端本地文件），
         # 所以先算好、连不上服务器也照样返回 —— 否则用户会在 RCON 掉线时
@@ -1355,24 +1378,41 @@ class McControlWebApi:
         try:
             rcon = await plugin._get_rcon()
         except Exception as e:
-            return json_response({"ok": False, "error": str(e), **info})
+            # v0.25.0：连不上也要给卡 —— 「连不上」是这张卡的**第一种状态**，
+            # 不是「没有卡」。旧写法只回一句 error，四个字段各自为什么拿不到
+            # （以及版本字段其实与 RCON 无关）全都看不见。
+            return json_response({
+                "ok": False,
+                "error": str(e),
+                **info,
+                "card": server_card.unreachable_payload(plugin, f"RCON 连接失败：{e}"),
+            })
 
         try:
-            try:
-                out = await rcon.command("list")
-                info["list"] = self._parse_list_output(out)
-            except Exception as e:
-                info["list_error"] = str(e)
-            try:
-                ticks = parse_daytime_reply(await rcon.command("time query daytime"))
-                if ticks is None:
-                    # v0.24.8（2026-10-21 真机 · 1.7.10-forge）：`time query` 是 1.13+ 才有的子命令，
-                    # 旧版回的是用法文本 —— 不能把它当时间贴到设置页（原来正是这么干的）。
-                    info["daytime_note"] = "该服务端不支持 time query（1.13+ 才有）"
-                else:
-                    info["daytime"] = str(ticks)
-            except Exception:
-                pass
+            card = await server_card.sample_with(rcon, plugin)
+            info["card"] = card
+            fields = {f["key"]: f for f in card.get("fields", [])}
+
+            online = fields.get("online", {})
+            if online.get("state") in (server_card.STATE_OK, server_card.STATE_EMPTY):
+                info["list"] = {
+                    "online": online.get("online"),
+                    "max": online.get("max"),
+                    "players": online.get("players", []),
+                }
+            else:
+                # 不再伪装成「0 人在线」：认不出就把原话交出去（卡片里已有原文）。
+                info["list_error"] = online.get("note") or "list 回包认不出"
+
+            day = fields.get("daytime", {})
+            if day.get("state") == server_card.STATE_OK:
+                info["daytime"] = str(day.get("ticks"))
+                info["daytime_clock"] = day.get("value")
+            else:
+                info["daytime_note"] = day.get("note") or "游戏内时间拿不到"
+                if day.get("raw"):
+                    info["daytime_raw"] = day["raw"]
+
             # 版本原文：原版/Forge 无 version 命令，优先从服务端文件探测。
             # 已由 version_caps 给出结论时不覆盖（那是 Agent 真正使用的事实）。
             if "version" not in info:

@@ -121,10 +121,15 @@ def part_four() -> None:
     print("\n---- 四、接线：两个入口都要走这一层 ----")
     tool_src = (PLUGIN_DIR / "main.py").read_text(encoding="utf-8")
     api_src = (PLUGIN_DIR / "core" / "web_api.py").read_text(encoding="utf-8")
+    # v0.25.0：WebUI 这条链路的锚点**下移了一层** —— 时间字段不再由 get_server_status
+    # 自己解析，而是由 core/server_card.py 的探针解析（一次采样同时喂「实时服务器卡」
+    # 与历史字段）。判据的意图不变（谁都不许把用法文本当时间），所以两处一起钉：
+    # 接口必须走卡片采样，卡片必须走 parse_daytime_reply。
+    card_src = (PLUGIN_DIR / "core" / "server_card.py").read_text(encoding="utf-8")
     check("★mc_server_status 用 parse_daytime_reply/format_daytime_line",
           "parse_daytime_reply(" in tool_src and "format_daytime_line(" in tool_src)
-    check("★WebUI 的 get_server_status 用 parse_daytime_reply",
-          "parse_daytime_reply(" in api_src)
+    check("★WebUI 走 server_card 采样，且解析仍用 parse_daytime_reply",
+          "sample_with(" in api_src and "parse_daytime_reply(" in card_src)
     check("两个入口都不再把 time query 的原样回包直接拼出去",
           'info["daytime"] = (await rcon.command("time query daytime")).strip()' not in api_src
           and "day = await rcon.command(\"time query daytime\")" not in tool_src)
