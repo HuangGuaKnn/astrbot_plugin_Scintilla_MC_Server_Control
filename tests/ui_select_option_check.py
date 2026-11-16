@@ -17,27 +17,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-
-
-def _patch_pw_driver() -> None:
-    # v0.24.11（CI 红了才发现）：这层补丁**只有 Windows 需要**（剥 `\\?\` 前缀，否则 node 驱动
-    # 把路径解析成 "C:"）；而 playwright 1.65 起把 `_impl._transport` 移走了 —— 老写法在
-    # Linux/CI 上直接 ModuleNotFoundError，连 import 都过不去。改成「仅 Windows + 容错」。
-    if os.name != "nt":
-        return
-    try:
-        import playwright._impl._transport as t
-    except ModuleNotFoundError:
-        return
-    orig = getattr(t, "compute_driver_executable", None)
-    if orig is None:
-        return
-
-    def patched():
-        node, cli = orig()
-        return (node.replace("\\\\?\\", ""), cli.replace("\\\\?\\", ""))
-
-    t.compute_driver_executable = patched
+from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
 
 
 _patch_pw_driver()

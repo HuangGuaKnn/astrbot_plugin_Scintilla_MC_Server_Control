@@ -16,6 +16,7 @@
 跑法：
   <python> run_release_verify.py             # 本机全跑：静态 + 回归 + UI 硬门禁（全部契约类）
   <python> run_release_verify.py --ci        # 与 CI / 发版一致：只跑 CI_OK 里的那几件 UI
+  <python> run_release_verify.py --bundled # 发版前必跑：与 CI 同通道（自带 Chromium）
   <python> run_release_verify.py --plan      # 只打印「将要跑什么」，一条都不执行
   <python> run_release_verify.py --guard     # 只做 UI 归类守卫（清单唯一来源）
   <python> run_release_verify.py --list-ui   # 只打印四份名单（含 CI 可跑 / 本机专属）
@@ -229,7 +230,9 @@ def _is_internal_doc(p: str) -> bool:
 FORENSIC_SUFFIXES = (".log", ".txt", ".json", ".patch", ".diff")
 #: `tests/` 下以 `_` 开头但**是正经辅助模块**的（它们本来就该随仓库走，不在取证之列）。
 #: 新增辅助模块要显式登记在这里 —— 也就是一个人必须过一眼的决定点。
-FORENSIC_ALLOW = {"_paths.py", "_ui_manifest.py"}
+# v0.24.11 技术债：把「10 份重复的 playwright 补丁」与「各写一份的页面/接口夹具」
+# 收敛成这两个共用模块 —— 它们是**正经辅助模块**，形状像取证产物但必须入库。
+FORENSIC_ALLOW = {"_paths.py", "_ui_manifest.py", "_pw_compat.py", "_ui_page.py"}
 
 
 def is_forensic_artifact(rel: str, *, deep: bool = False) -> bool:
@@ -761,6 +764,13 @@ def main(argv: list[str]) -> int:
     no_ui = "--no-ui" in argv
     all_ui = "--all-ui" in argv
     ci_mode = "--ci" in argv
+    # v0.24.11 技术债（CI 连红四次换来的教训）：本机默认走系统 Edge，CI 走 playwright 自带的
+    # bundled Chromium —— 两套内核对 file:// 的 fetch、对内部 API 的行为都可能不同。
+    # 所以**发版前本机至少补跑一次** `--bundled`，与 CI 同通道。
+    if "--bundled" in argv:
+        import os as _os
+        _os.environ["SCINTILLA_UI_CHANNEL"] = "bundled"
+        print("[信息] --bundled：UI 用例强制走 playwright 自带 Chromium（与 CI 同通道）")
     ui_only = "--ui-only" in argv
     ui_set = next((a.split("=", 1)[1] for a in argv if a.startswith("--ui-set=")), "")
     if ui_set and ui_set not in UI_SETS:

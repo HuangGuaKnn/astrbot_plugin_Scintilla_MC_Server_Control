@@ -16,31 +16,11 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sys
 
-# 本机 AstrBot 内嵌 Python 的 site-packages 在 sys.path 里带 \\?\ 前缀，
-# Playwright 的 node 驱动拿它当入口脚本会解析成 "C:" 而崩 → 先剥掉前缀。
-#
-# v0.24.11（CI 红了才发现）：这层补丁**只有 Windows 需要**；而且 playwright 1.65 起把
-# `playwright._impl._transport` 移走了 —— 老写法在 Linux/CI 上直接 ModuleNotFoundError，
-# 四个 CI_OK 的 UI 用例连 import 都过不去（v0.24.11 发版第一次就栽在这）。
-# 改成：非 Windows 直接返回；取不到内部模块也静默跳过（判据本身不依赖这层补丁）。
-def _patch_pw_driver() -> None:
-    if os.name != "nt":
-        return
-    try:
-        import playwright._impl._transport as t
-    except ModuleNotFoundError:
-        return
-    orig = getattr(t, "compute_driver_executable", None)
-    if orig is None:
-        return
-
-    def patched():
-        node, cli = orig()
-        return (node.replace("\\\\?\\", ""), cli.replace("\\\\?\\", ""))
-
-    t.compute_driver_executable = patched
-
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
+from _ui_page import PAGE_URL, API_GLOB, make_router  # noqa: E402
 
 _patch_pw_driver()
 
@@ -48,10 +28,6 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-PAGE_URL = os.environ.get("THEME_TEST_PAGE") or (
-    serve_plugin_root() + "/pages/mc_control/index.html"
-)
-API_GLOB = "**/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/**"
 SHOTS = PLUGIN / "tests" / "_shots"
 
 FP = "e38d99c65853"
@@ -175,11 +151,8 @@ GETS = {"overview": overview, "state": kb_state, "kb/presets": presets,
         "workflow/status": workflow_status}
 
 
-def route(route_obj):
-    url = route_obj.request.url.split("/page/", 1)[-1].split("?")[0]
-    fn = GETS.get(url, lambda: {"ok": False, "error": "mock: 未实现 " + url})
-    route_obj.fulfill(status=200, content_type="application/json",
-                      body=json.dumps(fn(), ensure_ascii=False))
+# v0.24.11 技术债：GET 分发统一走 _ui_page.make_router（原先每个用例各写一份）
+route = make_router(GETS)
 
 
 # ---- 对比度审计：遍历页面上「自己有文字」的元素，算文字色 vs 有效背景色的对比度 ----

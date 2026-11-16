@@ -21,28 +21,9 @@ import pathlib
 import sys
 
 
-# 本机 AstrBot 内嵌 Python 的 site-packages 在 sys.path 里带 \\?\ 前缀，
-# Playwright 的 node 驱动拿它当入口脚本会解析成 "C:" 而崩 → 先剥掉前缀。
-def _patch_pw_driver() -> None:
-    # v0.24.11（CI 红了才发现）：这层补丁**只有 Windows 需要**（剥 `\\?\` 前缀，否则 node 驱动
-    # 把路径解析成 "C:"）；而 playwright 1.65 起把 `_impl._transport` 移走了 —— 老写法在
-    # Linux/CI 上直接 ModuleNotFoundError，连 import 都过不去。改成「仅 Windows + 容错」。
-    if os.name != "nt":
-        return
-    try:
-        import playwright._impl._transport as t
-    except ModuleNotFoundError:
-        return
-    orig = getattr(t, "compute_driver_executable", None)
-    if orig is None:
-        return
-
-    def patched():
-        node, cli = orig()
-        return (node.replace("\\\\?\\", ""), cli.replace("\\\\?\\", ""))
-
-    t.compute_driver_executable = patched
-
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
+from _ui_page import PAGE_URL, API_GLOB  # noqa: E402
 
 _patch_pw_driver()
 
@@ -50,11 +31,6 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-PAGE_URL = os.environ.get("CARD_TEST_PAGE") or (
-    serve_plugin_root() + "/pages/mc_control/index.html"
-)
-API_GLOB = "**/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/**"
-
 # 刻意不等高的容器（左右分栏 master-detail），不参与判定
 EXEMPT = ["pr-wrap"]
 ROW_TOLERANCE = 40          # 顶边差 < 40px 视为同一行（14px 错位会被聚进同一行）

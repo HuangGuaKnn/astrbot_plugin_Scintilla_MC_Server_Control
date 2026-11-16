@@ -20,28 +20,9 @@ import os
 import pathlib
 import sys
 
-# 本机 AstrBot 内嵌 Python 的 site-packages 在 sys.path 里带 \\?\ 前缀，
-# Playwright 的 node 驱动拿它当入口脚本会解析成 "C:" 而崩 → 先剥掉前缀。
-def _patch_pw_driver() -> None:
-    # v0.24.11（CI 红了才发现）：这层补丁**只有 Windows 需要**（剥 `\\?\` 前缀，否则 node 驱动
-    # 把路径解析成 "C:"）；而 playwright 1.65 起把 `_impl._transport` 移走了 —— 老写法在
-    # Linux/CI 上直接 ModuleNotFoundError，连 import 都过不去。改成「仅 Windows + 容错」。
-    if os.name != "nt":
-        return
-    try:
-        import playwright._impl._transport as t
-    except ModuleNotFoundError:
-        return
-    orig = getattr(t, "compute_driver_executable", None)
-    if orig is None:
-        return
-
-    def patched():
-        node, cli = orig()
-        return (node.replace("\\\\?\\", ""), cli.replace("\\\\?\\", ""))
-
-    t.compute_driver_executable = patched
-
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
+from _ui_page import PAGE_URL, API_GLOB, make_router  # noqa: E402
 
 _patch_pw_driver()
 
@@ -51,11 +32,6 @@ from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 # 允许用环境变量指向别处的 index.html —— 便于验证「这个用例真的能抓到 bug」
 # （把未修复的页面拷出来跑同一套断言，应当失败）。
-PAGE_URL = os.environ.get("FP_TEST_PAGE") or (
-    serve_plugin_root() + "/pages/mc_control/index.html"
-)
-API_GLOB = "**/api/v1/plugins/extensions/astrbot_plugin_Scintilla_MC_Server_Control/page/**"
-
 PID = "p_default"
 PRESET_NAME = "默认知识库"
 SAVE_FP = "7788aabbccdd"     # 设置页保存 server_dir 之后「新服务端」的指纹
@@ -187,24 +163,12 @@ def handle_post(path: str, body: dict) -> dict:
     return {"ok": True, **kb_presets(), "notice_text": text}
 
 
-def route(route_obj):
-    url = route_obj.request.url.split("/page/", 1)[-1].split("?")[0]
-    state["calls"].append(route_obj.request.method + " " + url)
-    if route_obj.request.method == "GET":
-        if url == "overview":
-            payload = overview()
-        elif url == "kb/presets":
-            payload = kb_presets()
-        else:
-            payload = {"ok": False, "error": "mock: 未实现 " + url}
-    else:
-        try:
-            body = json.loads(route_obj.request.post_data or "{}")
-        except Exception:
-            body = {}
-        payload = handle_post(url, body)
-    route_obj.fulfill(status=200, content_type="application/json",
-                      body=json.dumps(payload, ensure_ascii=False))
+# v0.24.11 技术债：GET/POST 分发统一走 _ui_page.make_router
+route = make_router(
+    {"overview": overview, "kb/presets": kb_presets},
+    post=handle_post,
+    on_call=lambda method, url: state["calls"].append(method + " " + url),
+)
 
 
 failed: list[str] = []
