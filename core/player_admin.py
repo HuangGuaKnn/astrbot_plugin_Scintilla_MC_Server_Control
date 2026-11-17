@@ -253,24 +253,57 @@ def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:
 
 
 async def get_bans(plugin) -> dict:
+    """封禁名单：RCON 的 ``banlist`` 为准，``banned-players.json`` 只补详情。
+
+    v0.26.1（2026-11-17 现场发现）：RCON 回包**多条封禁粘连**时
+    （``... 演示用：看看封禁名单块123 was banned by Server: ...``）切分点无法确定 ——
+    旧实现直接整卡空着，用户只看到一段原始回包，哪怕 ``banned-players.json``
+    就在手边、名单精确到人。主人当时一句「感觉有问题」，说的就是这个。
+
+    现在改为：**回包认不出但文件可读时，名单改用文件里的记录**。
+    文件是确定性数据（不需要猜边界），因此每一条都能单独解封；
+    但 ``state`` 仍如实保持「回执认不出」，并在 note 里写清名单来自哪里 ——
+    不粉饰，也不让人对着一段原文干瞪眼。
+    """
     listed = await _read_roster(plugin, "banlist players")
     result = {key: listed[key] for key in ("state", "state_label", "note", "raw")}
-    result.update(items=[], detail_note="", mismatch_count=0)
-    if listed["state"] != server_card.STATE_OK:
+    result.update(items=[], detail_note="", mismatch_count=0, roster_source="banlist players")
+
+    details, result["detail_note"] = _ban_details(plugin)
+    if listed["state"] == server_card.STATE_OK:
+        names = list(listed["players"])
+        if details is not None:
+            keys = {name.casefold() for name in names}
+            result["mismatch_count"] = len(keys.symmetric_difference(details))
+    elif details:
+        names = [str(record["name"]) for record in details.values()
+                 if isinstance(record.get("name"), str)]
+        result["roster_source"] = "banned-players.json"
+        if listed["state"] == server_card.STATE_EMPTY:
+            reason = "RCON 回包显示没有封禁记录，但文件里有记录"
+        else:
+            reason = f"{listed['note'] or '回执认不出'}；RCON 回包无法可靠切分"
+        result["note"] = f"{reason} —— 名单改用 banned-players.json（文件里的记录是确定的，逐条可解封）"
+    else:
+        # 回包认不出、文件也读不到：这时只能如实认输，别猜
         return result
 
-    players = listed["players"]
-    details, result["detail_note"] = _ban_details(plugin)
-    if details is not None:
-        keys = {name.casefold() for name in players}
-        result["mismatch_count"] = len(keys.symmetric_difference(details))
-    for name in players:
+    for name in names:
         detail = (details or {}).get(name.casefold())
-        item = {"name": name, "detail_available": detail is not None}
+        item = {
+            "name": name,
+            "detail_available": detail is not None,
+            # 能不能点「解封」：名字本身要合法。前端据此启停按钮，后端另有校验（双保险）
+            "removable": bool(_PLAYER_NAME.fullmatch(name)),
+        }
         for field in _DETAIL_FIELDS:
             value = detail.get(field) if detail is not None else None
             item[field] = _redact(value) if isinstance(value, str) and value.strip() else _UNKNOWN
         result["items"].append(item)
+
+    if listed["state"] == server_card.STATE_EMPTY and details is not None:
+        result["state"] = server_card.STATE_EMPTY
+        result["state_label"] = server_card.STATE_LABEL[server_card.STATE_EMPTY]
     if not result["detail_note"] and any(not item["detail_available"] for item in result["items"]):
         result["detail_note"] = "未知（文件中缺少对应的玩家记录）"
     return result

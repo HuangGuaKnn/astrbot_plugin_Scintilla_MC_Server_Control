@@ -125,8 +125,8 @@ MUTATIONS = (
     ),
     Mutation(
         "P11", "改用文件作为名单来源", CORE,
-        "    players = listed[\"players\"]\n    details, result[\"detail_note\"] = _ban_details(plugin)",
-        "    details, result[\"detail_note\"] = _ban_details(plugin)\n    players = list(details or {})",
+        '        names = list(listed["players"])',
+        '        names = [str(r["name"]) for r in (details or {}).values() if isinstance(r.get("name"), str)]',
         "P11 名单来自运行时", BACKEND_TEST,
         "test_p11_remote_banlist_preserves_runtime_names_and_unknown_details",
     ),
@@ -155,6 +155,22 @@ MUTATIONS = (
         '    path = Path(server_dir) / "banned-players.json"',
         '    path = Path(server_dir) / "banned-players.json"  # banned-ips.json',
         "P13 源码禁止触及 IP 封禁文件", BACKEND_TEST, "test_p13_no_ip_ban_file",
+    ),
+    # v0.26.1（2026-11-17 现场）：主人手动在控制台 ban 了 123，两条封禁在 RCON 回包里
+    # 粘成一行，旧实现整卡空着 —— 明明 banned-players.json 就在手边。
+    Mutation(
+        "v0.26.1", "回包粘连时不再用文件兜底", CORE,
+        '        names = [str(record["name"]) for record in details.values()\n                 if isinstance(record.get("name"), str)]',
+        "        names = []",
+        "demoplayer", BACKEND_TEST,
+        "test_bans_fall_back_to_file_when_rcon_reply_is_glued",
+    ),
+    Mutation(
+        "v0.26.1", "兜底时把 removable 一律关掉（解封按钮全灰）", CORE,
+        '            "removable": bool(_PLAYER_NAME.fullmatch(name)),',
+        '            "removable": False,',
+        "False is not true", BACKEND_TEST,
+        "test_bans_fall_back_to_file_when_rcon_reply_is_glued",
     ),
 )
 

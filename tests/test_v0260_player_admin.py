@@ -345,6 +345,43 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["raw"], raw)
                 self.assertGuarded(plugin, "banlist players")
 
+    async def test_bans_fall_back_to_file_when_rcon_reply_is_glued(self):
+        """v0.26.1（现场）：多条封禁粘连导致回包认不出时，名单改用文件里的记录。
+
+        真机原样（1.13.2，在控制台手动 ban 了 123）：
+        `There are 2 bans:demoplayer was banned by Recon: 演示用：看看封禁名单块123 was banned by Server: Banned by an operator.`
+        切分点无法确定（理由里可能藏着下一条的玩家名），但 banned-players.json 是确定性数据。
+        旧实现让整卡空着，用户只看到一段原文 —— 现在必须列出两条、且逐条可解封，
+        同时 state 仍如实保持「回执认不出」，note 里写清名单来源。
+        """
+        glued = ("There are 2 bans:demoplayer was banned by Recon: 演示用：看看封禁名单块"
+                 "123 was banned by Server: Banned by an operator.")
+        with io.open(self.path / "banned-players.json", "w", encoding="utf-8", newline="\n") as out:
+            json.dump([
+                {"name": "demoplayer", "reason": "演示用：看看封禁名单块",
+                 "created": "2026-11-17 18:17:26 +0800", "source": "Recon", "expires": "forever"},
+                {"name": "123", "reason": "Banned by an operator.",
+                 "created": "2026-11-17 18:20:44 +0800", "source": "Server", "expires": "forever"},
+            ], out, ensure_ascii=False)
+        plugin = FakePlugin({"banlist players": glued}, server_dir=str(self.path))
+        result = await player_admin.get_bans(plugin)
+        self.assertEqual(result["state"], "unrecognized")           # 不粉饰：回包确实认不出
+        self.assertEqual(result["roster_source"], "banned-players.json")
+        self.assertIn("无法可靠切分", result["note"])
+        self.assertEqual([item["name"] for item in result["items"]], ["demoplayer", "123"])
+        self.assertTrue(all(item["removable"] for item in result["items"]))
+        self.assertTrue(all(item["detail_available"] for item in result["items"]))
+        self.assertEqual(result["items"][1]["reason"], "Banned by an operator.")
+
+    async def test_bans_without_readable_file_still_refuse_to_guess(self):
+        """回包认不出、文件也读不到 → 依然不许猜（条目必须空着，只留原文）。"""
+        glued = ("There are 2 bans:demoplayer was banned by Recon: reason"
+                 "123 was banned by Server: other")
+        result = await player_admin.get_bans(FakePlugin({"banlist players": glued}))
+        self.assertEqual(result["state"], "unrecognized")
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["raw"], glued)
+
     async def test_preview_does_not_send_and_stale_confirmation_is_rejected(self):
         plugin = FakePlugin({"kick Steve test reason": "Kicked Steve", "list": EMPTY})
         params = {"action": "kick", "player": "Steve", "reason": "test reason"}

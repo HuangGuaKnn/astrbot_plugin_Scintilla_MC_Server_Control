@@ -2314,16 +2314,24 @@ function renderPlayerBans(bans, admin){
     return;
   }
   const items = Array.isArray(bans.items) ? bans.items : [];
-  if(!["ok", "empty"].includes(bans.state)){
+  const stateOk = ["ok", "empty"].includes(bans.state);
+  if(!stateOk && items.length === 0){
     host.innerHTML = `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
       <span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>
       ${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>`;
     return;
   }
   const notes = [
+    // v0.26.1：回包认不出但名单来自文件时，必须说清「名单是哪来的」——
+    // 用户有权知道这一屏是 RCON 亲口说的，还是从服务端文件里读的。
+    !stateOk && bans.roster_source && bans.roster_source !== "banlist players"
+      ? `名单来源：${bans.roster_source}（RCON 回包未按预期解析）` : "",
     bans.detail_note,
     Number(bans.mismatch_count) > 0 ? `与文件记录不一致（${Number(bans.mismatch_count)} 条）` : "",
   ].filter(Boolean).map(note => `<div class="player-warning">${escServer(note)}</div>`).join("");
+  const head = stateOk ? "" : `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
+      <span class="muted">${escServer(bans.note || "封禁名单未按预期解析")}</span>
+      ${playerRaw("服务器原文", bans.raw)}</div>`;
   const rows = items.map(item => {
     const expiry = playerDate(item.expires);
     const expiryLabel = item.expires === "forever" ? "永久" : playerDateLabel(item.expires);
@@ -2335,9 +2343,9 @@ function renderPlayerBans(bans, admin){
     const end = expired ? `<span class="muted">已过期</span>` : "";
     return `<div class="player-row"><b>${escServer(item.name)}</b>
       <div class="player-ban-info">${fields}${end}</div>
-      ${playerButtons(item.name, ["unban"], bans.state === "ok" && PLAYER_NAME.test(item.name))}</div>`;
+      ${playerButtons(item.name, ["unban"], item.removable !== false && PLAYER_NAME.test(item.name))}</div>`;
   }).join("");
-  host.innerHTML = notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
+  host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
 }
 
 function renderPlayerAudit(audit, admin){

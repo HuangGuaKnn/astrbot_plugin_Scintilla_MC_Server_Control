@@ -15,6 +15,9 @@ ONLINE_OK = {"state": "ok", "players": ["Alex"], "online": 1, "max": 20}
 BAN = {
     "name": "Steve", "reason": "违反服务器守则", "created": "2026-11-17 00:00:00 +0000",
     "source": "Server", "expires": "forever", "detail_available": True,
+    # v0.26.1：解封按钮的启用依据从「整卡 state」改成「这一条能不能解」——
+    # 回包粘连时名单来自文件，每一条都是确定的，所以逐条可解。
+    "removable": True,
 }
 IPV4 = "192.0.2.42"
 IPV6 = "2001:db8::1234"
