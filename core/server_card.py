@@ -144,7 +144,13 @@ def strip_color_codes(text: str) -> str:
 # ===================== `/list` =====================
 
 #: 1.16+ 原版：``There are 2 of a max of 20 players online: Steve, Alex``
-_LIST_MODERN_RE = re.compile(r"there\s+are\s+(\d+)\s+of\s+a\s+max(?:imum)?\s+of\s+(\d+)", re.I)
+#: 1.13 – 1.15 原版：``There are 2 of a max 20 players online:`` —— **没有第二个 of**。
+#: 这条是 2026-11-17 八台真机验收抓出来的（1.13.2 / 1.14.4 回包原样），
+#: 旧正则写死了 ``max of``，于是这两台的在线人数一直静默显示 0 / 0。
+#: 所以第二个 ``of`` 必须**可选** —— 「同一个意思的两种写法」不是两种命令。
+_LIST_MODERN_RE = re.compile(
+    r"there\s+are\s+(\d+)\s+of\s+a\s+max(?:imum)?\s+(?:of\s+)?(\d+)", re.I
+)
 #: 1.7.10 ~ 1.15（以及 Bukkit 系列）：``There are 2/20 players online: Steve``
 _LIST_LEGACY_RE = re.compile(r"there\s+are\s+(\d+)\s*/\s*(\d+)", re.I)
 #: 中文服务端（原版 zh_cn）：``有 2 个玩家在线，最多 20``

@@ -28,7 +28,12 @@ WebUI 的「服务器实时状态」原先只贴三行裸字符串（版本 / �
 3. 把 ``overall_state`` 里 ``online == STATE_EMPTY`` 那一步删掉 →
    `空服不被 TPS 不支持污染头条` 红；
 4. 把 ``parse_list_reply`` 的 ``_LIST_LEGACY_RE`` 删掉 →
-   1.7.10 / 1.12.2 的 ``There are 0/20 players online:`` 从 `empty` 变 `unrecognized` → 红。
+   1.7.10 / 1.12.2 的 ``There are 0/20 players online:`` 从 `empty` 变 `unrecognized` → 红；
+5. 把 ``_LIST_MODERN_RE`` 里可选的 ``(?:of\\s+)?`` 删掉 →
+   1.13 – 1.15 的 ``There are 0 of a max 20 players online:`` 红
+   （这条形态是 2026-11-17 八台真机验收抓出来的：1.13.2 / 1.14.4 的实际回包，
+   旧正则写死 ``max of``，这两台的在线人数一直静默显示 0 / 0）；
+6. 界面不显示原文 / 界面不渲染卡片 → ``tests/ui_server_card_check.py`` 红。
 
 运行：<AstrBot python> tests\\test_v0250_server_card.py
 """
@@ -65,6 +70,10 @@ LIST_CASES = [
     # (回包, online, max, players, 出处)
     ("There are 2 of a max of 20 players online: Steve, Alex", 2, 20, ["Steve", "Alex"], "1.16+ 原版"),
     ("There are 2 of a maximum of 20 players online: Steve", 2, 20, ["Steve"], "1.16 早期措辞"),
+    ("There are 0 of a max 20 players online:", 0, 20, [],
+     "1.13 – 1.15 原版（真机 1.13.2/1.14.4：max 20，没有第二个 of）"),
+    ("There are 3 of a max 30 players online: a, b, c", 3, 30, ["a", "b", "c"],
+     "1.13 – 1.15 原版（有人在线）"),
     ("There are 0/20 players online:", 0, 20, [], "1.7.10 ~ 1.15 / Bukkit"),
     ("There are 3/30 players online: a, b, c", 3, 30, ["a", "b", "c"], "1.12.2"),
     ("有 2 个玩家在线，最多 20", 2, 20, [], "中文服务端"),
