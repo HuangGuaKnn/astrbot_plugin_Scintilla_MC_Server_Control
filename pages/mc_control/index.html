@@ -439,6 +439,23 @@ summary{color:var(--cyan);cursor:pointer;font-weight:600;padding:4px 0;user-sele
 summary:hover{text-decoration:underline}
 #sv_status{min-height:118px}
 #sv_players{min-height:118px;align-content:flex-start}
+.player-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 0;border-bottom:1px solid var(--border)}
+.player-row:last-child{border-bottom:0}
+.player-row .ply{margin:0}
+.player-actions{display:flex;gap:5px;flex-wrap:wrap}
+.player-row .player-actions{margin-left:auto}
+.player-ban-info{display:flex;flex:1 0 210px;flex-wrap:wrap;gap:4px 14px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
+.player-ban-info .muted{margin-right:5px}
+.player-warning{color:var(--warn);margin-bottom:8px;font-size:12px;overflow-wrap:anywhere}
+.player-state .player-actions{margin-top:8px}
+.player-result:not(:empty){margin-top:10px}
+.player-result .bc-out,.player-state .bc-out{white-space:pre-wrap;min-height:0}
+.player-audit-command{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+#player_dialog{margin:auto;max-height:calc(100% - 32px);color:var(--text);overflow:auto}
+#player_dialog::backdrop{background:var(--mask);backdrop-filter:blur(3px)}
+#player_reason{width:100%}
+#player_dialog .modal-foot{justify-content:flex-end}
+#player_preview_error:not(:empty){margin-top:8px}
 #sv_status,#sv_players{position:relative;transition:opacity .24s ease}
 #sv_status.is-loading,#sv_players.is-loading{opacity:.52}
 .status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
@@ -1029,8 +1046,14 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     <div class="card">
       <h3><span class="dot" style="background:var(--amber)"></span>在线玩家 <span class="right" id="sv_online_tag"></span></h3>
       <div id="sv_players"><span class="muted">加载中…</span></div>
+      <div class="player-result" id="sv_player_result" role="status" aria-live="polite"></div>
     </div>
   </div>
+  <section class="card" id="sv_ban_card" hidden aria-labelledby="sv_ban_title">
+    <h3 id="sv_ban_title"><span class="dot" style="background:var(--bad)"></span>封禁名单</h3>
+    <div id="sv_bans"></div>
+    <div class="player-result" id="sv_ban_result" role="status" aria-live="polite"></div>
+  </section>
   <div class="card">
     <h3><span class="dot" style="background:var(--cyan)"></span>广播控制台</h3>
     <div class="bc-modes" id="bc_modes">
@@ -1113,6 +1136,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     <h3><span class="dot" style="background:var(--faint)"></span>服务器事件流 <span class="right"><button id="sv_ev_refresh">刷新</button></span></h3>
     <div id="sv_events"><span class="muted">加载中…</span></div>
   </div>
+  <section class="card" id="sv_audit_card" hidden aria-labelledby="sv_audit_title">
+    <h3 id="sv_audit_title"><span class="dot" style="background:var(--faint)"></span>最近操作</h3>
+    <div id="sv_audit"></div>
+  </section>
 </div>
 
 <!-- ================= 知识库 ================= -->
@@ -1818,7 +1845,7 @@ async function directApi(path, method, body){
   const r = await fetch(DIRECT_PREFIX + path.replace(/^\/+/, ""), opt);
   if(!r.ok){
     let msg = "HTTP " + r.status;
-    try{ const j = await r.json(); if(j && j.detail) msg += ": " + j.detail; }catch(_){}
+    try{ const j = await r.json(); if(j && (j.detail || j.error)) msg += ": " + (j.detail || j.error); }catch(_){}
     return {ok:false, error:msg};
   }
   return await r.json().catch(()=>({ok:false,error:"响应解析失败"}));
@@ -1833,12 +1860,12 @@ function selectApi(){
     new Promise(res=>setTimeout(()=>res({mode:"direct"}), 3000)),
   ]).catch(()=>({mode:"direct"}));
 }
-async function callGet(p){
+async function callGet(p, params){
   if(mode==="bridge"){
-    try{ return await Promise.race([bridge.apiGet(P+p), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiGet 超时")),6000))]); }
+    try{ return await Promise.race([bridge.apiGet(P+p, params), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiGet 超时")),6000))]); }
     catch(e){ console.warn("[mc_control] bridge 失败，降级直连:",e); }
   }
-  return directApi(p,"GET");
+  return directApi(params ? p + "?" + new URLSearchParams(params) : p,"GET");
 }
 async function callPost(p,b){
   if(mode==="bridge"){
@@ -2142,8 +2169,8 @@ async function loadOverview(){
 }
 
 function evHTML(e){
-  const m = EVENT_META[e.type]||["dim","·",esc(e.type)];
-  return `<div class="ev"><span class="ts">${esc(e.ts)}</span><span class="badge ${m[0]}">${m[1]} ${m[2]}</span>${e.player?`<span class="pl">${esc(e.player)}</span>`:""}<span class="dt">${esc(e.detail||"")}</span></div>`;
+  const m = EVENT_META[e.type]||["dim","·",escServer(e.type)];
+  return `<div class="ev"><span class="ts">${escServer(e.ts)}</span><span class="badge ${m[0]}">${m[1]} ${m[2]}</span>${e.player?`<span class="pl">${escServer(e.player)}</span>`:""}<span class="dt">${escServer(e.detail||"")}</span></div>`;
 }
 
 // ============ RCON 测试（可注入目标容器） ============
@@ -2180,29 +2207,288 @@ function renderServerCard(card){
   }
   const head = `<div class="sc-head">
       <span class="sc-dot" style="background:${CARD_DOT[card.overall]||"var(--faint)"}"></span>
-      <span>${esc(card.overall_label||"—")}</span>
-      <span class="sc-sum">${esc(card.summary||"")}</span>
-      <span class="sc-time">${esc(card.sampled_at||"")}</span>
+      <span>${escServer(card.overall_label||"—")}</span>
+      <span class="sc-sum">${escServer(card.summary||"")}</span>
+      <span class="sc-time">${escServer(card.sampled_at||"")}</span>
     </div>`;
   const rows = card.fields.map(f=>{
     const cls = CARD_BADGE[f.state]||"dim";
     // 原文是「认不出」这一态的唯一线索 —— 后端给了就必须显示，不许折叠。
-    const raw = f.raw ? `<div class="sc-raw"><b>服务器原文</b>${esc(f.raw)}</div>` : "";
-    const note = f.note ? `<div class="sc-note">${esc(f.note)}</div>` : "";
-    return `<div class="sc-row" data-key="${esc(f.key)}" data-state="${esc(f.state)}">
-      <div class="sc-k"><b>${esc(f.label)}</b><span class="sc-src" title="采样来源：${esc(f.source||"")}">${esc(f.source||"")}</span></div>
-      <div class="sc-v"><span class="sc-val">${esc(f.value||"—")}</span><span class="badge ${cls}">${esc(f.state_label||f.state)}</span></div>
+    const raw = f.raw ? `<div class="sc-raw"><b>服务器原文</b>${escServer(f.raw)}</div>` : "";
+    const note = f.note ? `<div class="sc-note">${escServer(f.note)}</div>` : "";
+    return `<div class="sc-row" data-key="${escServer(f.key)}" data-state="${escServer(f.state)}">
+      <div class="sc-k"><b>${escServer(f.label)}</b><span class="sc-src" title="采样来源：${escServer(f.source||"")}">${escServer(f.source||"")}</span></div>
+      <div class="sc-v"><span class="sc-val">${escServer(f.value||"—")}</span><span class="badge ${cls}">${escServer(f.state_label||f.state)}</span></div>
       ${note}${raw}
     </div>`;
   }).join("");
   host.innerHTML = head + rows;
 }
 
+// ============ 服务器页 · 玩家管理 ============
+const PLAYER_ACTIONS = {
+  kick:"踢出", ban:"封禁", unban:"解封",
+  whitelist_add:"加入白名单", whitelist_remove:"移出白名单",
+};
+const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS);
+const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
+const escServer = value => esc(redactServerText(value));
+let playerSelection = null;
+let playerActionBusy = false;
+
+function redactServerText(value){
+  return String(value ?? "")
+    .replace(/\d+\.\d+\.\d+\.\d+/g, "[地址已隐藏]")
+    .replace(/(?<![\w:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]*(?:%[\w.-]+)?(?![\w:])/gi,
+      address => address.includes("::") || address.split(":").length >= 8
+        ? "[地址已隐藏]" : address);
+}
+
+function playerBadge(state, label){
+  return `<span class="badge ${CARD_BADGE[state] || "dim"}">${escServer(label || "名单不可用")}</span>`;
+}
+
+function playerRaw(label, raw){
+  return raw ? `<div class="bc-out"><b>${label}</b><br>${escServer(raw)}</div>` : "";
+}
+
+function playerButtons(player, actions, enabled){
+  const disabled = enabled ? "" : "disabled";
+  const buttons = actions.map(action =>
+    `<button class="btn sm" type="button" data-action="${action}" data-player="${escServer(player)}" ${disabled}>${PLAYER_ACTIONS[action]}</button>`);
+  return `<div class="player-actions">${buttons.join("")}</div>`;
+}
+
+function renderOnlinePlayers(status, guardedOnline, admin){
+  const field = status.card?.fields?.find(f => f.key === "online");
+  const legacy = status.list || {};
+  // 管理项只采信经过版本守卫的完整名单。旧状态接口仍能画只读名单。
+  const online = admin ? (guardedOnline || {}) : {
+    state: field?.state || (!status.ok ? "unreachable"
+      : status.list_error ? "unrecognized" : legacy.online === 0 ? "empty" : "ok"),
+    state_label: field?.state_label,
+    note: field?.note || status.list_error,
+    raw: field?.raw,
+    players: legacy.players,
+    online: legacy.online,
+  };
+  const names = Array.isArray(online.players) ? online.players : [];
+  const complete = online.state === "ok" && names.length > 0 &&
+    online.online === names.length && names.every(name => typeof name === "string" && PLAYER_NAME.test(name)) &&
+    new Set(names.map(name => name.toLowerCase())).size === names.length;
+  const host = $("sv_players"), tag = $("sv_online_tag");
+  if(online.state === "ok" && (admin ? complete : names.length > 0)){
+    tag.innerHTML = playerBadge("ok", `${Number(online.online) || names.length} 人在线`);
+    host.innerHTML = names.map(name => admin
+      ? `<div class="player-row"><span class="ply">${escServer(name)}</span>${playerButtons(name, ONLINE_ACTIONS, true)}</div>`
+      : `<span class="ply">${escServer(name)}</span>`).join("");
+    return;
+  }
+  const state = ["empty", "unsupported", "unrecognized", "unreachable"].includes(online.state)
+    ? online.state : "unrecognized";
+  tag.innerHTML = playerBadge(state, state === "empty" ? "空服 · 0 人" : online.state_label);
+  const note = state === "empty" ? "当前没有玩家在线"
+    : `玩家名单拿不到：${online.note || (state === "unreachable" ? "服务器未连接" : "未获取完整名单")}`;
+  host.innerHTML = `<div class="player-state"><span class="muted">${escServer(note)}</span>
+    ${playerRaw("服务器原文", online.raw)}${admin ? playerButtons("", ONLINE_ACTIONS, false) : ""}</div>`;
+}
+
+function playerDate(value){
+  if(!value || value === "未知") return null;
+  // Minecraft 的日期使用 yyyy-MM-dd HH:mm:ss Z。保留时区后按浏览器本地时间展示。
+  const date = new Date(String(value).replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ([+-]\d{2})(\d{2})$/, "$1T$2$3:$4"));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function playerDateLabel(value){
+  return playerDate(value)?.toLocaleString() || value || "未知";
+}
+
+function renderPlayerBans(bans, admin){
+  $("sv_ban_card").hidden = !admin;
+  const host = $("sv_bans");
+  if(!admin){
+    host.replaceChildren();
+    $("sv_ban_result").replaceChildren();
+    $("sv_player_result").replaceChildren();
+    return;
+  }
+  const items = Array.isArray(bans.items) ? bans.items : [];
+  if(!["ok", "empty"].includes(bans.state)){
+    host.innerHTML = `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
+      <span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>
+      ${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>`;
+    return;
+  }
+  const notes = [
+    bans.detail_note,
+    Number(bans.mismatch_count) > 0 ? `与文件记录不一致（${Number(bans.mismatch_count)} 条）` : "",
+  ].filter(Boolean).map(note => `<div class="player-warning">${escServer(note)}</div>`).join("");
+  const rows = items.map(item => {
+    const expiry = playerDate(item.expires);
+    const expiryLabel = item.expires === "forever" ? "永久" : playerDateLabel(item.expires);
+    const expired = item.expired === true || (expiry && expiry.getTime() <= Date.now());
+    const fields = [
+      ["原因", item.reason || "未知"], ["封禁时间", playerDateLabel(item.created)],
+      ["操作者", item.source || "未知"], ["到期", expiryLabel],
+    ].map(([label, value]) => `<span><span class="muted">${label}</span>${escServer(value)}</span>`).join("");
+    const end = expired ? `<span class="muted">已过期</span>` : "";
+    return `<div class="player-row"><b>${escServer(item.name)}</b>
+      <div class="player-ban-info">${fields}${end}</div>
+      ${playerButtons(item.name, ["unban"], bans.state === "ok" && PLAYER_NAME.test(item.name))}</div>`;
+  }).join("");
+  host.innerHTML = notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
+}
+
+function renderPlayerAudit(audit, admin){
+  $("sv_audit_card").hidden = !admin;
+  const host = $("sv_audit");
+  if(!admin){
+    host.replaceChildren();
+    return;
+  }
+  if(audit?.ok !== true){
+    host.innerHTML = `<span class="muted">${escServer(audit?.error || "无法读取最近操作")}</span>`;
+    return;
+  }
+  const items = Array.isArray(audit.items) ? audit.items : [];
+  host.innerHTML = items.length ? items.map(item => {
+    const state = item.confirmed ? "ok" : item.state === "ok" ? "unrecognized" : item.state;
+    return `<div class="player-row"><span class="muted">${escServer(playerDateLabel(item.ts))}</span>
+      <span>${escServer(item.actor)} · ${escServer(PLAYER_ACTIONS[item.action] || item.action)}</span>
+      <code class="player-audit-command">${escServer(item.command)}</code>
+      ${playerBadge(state, item.confirmed ? "已确认" : "未确认")}</div>`;
+  }).join("") : `<span class="muted">暂无操作记录</span>`;
+}
+
+function renderPlayerActionResult(host, result){
+  const confirmed = result?.ok === true && result?.confirmed === true;
+  const state = confirmed ? "ok" : result?.state && result.state !== "ok" ? result.state : "unrecognized";
+  host.innerHTML = `${playerBadge(state, confirmed ? "已确认" : result?.state_label && state === result.state ? result.state_label : "未确认")}
+    <span class="muted">${escServer(result?.note || result?.error || "未取得操作结果")}</span>
+    ${playerRaw("服务器原文", result?.raw)}${playerRaw("回读原文", result?.readback?.raw)}`;
+}
+
+function disablePlayerButtons(){
+  document.querySelectorAll("#sv_players [data-action], #sv_bans [data-action]").forEach(button => {
+    button.disabled = true;
+  });
+}
+
+async function previewPlayerCommand(selection){
+  const confirm = $("player_confirm"), command = $("player_command");
+  confirm.disabled = true;
+  selection.command = "";
+  command.textContent = "正在生成…";
+  $("player_preview_error").textContent = "";
+  const reason = $("player_reason").value, previewRevision = selection.previewRevision;
+  const preview = await callPost("player/action", {
+    action: selection.action, player: selection.player, reason, preview: true,
+  }).catch(() => ({ok:false,error:"命令预览请求失败"}));
+  if(playerSelection !== selection || !$("player_dialog").open || selection.previewRevision !== previewRevision) return;
+  if(preview?.ok !== true || !preview.command || redactServerText(preview.command) !== preview.command){
+    command.textContent = "—";
+    $("player_preview_error").textContent = redactServerText(preview?.error || preview?.note || "命令预览不可用");
+    return;
+  }
+  selection.reason = reason;
+  selection.command = preview.command;
+  command.textContent = preview.command;
+  confirm.disabled = false;
+}
+
+async function postPlayerAction(body){
+  // 桥接写入超时后不能降级再发一次，因为第一次可能已经执行。
+  const request = mode === "bridge"
+    ? bridge.apiPost(P + "player/action", body) : directApi("player/action", "POST", body);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("等待玩家操作回执超时")), 30000);
+  });
+  try{
+    return await Promise.race([request, timeout]);
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function confirmPlayerAction(){
+  const selection = playerSelection;
+  if(!selection?.command || playerActionBusy) return;
+  playerActionBusy = true;
+  const confirm = $("player_confirm");
+  confirm.disabled = true;
+  $("player_reason").disabled = true;
+  $("player_cancel").disabled = true;
+  selection.result.textContent = "正在执行并回读…";
+  try{
+    const result = await postPlayerAction({
+      action: selection.action, player: selection.player, reason: selection.reason, expected_command: selection.command,
+    });
+    renderPlayerActionResult(selection.result, result);
+  }catch(e){
+    renderPlayerActionResult(selection.result, {state:"unreachable", note:"请求中断，服务端是否已执行尚未确认", raw:String(e)});
+  }finally{
+    playerActionBusy = false;
+    $("player_reason").disabled = false;
+    $("player_cancel").disabled = false;
+    playerSelection = null;
+    $("player_dialog").close();
+    await loadServer();
+  }
+}
+
+function bindPlayerAdmin(){
+  const dialog = $("player_dialog"), reason = $("player_reason"), confirm = $("player_confirm");
+  $("page_server").addEventListener("click", event => {
+    const button = event.target.closest("#sv_players button[data-action], #sv_bans button[data-action]");
+    if(!button || button.disabled || !PLAYER_NAME.test(button.dataset.player)) return;
+    const {action, player} = button.dataset;
+    const result = button.closest("#sv_bans") ? $("sv_ban_result") : $("sv_player_result");
+    playerSelection = {action, player, result, previewRevision:0};
+    $("player_dialog_title").textContent = `确认${PLAYER_ACTIONS[action]}`;
+    $("player_target").textContent = player;
+    $("player_reason_wrap").hidden = action !== "kick" && action !== "ban";
+    reason.value = "";
+    dialog.showModal();
+    previewPlayerCommand(playerSelection);
+  });
+  reason.addEventListener("input", () => {
+    const selection = playerSelection;
+    if(!selection) return;
+    confirm.disabled = true;
+    selection.command = "";
+    const current = ++selection.previewRevision;
+    if(redactServerText(reason.value) !== reason.value){
+      reason.value = "";
+      $("player_command").textContent = "—";
+      $("player_preview_error").textContent = "原因不能包含地址，请重新填写";
+      return;
+    }
+    $("player_command").textContent = "正在更新…";
+    setTimeout(() => {
+      if(playerSelection === selection && selection.previewRevision === current && dialog.open){
+        previewPlayerCommand(selection);
+      }
+    }, 250);
+  });
+  $("player_cancel").onclick = () => {
+    playerSelection = null;
+    dialog.close();
+  };
+  dialog.addEventListener("cancel", event => {
+    if(playerActionBusy) event.preventDefault();
+    else playerSelection = null;
+  });
+  confirm.onclick = confirmPlayerAction;
+}
+
 // ============ 服务器页 ============
 async function loadServer(){
-  if(loadServer._pending) return;
+  if(loadServer._pending || playerActionBusy) return;
   const status = $("sv_status"), players = $("sv_players"), refresh = $("sv_refresh");
   loadServer._pending = true;
+  disablePlayerButtons();
   status.classList.add("is-loading");
   players.classList.add("is-loading");
   status.setAttribute("aria-busy", "true");
@@ -2210,7 +2496,16 @@ async function loadServer(){
   if(refresh) refresh.disabled = true;
   try{
     // 保留上一份内容，查询期间只降低明度，避免成功 / 失败两种高度切换造成页面跳动。
-    const r = await callGet("server/status").catch(()=>({ok:false,error:"请求失败"}));
+    const [statusReply, bans] = await Promise.all([
+      callGet("server/status").catch(() => ({ok:false,error:"请求失败"})),
+      callGet("player/bans").catch(() => null),
+    ]);
+    const r = statusReply || {ok:false,error:"响应缺失"};
+    const admin = bans?.authorized === true;
+    const audit = admin ? await callGet("player/audit", {limit:20}).catch(() => null) : null;
+    renderOnlinePlayers(r, bans?.online, admin);
+    renderPlayerBans(bans, admin);
+    renderPlayerAudit(audit, admin);
     // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
     // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
     renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
@@ -2221,12 +2516,10 @@ async function loadServer(){
       if(r.card){
         renderServerCard(r.card);
         status.insertAdjacentHTML("beforeend",
-          `<div class="hint" style="color:var(--warn);margin-top:6px">${esc(r.error||"未知错误")}</div>`);
+          `<div class="hint" style="color:var(--warn);margin-top:6px">${escServer(r.error||"未知错误")}</div>`);
       }else{
-        status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${esc(r.error||"未知错误")}</div>`;
+        status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${escServer(r.error||"未知错误")}</div>`;
       }
-      players.innerHTML = `<span class="muted">服务器未连接，无玩家信息</span>`;
-      $("sv_online_tag").innerHTML = "";
       return;
     }
     const list = r.list||{};
@@ -2236,37 +2529,20 @@ async function loadServer(){
       // 兼容兜底：接口没给 card（旧后端 / 假后端）时退回原来那三行，
       // 页面不会因为少一个字段就白屏。
       status.innerHTML = `
-      <div class="kv"><span class="k">服务器版本</span><span class="v">${esc(r.version||"-")}</span></div>
-      <div class="kv"><span class="k">游戏时间</span><span class="v">${esc(r.daytime_clock||r.daytime||"-")}</span></div>
-      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${list.online??"-"} / ${list.max??"-"}</span></div>`;
+      <div class="kv"><span class="k">服务器版本</span><span class="v">${escServer(r.version||"-")}</span></div>
+      <div class="kv"><span class="k">游戏时间</span><span class="v">${escServer(r.daytime_clock||r.daytime||"-")}</span></div>
+      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${escServer(list.online??"-")} / ${escServer(list.max??"-")}</span></div>`;
     }
     // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
     // 等于「版本未知」这条最重要的提示根本没到用户眼前。
     if(r.version_hint){
       $("sv_ver_caps").insertAdjacentHTML("beforeend",
-        `<div style="color:var(--warn);margin-top:4px">${esc(r.version_hint)}</div>`);
+        `<div style="color:var(--warn);margin-top:4px">${escServer(r.version_hint)}</div>`);
     }
     // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
     if(RMT.on) status.insertAdjacentHTML("beforeend",
       `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
       + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
-    // 在线人数徽章：0 人不是「异常」，是「空服」—— 两种说法在界面里必须一样清楚。
-    const onlineField = ((r.card&&r.card.fields)||[]).find(f=>f.key==="online") || null;
-    if(onlineField && onlineField.state==="empty"){
-      $("sv_online_tag").innerHTML = `<span class="badge dim">空服 · 0 人</span>`;
-    }else{
-      $("sv_online_tag").innerHTML = `<span class="badge ${(list.online||0)>0?"ok":"dim"}">${(list.online||0)} 人在线</span>`;
-    }
-    const pls = list.players||[];
-    // 名单拿不到时不许显示「当前没有玩家在线」—— 那是把「认不出」说成了「空服」，
-    // 正是这张卡要消灭的那类误读。
-    if(r.list_error && !onlineField){
-      players.innerHTML = `<span class="muted">玩家名单拿不到：${esc(r.list_error)}</span>`;
-    }else if(onlineField && onlineField.state!=="ok" && onlineField.state!=="empty"){
-      players.innerHTML = `<span class="muted">玩家名单拿不到：${esc(onlineField.note||"list 回包认不出")}</span>`;
-    }else{
-      players.innerHTML = pls.length ? pls.map(p=>`<span class="ply">${esc(p)}</span>`).join("") : `<span class="muted">当前没有玩家在线</span>`;
-    }
     // 事件流
     loadServerEvents();
   }finally{
@@ -3336,6 +3612,7 @@ const SYNTAX_LABEL = {
 };
 function renderVersionCaps(caps, targetId){
   const el = $(targetId || "ver_caps_line"); if(!el) return;
+  const escapeText = targetId === "sv_ver_caps" ? escServer : esc;
   if(!caps || typeof caps !== "object"){
     el.innerHTML = `<span class="muted">版本能力：暂时读不到（不影响已保存的配置，稍后重试即可）。</span>`;
     return;
@@ -3345,7 +3622,7 @@ function renderVersionCaps(caps, targetId){
     el.innerHTML = `<span style="color:var(--warn)">⚠ 当前无法确定 Minecraft 服务端版本。</span>`
       + `含 NBT、附魔、物品组件的请求<b>不会直接执行</b>。`
       + `请填写服务端版本，例如 <code>1.20.1</code>。`
-      + (caps.raw ? `（已填「${esc(caps.raw)}」但解析不出，请用 <code>1.20.1</code> 这种写法）` : "");
+      + (caps.raw ? `（已填「${escapeText(caps.raw)}」但解析不出，请用 <code>1.20.1</code> 这种写法）` : "");
     return;
   }
   if(caps.item_syntax === "unsupported_preflatten"){
@@ -3353,8 +3630,8 @@ function renderVersionCaps(caps, targetId){
     // B5 起该世代**已可生成**（走 legacy_preflatten），本分支只剩**降级兜底**：
     // 预扁平化表缺失 / 生成器未就绪时才会落到这里，所以行文必须说「通道当前不可用」，
     // 而不是「本插件不支持这个版本」——后者会让用户以为没救。
-    el.innerHTML = `<span style="color:var(--warn)">⚠ 服务端 <b>${esc(caps.raw || caps.version || "-")}</b>`
-      + ` 低于 ${esc(caps.preflatten_cutover || "1.13")}：<b>该世代的预扁平化生成通道当前不可用</b>`
+    el.innerHTML = `<span style="color:var(--warn)">⚠ 服务端 <b>${escapeText(caps.raw || caps.version || "-")}</b>`
+      + ` 低于 ${escapeText(caps.preflatten_cutover || "1.13")}：<b>该世代的预扁平化生成通道当前不可用</b>`
       + `（物品表缺失或生成器未就绪）。</span>`
       + `1.13 重写了 give / execute / effect 等命令语法并做资源 ID 扁平化，`
       + `带数据命令会被<b>直接拒绝</b>（而不是生成一条必然失败的命令）。`
@@ -3368,16 +3645,16 @@ function renderVersionCaps(caps, targetId){
   if(caps.item_syntax === "legacy_preflatten"){
     // B5（2026-10-07 两代真机实证）：1.13 以下改为**可生成** —— 变体走「家族名 + 数据值」，
     // 域外数据值服务端不报错却会崩客户端，所以这条硬约束必须在能力行里看得见。
-    el.innerHTML = `Minecraft <b>${esc(caps.raw || caps.version || "-")}</b>`
-      + `（来源：${esc(caps.source_label || caps.source || "-")}）`
-      + ` · 物品语法：<b>${esc(syn)}</b>（来源：${esc(src)}）`
+    el.innerHTML = `Minecraft <b>${escapeText(caps.raw || caps.version || "-")}</b>`
+      + `（来源：${escapeText(caps.source_label || caps.source || "-")}）`
+      + ` · 物品语法：<b>${escapeText(syn)}</b>（来源：${escapeText(src)}）`
       + ` · 变体按「家族名 + 数据值」生成（如 <code>minecraft:wool</code> + 14），域外数据值一律拒绝`;
     return;
   }
-  el.innerHTML = `Minecraft <b>${esc(caps.raw || caps.version || "-")}</b>`
-    + `（来源：${esc(caps.source_label || caps.source || "-")}）`
-    + ` · 物品语法：<b>${esc(syn)}</b>（来源：${esc(src)}）`
-    + ` · 语法分水岭 ${esc(caps.cutover || "1.20.5")}`;
+  el.innerHTML = `Minecraft <b>${escapeText(caps.raw || caps.version || "-")}</b>`
+    + `（来源：${escapeText(caps.source_label || caps.source || "-")}）`
+    + ` · 物品语法：<b>${escapeText(syn)}</b>（来源：${escapeText(src)}）`
+    + ` · 语法分水岭 ${escapeText(caps.cutover || "1.20.5")}`;
 }
 // 版本能力与 RCON 无关（后端已把它提到连服务器之前算），所以掉线也照样能读。
 async function refreshVersionCaps(){
@@ -5285,6 +5562,7 @@ async function resetColors(){
 
 // ============ 事件绑定 ============
 function bind(){
+  bindPlayerAdmin();
   $("sv_refresh").onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
   const wfRefresh = $("wf_refresh");
@@ -5304,14 +5582,14 @@ function bind(){
       if(r.confirmed === false){
         // v0.24.8（GPT 第三轮复核 P3）：「发出去了」不等于「有人收到」。
         // 没有可靠回执时用黄字，明确写出「未确认」，绝不沿用绿字成功态。
-        $("bc_out").innerHTML = `<span style="color:var(--warn)">△ 已发出 · 未确认（${lbl}）：</span> ${esc(r.message)}`
-          + `<div style="margin-top:4px">${esc(r.warning||"服务端没有给出可靠回执，请以游戏内画面为准。")}</div>`;
+        $("bc_out").innerHTML = `<span style="color:var(--warn)">△ 已发出 · 未确认（${lbl}）：</span> ${escServer(r.message)}`
+          + `<div style="margin-top:4px">${escServer(r.warning||"服务端没有给出可靠回执，请以游戏内画面为准。")}</div>`;
       } else {
-        $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${esc(r.message)}`;
+        $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${escServer(r.message)}`;
       }
       $("bc_msg").value="";
     }
-    else $("bc_out").innerHTML = `<span style="color:var(--bad)">✗ 失败：</span> ${esc(r.error||"未知错误")}`;
+    else $("bc_out").innerHTML = `<span style="color:var(--bad)">✗ 失败：</span> ${escServer(r.error||"未知错误")}`;
   };
   $("bc_msg").addEventListener("keydown", e=>{ if(e.key==="Enter") $("bc_send").click(); });
   $("kb_search").oninput = renderKbList;
@@ -5612,6 +5890,24 @@ else boot();
     </div>
   </div>
 </div>
+
+<!-- 玩家管理二次确认 -->
+<dialog class="modal-box" id="player_dialog" aria-labelledby="player_dialog_title">
+  <h2 id="player_dialog_title">确认玩家操作</h2>
+  <div class="modal-kv">
+    <span class="k">目标玩家</span><b class="v" id="player_target"></b>
+    <span class="k">将执行的命令</span><code class="v" id="player_command"></code>
+  </div>
+  <div id="player_reason_wrap" hidden>
+    <label class="f" for="player_reason">原因（可选）</label>
+    <input id="player_reason" type="text" autocomplete="off" maxlength="200">
+  </div>
+  <div class="player-warning" id="player_preview_error" role="status"></div>
+  <div class="modal-foot">
+    <button class="btn" type="button" id="player_cancel" autofocus>取消</button>
+    <button class="btn primary" type="button" id="player_confirm" disabled>确认执行</button>
+  </div>
+</dialog>
 
 <!-- 绑定到本服务端 · 二次确认 -->
 <div class="modal-mask" id="bind_modal" style="display:none">

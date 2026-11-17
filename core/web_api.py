@@ -15,7 +15,7 @@ from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .command_result import classify_command_output, parse_daytime_reply
-from . import server_card
+from . import player_admin, server_card
 from .knowledge_base import knowledge_length_error, normalize_status
 from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
@@ -196,6 +196,9 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/server/status", self.get_server_status, ["GET"], "服务器实时状态")
         reg(f"{PAGE_PREFIX}/server/card", self.get_server_card, ["GET"], "实时服务器卡（四字段 · 四态）")
         reg(f"{PAGE_PREFIX}/server/broadcast", self.broadcast, ["POST"], "服务器广播")
+        reg(f"{PAGE_PREFIX}/player/action", self.player_action, ["POST"], "执行或预览玩家管理操作")
+        reg(f"{PAGE_PREFIX}/player/audit", self.player_audit, ["GET"], "最近玩家操作审计")
+        reg(f"{PAGE_PREFIX}/player/bans", self.player_bans, ["GET"], "封禁名单与玩家管理名单")
         reg(f"{PAGE_PREFIX}/colors", self.get_colors, ["GET"], "读取文本颜色")
         reg(f"{PAGE_PREFIX}/colors/save", self.save_colors, ["POST"], "保存文本颜色")
         reg(f"{PAGE_PREFIX}/ui/theme", self.get_ui_theme, ["GET"], "读取界面主题偏好")
@@ -1335,6 +1338,92 @@ class McControlWebApi:
         except Exception:
             events = []
         return json_response({"ok": True, "events": events})
+
+    # ================= 玩家管理 =================
+
+    def _player_admin_username(self) -> str:
+        # AstrBot 仅用一个 dashboard.username 签发密码/桌面会话。
+        # 扩展 API 还允许带 plugin scope 的密钥，它们没有管理权限。
+        try:
+            username = request.username
+            dashboard = self.plugin.context.get_config()["dashboard"]
+            if not isinstance(username, str) or not username or username.startswith("api_key:"):
+                return ""
+            if username != dashboard.get("username"):
+                return ""
+            if request.path.startswith("/api/plug/"):
+                return username
+            # 旧路由中间件已校验资源令牌作用域。v1 ScopeDependency 还接受同一把
+            # 密钥签名的资源令牌，因此需要额外区分仪表盘会话和资源令牌。
+            import jwt
+
+            authorization = request.headers.get("Authorization", "").strip()
+            token = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
+            token = token or request.cookies.get("astrbot_dashboard_jwt", "")
+            try:
+                claims = jwt.decode(
+                    token, dashboard["jwt_secret"], algorithms=["HS256"], options={"require": ["exp"]},
+                )
+            except jwt.InvalidTokenError:
+                return ""
+            if claims.get("token_type") is None and claims.get("username") == username:
+                return username
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            return ""
+        return ""
+
+    @staticmethod
+    def _player_admin_forbidden():
+        return json_response(
+            {"ok": False, "authorized": False, "error": "仅 AstrBot WebUI 管理员可访问"},
+            status_code=403,
+        )
+
+    async def player_action(self):
+        actor = self._player_admin_username()
+        if not actor:
+            return self._player_admin_forbidden()
+        body, error = await self._body()
+        if error:
+            return json_response({"ok": False, "error": error}, status_code=400)
+
+        action = body.get("action")
+        player = body.get("player")
+        reason = body.get("reason", "")
+        preview = body.get("preview", False)
+        expected = body.get("expected_command")
+        if not isinstance(preview, bool) or (expected is not None and not isinstance(expected, str)):
+            return json_response({"ok": False, "error": "预览参数格式无效"}, status_code=400)
+        try:
+            if preview:
+                command = player_admin.build_command(action, player, reason, self.plugin._resolve_version_info())
+                return json_response({"ok": True, "action": action, "player": player, "command": command})
+            result = await player_admin.run_action(
+                self.plugin, action, player, reason, actor=actor, expected_command=expected,
+            )
+        except ValueError as exc:
+            return json_response({"ok": False, "error": str(exc)}, status_code=400)
+        return json_response(result)
+
+    async def player_audit(self):
+        if not self._player_admin_username():
+            return self._player_admin_forbidden()
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except (TypeError, ValueError):
+            return json_response({"ok": False, "authorized": True, "error": "limit 需要整数"}, status_code=400)
+        try:
+            items = player_admin.get_audit(limit)
+        except (OSError, UnicodeError):
+            return json_response({"ok": False, "authorized": True, "error": "无法读取玩家操作审计"}, status_code=500)
+        return json_response({"ok": True, "authorized": True, "items": items})
+
+    async def player_bans(self):
+        if not self._player_admin_username():
+            return self._player_admin_forbidden()
+        result = await player_admin.get_bans(self.plugin)
+        result["online"] = await player_admin.get_online(self.plugin)
+        return json_response({"ok": True, "authorized": True, **result})
 
     async def get_server_card(self):
         """实时服务器卡（v0.25.0）：四个字段 + 每个字段自己的状态。
