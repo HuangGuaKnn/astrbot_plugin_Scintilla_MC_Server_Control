@@ -92,17 +92,7 @@ STATE_LABEL = {
     STATE_NO_SOURCE: "无来源",
 }
 
-#: 卡片级状态取「最严重」时的优先级（``online`` 字段另有专门规则，见 :func:`overall_state`）。
-_OVERALL_PRIORITY = (
-    STATE_UNREACHABLE,
-    STATE_UNRECOGNIZED,
-    STATE_UNSUPPORTED,
-    STATE_EMPTY,
-    STATE_NO_SOURCE,
-    STATE_OK,
-)
-
-#: 四种「必须分开说」的状态 + ok / no_source 的图例（给 UI 与文档共用）。
+#: 状态图例（给 UI 与文档共用；顺序即阅读顺序）
 STATE_LEGEND = (
     (STATE_OK, "正常"),
     (STATE_EMPTY, "空服（0 人，正常）"),
@@ -417,29 +407,30 @@ def _version_field(plugin) -> dict:
 
 
 def overall_state(fields: list[dict]) -> str:
-    """卡片级状态：**在线人数**决定头条，其余字段只在它正常时才影响结论。
+    """卡片级状态：**在线人数**决定头条；只有「数据可信度」类状态能改写它。
 
-    理由：这张卡的头条要回答「现在服务器什么状况」。空服时 0 人是事实，
-    不能因为「TPS 该世代不支持」就把整张卡说成有问题 —— 那是两件事，
-    分字段说就够了。反过来，RCON 断线 / 回包认不出必须顶到头条，
-    因为它们意味着**这张卡本身的数据不可信**。
+    三种状态参与头条，其余一律不进：
 
-    版本字段（``version``）**不参与**头条：它既不来自 RCON，也与服务器此刻
-    活得好不好无关。让「没填手动声明」把一张全绿的卡染成黄的，是纯噪音。
+    * ``unreachable`` / ``unrecognized`` —— 它们意味着**这张卡本身的数据不可信**，
+      必须顶到头条（用户不该拿一份看不懂的回执当结论）；
+    * ``empty`` —— 0 人是事实，头条如实说「空服」；
+    * 其余（``ok`` / ``unsupported`` / ``no_source``）不进头条。
+
+    为什么 ``unsupported`` 不进头条（2026-11-17 八台真机验收现场改的口径）：
+    原版 / Fabric 没有 ``/tps``、1.7.10 没有 ``time query`` —— 这是**这台服务器的
+    结构性事实**，不是「有问题」。八台里七台有玩家在线、一切正常，旧口径却把整张卡
+    的头条写成「该世代不支持」，第一眼就会被读成故障。能力缺失在**该字段自己那行**
+    说清楚就够了，摘要里也照旧统计（「2 项正常 · 该世代不支持 2 项」）。
+
+    版本字段（``version``）同样不参与头条：它既不来自 RCON，也与服务器此刻活得好不好无关。
     """
     live = [f for f in fields if f.get("key") != "version"]
     by_key = {f.get("key"): f.get("state") for f in live}
     online = by_key.get("online")
-    if online in (STATE_UNREACHABLE, STATE_UNRECOGNIZED):
+    if online in (STATE_UNREACHABLE, STATE_UNRECOGNIZED, STATE_EMPTY):
         return online
-    if online == STATE_EMPTY:
-        return STATE_EMPTY
-    if online == STATE_OK:
-        for st in _OVERALL_PRIORITY:
-            if st in by_key.values():
-                return st
-        return STATE_OK
-    for st in _OVERALL_PRIORITY:
+    # 在线人数拿到了，再看其余字段里有没有「数据不可信」
+    for st in (STATE_UNREACHABLE, STATE_UNRECOGNIZED):
         if st in by_key.values():
             return st
     return STATE_OK

@@ -149,6 +149,8 @@ JUDGE_CASES = [
     ("tps", "Expected whitespace to end one argument, but found trailing data", False, "",
      SC.STATE_UNSUPPORTED, "语法被拒 = 该世代写法不同"),
     ("tps", "TPS 报告还没生成", False, "", SC.STATE_UNRECOGNIZED, "回了话但认不出"),
+    ("tps", "Unknown or incomplete command, see below for error tps<--[HERE]", False, "",
+     SC.STATE_UNSUPPORTED, "1.13+ brigadier「unknown or incomplete」= 命令不存在（fabric 1.21.1 真机原样）"),
     ("list", "Players online (2): Steve", False, "", SC.STATE_UNRECOGNIZED, "措辞没见过"),
     ("list", "", False, "", SC.STATE_UNRECOGNIZED, "空回包：不是「不支持」"),
     ("tps", "You do not have permission to use this command", False, "", SC.STATE_UNRECOGNIZED,
@@ -163,6 +165,14 @@ def part_three() -> None:
         check(f"{why} → {want}", state == want, f"{state} / {note}")
         if want != SC.STATE_OK:
             check(f"  ↳ 非正常态必须说清为什么：{why}", bool(note.strip()), repr(note))
+    # 措辞必须与证据一一对应（2026-11-17 真机 fabric 1.21.1 抓出来的）：
+    # brigadier 的 `unknown or incomplete command` 是「命令不存在」，说成「写法被拒」
+    # 会把用户指去查语法 —— 方向错了，比不说更糟。所以这里连**说明文字**一起钉。
+    _, note = SC.judge_reply(
+        "tps", "Unknown or incomplete command, see below for error tps<--[HERE]", parsed=False)
+    check("★措辞与证据对应：brigadier 的 unknown 要说「命令不存在」而不是「写法被拒」",
+          "命令不存在" in note and "写法" not in note, note)
+
     # 状态集合必须与标签表一一对应（新增状态忘登记 → 界面显示英文 key）
     check("STATE_LABEL 覆盖所有状态常量",
           all(st in SC.STATE_LABEL for st in (SC.STATE_OK, SC.STATE_EMPTY, SC.STATE_UNSUPPORTED,
@@ -187,6 +197,17 @@ def part_four() -> None:
     check("四项全正常 → ok", SC.overall_state(_fields()) == SC.STATE_OK)
     check("★空服 + TPS 不支持 → 头条仍是「空服」（不是错误）",
           SC.overall_state(_fields(online=SC.STATE_EMPTY, tps=SC.STATE_UNSUPPORTED)) == SC.STATE_EMPTY)
+    # 2026-11-17 八台真机现场口径：原版 / Fabric 没 /tps、1.7.10 没 time query 是
+    # 「这台服务器的结构性事实」，不是「有问题」—— 七台有玩家在线的服，头条不该被染黄。
+    check("★有玩家在线 + TPS 该世代不支持 → 头条仍是「正常」",
+          SC.overall_state(_fields(tps=SC.STATE_UNSUPPORTED)) == SC.STATE_OK,
+          SC.overall_state(_fields(tps=SC.STATE_UNSUPPORTED)))
+    check("★有玩家在线 + 时间与 TPS 都不支持 → 头条仍是「正常」",
+          SC.overall_state(_fields(daytime=SC.STATE_UNSUPPORTED, tps=SC.STATE_UNSUPPORTED)) == SC.STATE_OK)
+    check("但摘要照旧把能力缺失统计出来",
+          SC.summary_line(_fields(daytime=SC.STATE_UNSUPPORTED, tps=SC.STATE_UNSUPPORTED))
+          == "2 项正常 · 该世代不支持 2 项",
+          SC.summary_line(_fields(daytime=SC.STATE_UNSUPPORTED, tps=SC.STATE_UNSUPPORTED)))
     check("★RCON 断 → 头条「连不上」",
           SC.overall_state(_fields(online=SC.STATE_UNREACHABLE)) == SC.STATE_UNREACHABLE)
     check("★回执认不出 → 头条「认不出」（这张卡的数据不可信）",

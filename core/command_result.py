@@ -134,8 +134,12 @@ _UNKNOWN_COMMAND_MARKERS = (
 #: 只认带 ``help`` 的形态时，1.13–1.15 上打错命令会被报成「已执行·未确认」而不是「失败」。
 #: 现在两种形态都认：行首 ``unknown command`` **且**同行为 ``help`` 或 ``<--[HERE]`` ——
 #: 两个尾巴至少有一个在，所以「物品名里带这句话」的真成功行（行首是 ``Gave``）不受影响。
+#: v0.25.0（2026-11-17 八台真机验收）：1.13+ 的 brigadier 还有第三种形态 ——
+#: ``Unknown or incomplete command, see below for error tps<--[HERE]``（fabric 1.21.1 原样）。
+#: 中间的 ``or incomplete`` 让旧正则漏掉，于是「这台没有 /tps」被说成
+#: 「命令存在、但拒绝这种写法」—— 措辞与证据不符，用户会照着错的话去查语法。
 _UNKNOWN_COMMAND_LINE_RE = re.compile(
-    r"^\s*unknown command[^\n]*(?:<--\[HERE\]|\bhelp\b)",
+    r"^\s*unknown (?:or incomplete )?command[^\n]*(?:<--\[HERE\]|\bhelp\b)",
     re.IGNORECASE | re.MULTILINE,
 )
 
