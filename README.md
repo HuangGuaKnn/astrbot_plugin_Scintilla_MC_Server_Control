@@ -27,6 +27,7 @@
 | [使用指南](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/usage.md) | 从开 RCON 到自然语言下任务的完整流程、两种部署形态对比 |
 | [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md) | 各 Minecraft 版本的**实测支持矩阵**：逐版本结论、语法分水岭、未实测区与已知边界 |
 | [常见问题](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/faq.md) | 安装与使用中容易踩到的坑 |
+| [路线图](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/roadmap.md) | 接下来要做什么，以及**明确不做**什么（三档状态：已排期 / 探索中 / 明确不做） |
 
 ## 界面预览
 
@@ -81,6 +82,18 @@
 - 1.13 以下的预扁平化能力档案（`legacy_preflatten`）**已落地**：`1.7.10` / `1.12.2` 两代真机签收，
   中间版本（1.8 ~ 1.12）按同世代推断、出现问题时点杀；**数字物品 ID 路线明确不做**
   （1.12.2 起服务端已不再把纯数字当物品解析）。逐版本结论见 [版本支持](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/compatibility.md)。
+
+## 路线图
+
+接下来做什么、以及**明确不做什么**，见 [路线图](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/docs/roadmap.md)。
+
+- **已排期**：玩家管理（在线名单 + 踢 / 封 / 解封 / 白名单 + 操作审计 + 封禁名单块）→ 性能卡（MSPT）
+- **探索中**：受控 Web 命令面板、常用世界操作
+- **明确不做**：数字物品 ID 反查、同时对接多个 RCON 目标、WebUI 里执行任意命令
+
+> 不写日期：单人维护，按「版本顺序」而不是「时间」推进；已发布的内容见 [CHANGELOG](https://github.com/HuangGuaKnn/astrbot_plugin_Scintilla_MC_Server_Control/blob/main/CHANGELOG.md)。
+
+---
 
 ## 安装
 

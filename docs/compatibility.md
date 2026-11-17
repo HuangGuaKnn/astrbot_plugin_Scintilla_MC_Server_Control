@@ -1,6 +1,6 @@
 # 版本支持
 
-[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [常见问题](faq.md)
+[返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [常见问题](faq.md) · [路线图](roadmap.md)
 
 这一页记录**实测结论**：每个 Minecraft 版本上，插件生成了什么、拒绝了什么、依据是什么。
 表里的每一行都来自真实服务端（完整服务端目录 + RCON 实连 + 正反样例对照），不是纸上推演。

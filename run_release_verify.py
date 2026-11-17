@@ -657,6 +657,38 @@ def static_checks(strict_env: bool = False) -> list[str]:
               f"取证 {len(TOOLS)}；其中 CI 可跑 {len(ci_hard())}+{len(ci_soft())} 件，"
               f"本机专属 {len(local_only())} 件，无未归类用例）")
 
+    # v0.26.0（2026-11-17）：路线图与版本号必须对得上。
+    # 判据：**「已排期」里的每个版本都要严格大于当前 metadata 版本**。
+    # 为什么是这条：发完 v0.26.0 却忘了把它从「已排期」删掉，是最常见的漏 ——
+    # 那样路线图会被读成「说了要做却没做」，比不公示更伤。
+    try:
+        import yaml as _yaml
+        _meta = _yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8")) or {}
+        _cur_raw = str(_meta.get("version") or "").lstrip("vV")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", _cur_raw):
+            raise ValueError(f"metadata.yaml 的 version 不是 x.y.z：{_cur_raw!r}")
+        _cur = tuple(int(x) for x in _cur_raw.split("."))
+        _road = (ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+        if "## 已排期" not in _road:
+            raise ValueError("找不到「## 已排期」小节")
+        # 只扫「## 已排期」到下一个二级标题之间 —— 「探索中 / 明确不做」里的版本号不算承诺
+        _seg = _road.split("## 已排期", 1)[1].split("\n## ", 1)[0]
+        # **只认表格第一列**（`| v1.2.3 |`）：正文里提到「已在 v0.25.0 落地」这类引用不算承诺 ——
+        # 全文抓版本号会把它们一起算进来，第一次实跑就误报过一次。
+        _planned = [tuple(int(x) for x in m)
+                    for m in re.findall(r"(?m)^\|\s*v(\d+)\.(\d+)\.(\d+)\s*\|", _seg)]
+        _stale = ["v%d.%d.%d" % t for t in _planned if t <= _cur]
+        if _stale:
+            print(f"[FAIL] docs/roadmap.md：「已排期」里还有 ≤ 当前版本（{_cur_raw}）的条目 "
+                  f"{_stale} —— 发版后要把它从「已排期」移走，别让路线图替你欠账")
+            fails.append("roadmap 已排期")
+        else:
+            print(f"[PASS] docs/roadmap.md：「已排期」{len(_planned)} 项都晚于 "
+                  f"{_cur_raw}（发版后忘删会在这里红）")
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[FAIL] docs/roadmap.md 检查跑不起来：{e}")
+        fails.append("docs/roadmap.md")
+
     fails.extend(check_export_ignore(strict=strict_env))
 
     # v0.24.8（第六轮复核 B9）：未跟踪的取证产物 —— 与上面那条 `[NOTE]` 分工不同：
