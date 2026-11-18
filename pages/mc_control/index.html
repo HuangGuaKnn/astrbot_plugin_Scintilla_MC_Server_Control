@@ -456,6 +456,24 @@ summary:hover{text-decoration:underline}
 #player_reason{width:100%}
 #player_dialog .modal-foot{justify-content:flex-end}
 #player_preview_error:not(:empty){margin-top:8px}
+/* 终端和日志各自滚动，输入和暂停控件始终可见。 */
+.console-notice{margin:0 0 14px;color:var(--dim);font-size:13px;line-height:1.6}
+.console-notice strong{color:var(--warn)}
+.console-pane{min-width:0;min-height:12rem;max-height:22rem;overflow:auto;
+  padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2)}
+.console-result+.console-result{border-top:1px solid var(--border);margin-top:10px;padding-top:10px}
+.console-result-head{display:flex;align-items:baseline;gap:5px 10px;flex-wrap:wrap}
+.console-result-head code,.console-warnings code{font:12px var(--mono);overflow-wrap:anywhere;white-space:pre-wrap}
+.console-text{font:12px/1.55 var(--mono);margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.console-result .console-text{margin-top:5px}
+.console-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px}
+.console-warnings:not(:empty){margin:8px 0;color:var(--warn);font-size:12px;overflow-wrap:anywhere}
+.console-warnings ol{margin:4px 0;padding-inline-start:1.5em}
+.console-warnings [data-level="high"]{font-weight:650}
+#console_command.is-warning{border-color:var(--warn)}
+#console_mode[hidden]{display:none}
+#console_feedback:not(:empty),#console_log_note:not(:empty){margin:8px 0;font-size:12px;overflow-wrap:anywhere}
+#console_feedback[data-error="true"]{color:var(--bad)}
 #sv_status,#sv_players{position:relative;transition:opacity .24s ease}
 #sv_status.is-loading,#sv_players.is-loading{opacity:.52}
 .status-error-badge{transform-origin:center;animation:status-error-shake .56s var(--motion-ease) both}
@@ -990,6 +1008,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 <nav class="tabs" id="tabs">
   <button class="tab active" data-page="overview"><span class="ico">◈</span>概览</button>
   <button class="tab" data-page="server"><span class="ico">⬢</span>服务器</button>
+  <button class="tab" data-page="console"><span class="ico" aria-hidden="true">›_</span>终端</button>
   <button class="tab" data-page="knowledge"><span class="ico">▤</span>知识库<span class="cnt" id="tab_kb_cnt">-</span></button>
   <button class="tab" data-page="workflow"><span class="ico">⚙</span>工作流</button>
   <button class="tab" data-page="prompts"><span class="ico">✎</span>提示词</button>
@@ -1140,6 +1159,34 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     <h3 id="sv_audit_title"><span class="dot" style="background:var(--faint)"></span>最近操作</h3>
     <div id="sv_audit"></div>
   </section>
+</div>
+
+<!-- ================= 终端 ================= -->
+<div class="page" id="page_console">
+  <p class="console-notice" id="console_notice">这不是实时终端（RCON 一问一答）。<strong>命令会立即在服务端执行。</strong>日志通过轮询更新。</p>
+  <div class="grid g2">
+    <section class="card" aria-labelledby="console_results_title">
+      <h3 id="console_results_title"><span class="dot" style="background:var(--cyan)"></span>命令回执 <span class="badge amb right" id="console_mode" hidden>白名单模式</span></h3>
+      <div class="console-pane" id="console_results" role="log" aria-labelledby="console_results_title" tabindex="0">
+        <span class="muted" id="console_empty">尚无命令回执</span>
+      </div>
+      <form id="console_form">
+        <label class="f" for="console_command">服务器命令</label>
+        <div class="console-warnings" id="console_warnings" role="status"></div>
+        <textarea id="console_command" rows="3" placeholder="例如 list" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="console_notice console_warnings console_keys"></textarea>
+        <div class="console-actions">
+          <span class="hint" id="console_keys"><kbd>Enter</kbd> 执行 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
+          <button class="btn primary" id="console_execute" type="submit" disabled>执行</button>
+        </div>
+        <div class="muted" id="console_feedback" role="status"></div>
+      </form>
+    </section>
+    <section class="card" aria-labelledby="console_log_title">
+      <h3 id="console_log_title"><span class="dot" style="background:var(--faint)"></span>服务端日志尾 <span class="right"><button id="console_log_toggle" type="button" aria-pressed="false">暂停</button></span></h3>
+      <div id="console_log_note" class="muted" role="status"><span class="badge dim" id="console_log_state">等待读取</span> <span id="console_log_detail"></span></div>
+      <pre class="console-pane console-text" id="console_log_lines" aria-labelledby="console_log_title" tabindex="0">等待读取日志…</pre>
+    </section>
+  </div>
 </div>
 
 <!-- ================= 知识库 ================= -->
@@ -1846,7 +1893,7 @@ async function directApi(path, method, body){
   if(!r.ok){
     let msg = "HTTP " + r.status;
     try{ const j = await r.json(); if(j && (j.detail || j.error)) msg += ": " + (j.detail || j.error); }catch(_){}
-    return {ok:false, error:msg};
+    return {ok:false, status:r.status, error:msg};
   }
   return await r.json().catch(()=>({ok:false,error:"响应解析失败"}));
 }
@@ -2021,6 +2068,7 @@ function switchTab(name){
   if(name==="workflow") loadWorkflow();
   if(name==="prompts") loadPrompts();
   if(name==="settings") loadSettings();
+  syncConsolePolling();
   // v0.21.8：指纹不匹配检测随页签切换跑一次 —— 同一轮只弹一次，不会反复骚扰
   if(name==="overview" || name==="knowledge" || name==="settings") checkFingerprintNotice();
 }
@@ -2223,6 +2271,252 @@ function renderServerCard(card){
     </div>`;
   }).join("");
   host.innerHTML = head + rows;
+}
+
+// ============ 终端：命令问答与日志轮询 ============
+const CONSOLE_POLL_MS = 3000;
+const CONSOLE_HISTORY_LIMIT = 100;
+const CONSOLE_FORBIDDEN = "仅 AstrBot WebUI 管理员可访问";
+let consoleBusy = false;
+let consoleDenied = false;
+let consolePreviewTimer;
+let consolePreviewEpoch = 0;
+let consoleLogPaused = false;
+let consoleLogTimer;
+let consoleLogPending = false;
+let consoleLogEpoch = 0;
+let consoleLogCursor = "";
+
+function consoleText(tag, value, className = ""){
+  const element = document.createElement(tag);
+  element.className = className;
+  element.textContent = redactServerText(value);
+  return element;
+}
+
+function consoleFeedback(text, error = false){
+  const el = $("console_feedback");
+  el.textContent = redactServerText(text);
+  el.dataset.error = String(error);
+}
+
+function syncConsoleComposer(){
+  const command = $("console_command");
+  command.disabled = consoleDenied;
+  command.readOnly = consoleBusy;
+  $("console_execute").disabled = mode === "unknown" || consoleBusy || consoleDenied || !command.value.trim();
+}
+
+function renderConsoleMode(response){
+  if(response.mode) $("console_mode").hidden = response.mode !== "whitelist";
+}
+
+async function consoleRequest(endpoint, method, data){
+  if(mode !== "bridge"){
+    return method === "GET"
+      ? directApi(data ? endpoint + "?" + new URLSearchParams(data) : endpoint, "GET")
+      : directApi(endpoint, "POST", data);
+  }
+  let timer;
+  try{
+    const request = method === "GET" ? bridge.apiGet(P + endpoint, data) : bridge.apiPost(P + endpoint, data);
+    // 写入只发送一次，等待服务端完成整个批次；连接中断时可能已经执行。
+    if(endpoint === "console/execute") return await request;
+    return await Promise.race([request, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("读取请求超时")), 6000);
+    })]);
+  }catch(error){
+    // SDK 只保留 HTTP 错误消息，直接请求则使用状态码。
+    if(error.message === CONSOLE_FORBIDDEN || /^Request failed with status code (401|403)$/.test(error.message)){
+      return {authorized:false};
+    }
+    throw error;
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+function setConsoleBadge(el, result){
+  el.className = `badge ${CARD_BADGE[result.state] || "dim"}`;
+  el.dataset.state = result.state || "";
+  el.textContent = redactServerText(result.state_label || "状态未知");
+}
+
+function consolePermissionDenied(response){
+  if(response?.status !== 401 && response?.status !== 403 && response?.authorized !== false) return false;
+  consoleDenied = true;
+  consoleLogCursor = "";
+  $("console_results").replaceChildren();
+  $("console_command").value = "";
+  $("console_mode").hidden = true;
+  $("console_log_toggle").disabled = true;
+  $("console_log_lines").textContent = "日志不可访问";
+  $("console_log_detail").textContent = "";
+  setConsoleBadge($("console_log_state"), {state_label:"访问受限"});
+  consoleFeedback(CONSOLE_FORBIDDEN, true);
+  syncConsoleComposer();
+  queueConsolePreview();
+  syncConsolePolling();
+  return true;
+}
+
+function renderConsoleWarnings(response){
+  const host = $("console_warnings");
+  const warning = document.createDocumentFragment();
+  const results = response.results || [];
+  const multiple = results.length > 1;
+  for(const item of response.warnings || []){
+    const line = consoleText("div", item.text);
+    line.dataset.level = item.level;
+    warning.append(line);
+  }
+  const list = document.createElement("ol");
+  for(const result of results){
+    const item = multiple ? document.createElement("li") : warning;
+    if(multiple) item.append(consoleText("code", result.command));
+    for(const entry of result.warnings || []){
+      const line = consoleText("div", entry.text);
+      line.dataset.level = entry.level;
+      item.append(line);
+    }
+    if(result.accepted === false && result.note) item.append(consoleText("div", result.note));
+    if(multiple) list.append(item);
+  }
+  if(multiple) warning.append(list);
+  if(response.error) warning.append(consoleText("div", response.error));
+  $("console_command").classList.toggle("is-warning", warning.childNodes.length > 0);
+  host.replaceChildren(warning);
+}
+
+function queueConsolePreview(){
+  const revision = ++consolePreviewEpoch;
+  clearTimeout(consolePreviewTimer);
+  renderConsoleWarnings({});
+  const command = $("console_command").value;
+  if(!command.trim() || mode === "unknown" || consoleDenied) return;
+  consolePreviewTimer = setTimeout(async () => {
+    const response = await consoleRequest("console/preview", "POST", {command})
+      .catch(() => ({error:"暂时无法读取命令提示"}));
+    if(revision !== consolePreviewEpoch || consolePermissionDenied(response)) return;
+    renderConsoleMode(response);
+    renderConsoleWarnings(response);
+  }, 180);
+}
+
+function appendConsoleResults(results){
+  const host = $("console_results");
+  $("console_empty")?.remove();
+  for(const result of results){
+    const card = consoleText("article", "", "console-result");
+    card.dataset.state = result.state;
+    const head = consoleText("div", "", "console-result-head");
+    const badge = document.createElement("span");
+    setConsoleBadge(badge, result);
+    head.append(consoleText("code", `› ${result.command}`), badge);
+    if(result.accepted === false) head.append(consoleText("span", "未发送", "muted"));
+    card.append(head);
+    if(result.note) card.append(consoleText("div", result.note, "hint"));
+    if(result.raw || result.accepted){
+      card.append(consoleText("pre", result.raw || "（空回执）", "console-text"));
+    }
+    host.append(card);
+  }
+  while(host.childElementCount > CONSOLE_HISTORY_LIMIT) host.firstElementChild.remove();
+  host.scrollTop = host.scrollHeight;
+}
+
+async function submitConsole(event){
+  event.preventDefault();
+  const input = $("console_command");
+  const command = input.value;
+  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim()) return;
+  consoleBusy = true;
+  syncConsoleComposer();
+  consoleFeedback("正在等待命令回执…");
+  try{
+    const response = await consoleRequest("console/execute", "POST", {command});
+    if(consolePermissionDenied(response) || consoleDenied) return;
+    renderConsoleMode(response);
+    if(Array.isArray(response.results) && response.results.length){
+      appendConsoleResults(response.results);
+      if(response.results.some(item => item.accepted)){
+        input.value = "";
+        queueConsolePreview();
+      }
+      consoleFeedback(response.error || "", !!response.error);
+    }else{
+      const message = response.status === 400 ? response.error : "请求中断，执行结果待确认。请查看日志或审计。";
+      consoleFeedback(message, true);
+    }
+  }catch{
+    if(!consoleDenied) consoleFeedback("请求中断，执行结果待确认。请查看日志或审计。", true);
+  }finally{
+    consoleBusy = false;
+    syncConsoleComposer();
+  }
+}
+
+function consolePollingActive(){
+  return mode !== "unknown" && !consoleDenied && !consoleLogPaused && !document.hidden
+    && $("page_console").classList.contains("active");
+}
+
+function syncConsolePolling(){
+  ++consoleLogEpoch;
+  clearTimeout(consoleLogTimer);
+  if(consolePollingActive()) pollConsoleLog();
+}
+
+async function pollConsoleLog(){
+  if(!consolePollingActive() || consoleLogPending) return;
+  const revision = consoleLogEpoch;
+  consoleLogPending = true;
+  try{
+    const response = await consoleRequest("console/log", "GET", consoleLogCursor ? {cursor:consoleLogCursor} : undefined)
+      .catch(() => ({error:"读取日志请求失败"}));
+    if(revision !== consoleLogEpoch || consolePermissionDenied(response)) return;
+    renderConsoleMode(response);
+    setConsoleBadge($("console_log_state"), response.state ? response : {
+      state:"unreachable", state_label:"读取失败",
+    });
+    $("console_log_detail").textContent = redactServerText(response.note || response.error || "");
+    if(typeof response.cursor === "string") consoleLogCursor = response.cursor;
+    if(Array.isArray(response.lines) && (response.lines.length || response.state !== "unreachable")){
+      const log = $("console_log_lines");
+      const atEnd = log.scrollHeight - log.clientHeight - log.scrollTop < 12;
+      log.textContent = redactServerText(response.lines.join("\n")) || "暂无日志内容";
+      if(atEnd) log.scrollTop = log.scrollHeight;
+    }
+  }finally{
+    consoleLogPending = false;
+    if(consolePollingActive()){
+      consoleLogTimer = setTimeout(pollConsoleLog, revision === consoleLogEpoch ? CONSOLE_POLL_MS : 0);
+    }
+  }
+}
+
+function bindConsole(){
+  const input = $("console_command");
+  input.addEventListener("input", () => {
+    consoleFeedback("");
+    syncConsoleComposer();
+    queueConsolePreview();
+  });
+  input.addEventListener("keydown", event => {
+    if(event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if(!event.repeat) $("console_form").requestSubmit();
+  });
+  $("console_form").addEventListener("submit", submitConsole);
+  $("console_log_toggle").addEventListener("click", event => {
+    consoleLogPaused = !consoleLogPaused;
+    event.currentTarget.setAttribute("aria-pressed", String(consoleLogPaused));
+    event.currentTarget.textContent = consoleLogPaused ? "继续" : "暂停";
+    syncConsolePolling();
+  });
+  document.addEventListener("visibilitychange", syncConsolePolling);
+  syncConsoleComposer();
+  syncConsolePolling();
 }
 
 // ============ 服务器页 · 玩家管理 ============
@@ -5834,6 +6128,7 @@ function boot(){
       $("winbtn").style.display = "inline-block";
     }
     bind();
+    bindConsole();
     loadOverview();
     loadServer();
     loadKnowledge();

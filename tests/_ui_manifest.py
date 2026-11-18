@@ -59,6 +59,7 @@ HARD = [
     # v0.25.0：实时服务器卡的四字段 / 五态渲染（纯 DOM 契约，无像素阈值）
     "ui_server_card_check",
     "ui_player_admin_check",
+    "ui_web_console_check",
     "ui_theme_check",
     "ui_theme_persist_check",
     "ui_version_override_check",

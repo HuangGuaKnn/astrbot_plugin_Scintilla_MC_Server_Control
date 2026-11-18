@@ -341,6 +341,12 @@
     "hint": "控制 AI（LLM）能调用哪些 Minecraft 工具；关闭后对应能力立即不可用。",
     "type": "object",
     "items": {
+      "web_console_whitelist_mode": {
+        "description": "WebUI 终端只读模式",
+        "hint": "默认关闭，允许 WebUI 管理员使用完整 RCON 终端。开启后只允许预定义的诊断查询。此项仅控制 WebUI 终端。",
+        "type": "bool",
+        "default": false
+      },
       "enable_all_tools": {
         "description": "LLM 工具总开关",
         "hint": "关掉它 = **AI 无法调用**这一栏的任何一个工具。它**不改写**下面的单项开关 —— 重新打开后，你原来的勾选还在。语义分工：单项开关是 fail-closed 的那一层（配置读不懂时按关闭处理）；总开关读不懂时按开启处理，避免一次配置手抖把工具一起关死。",

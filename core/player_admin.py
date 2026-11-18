@@ -35,7 +35,7 @@ _READBACK_COMMAND = {
     "whitelist_remove": "whitelist list",
 }
 _PLAYER_NAME = re.compile(r"[A-Za-z0-9_]{1,16}")
-_IPV4 = re.compile(r"\d+(?:\.\d+){3}")
+_IPV4 = re.compile(r"(?<!\d)\d+(?:\.\d+){3}")
 _IP_CANDIDATE = re.compile(r"(?<![\w:])[a-fA-F0-9:.]+(?:%[A-Za-z0-9_.-]+)?(?![\w:])")
 _LEGACY_BANS = re.compile(r"There are (\d+) total banned players:\s*(.*)", re.DOTALL)
 _MODERN_BANS = re.compile(r"There are (\d+) ban(?:s|\(s\)):\s*(.*)", re.DOTALL)
@@ -57,11 +57,16 @@ def _redact(text: str) -> str:
         value = match.group()
         candidate = value.rstrip(".")
         if ":" in candidate:
-            try:
-                if isinstance(ipaddress.ip_address(candidate), ipaddress.IPv6Address):
-                    return "[IP 已隐藏]" + value[len(candidate):]
-            except ValueError:
-                pass
+            host, _, port = candidate.rpartition(":")
+            alternatives = (candidate,)
+            if len(port) <= 5 and port.isdecimal() and int(port) <= 65535:
+                alternatives += (host,)
+            for address in alternatives:
+                try:
+                    if isinstance(ipaddress.ip_address(address), ipaddress.IPv6Address):
+                        return "[IP 已隐藏]" + value[len(address):]
+                except ValueError:
+                    continue
         return value
 
     return _IPV4.sub("[IP 已隐藏]", _IP_CANDIDATE.sub(redact_ipv6, clean))
@@ -316,16 +321,30 @@ def _audit_path() -> Path:
 
 
 def _write_audit(stream, actor: str, result: dict) -> None:
-    record = {
-        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "actor": _redact(actor),
-        "action": result["action"],
-        "player": result["player"],
-        "command": result["command"],
-        "state": result["state"],
-        "confirmed": result["confirmed"],
-        "raw_excerpt": result["raw"][:200],
-    }
+    ts = datetime.now().astimezone().isoformat(timespec="seconds")
+    actor = _redact(actor)
+    if "mode" in result:
+        record = {
+            "ts": ts,
+            "actor": actor,
+            "mode": result["mode"],
+            "command": _redact(result["command"]),
+            "state": result["state"],
+            "accepted": result["accepted"],
+            "warnings": [warning["code"] for warning in result["warnings"]],
+            "raw_excerpt": _redact(result["raw"])[:200],
+        }
+    else:
+        record = {
+            "ts": ts,
+            "actor": actor,
+            "action": result["action"],
+            "player": result["player"],
+            "command": result["command"],
+            "state": result["state"],
+            "confirmed": result["confirmed"],
+            "raw_excerpt": result["raw"][:200],
+        }
     stream.write(json.dumps(record, ensure_ascii=False) + "\n")
     stream.flush()
 

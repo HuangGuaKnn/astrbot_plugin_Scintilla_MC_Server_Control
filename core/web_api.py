@@ -15,7 +15,7 @@ from astrbot.api.web import request, json_response
 
 from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .command_result import classify_command_output, parse_daytime_reply
-from . import player_admin, server_card
+from . import player_admin, server_card, web_console
 from .knowledge_base import knowledge_length_error, normalize_status
 from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
@@ -199,6 +199,9 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/player/action", self.player_action, ["POST"], "执行或预览玩家管理操作")
         reg(f"{PAGE_PREFIX}/player/audit", self.player_audit, ["GET"], "最近玩家操作审计")
         reg(f"{PAGE_PREFIX}/player/bans", self.player_bans, ["GET"], "封禁名单与玩家管理名单")
+        reg(f"{PAGE_PREFIX}/console/preview", self.console_preview, ["POST"], "检查终端命令与风险提示")
+        reg(f"{PAGE_PREFIX}/console/execute", self.console_execute, ["POST"], "执行终端命令")
+        reg(f"{PAGE_PREFIX}/console/log", self.console_log, ["GET"], "读取服务端日志尾")
         reg(f"{PAGE_PREFIX}/colors", self.get_colors, ["GET"], "读取文本颜色")
         reg(f"{PAGE_PREFIX}/colors/save", self.save_colors, ["POST"], "保存文本颜色")
         reg(f"{PAGE_PREFIX}/ui/theme", self.get_ui_theme, ["GET"], "读取界面主题偏好")
@@ -465,6 +468,7 @@ class McControlWebApi:
         # 后端每次都判成「不认识」→ 界面长期误报「后端未接受」，而总开关其实没保存。
         # test_settings_whitelist_contract.py 会把「前端提交键 ⊆ 后端接受键」钉死。
         "enable_all_tools", "enable_all_knowledge",
+        "web_console_whitelist_mode",
         "enable_event_listener", "notify_join_leave", "notify_chat",
         "notify_death", "notify_advancement", "notify_command",
         "chat_bridge_enabled", "chat_bridge_receipt",
@@ -721,6 +725,12 @@ class McControlWebApi:
         settings = data.get("settings")
         if not isinstance(settings, dict):
             return json_response({"ok": False, "error": "参数错误"})
+        if "web_console_whitelist_mode" in settings:
+            if not self._console_admin_username():
+                return self._player_admin_forbidden()
+            content_type = request.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                return json_response({"ok": False, "error": "需要 JSON 请求"}, status_code=415)
         parsed, err = self._validate_settings(settings)
         if err:
             return json_response({"ok": False, "error": err})
@@ -1424,6 +1434,59 @@ class McControlWebApi:
         result = await player_admin.get_bans(self.plugin)
         result["online"] = await player_admin.get_online(self.plugin)
         return json_response({"ok": True, "authorized": True, **result})
+
+    # ================= 终端控制台 =================
+
+    def _console_admin_username(self) -> str:
+        actor = self._player_admin_username()
+        if actor and request.headers.get("Sec-Fetch-Site") not in {"cross-site", "same-site"}:
+            return actor
+        return ""
+
+    @staticmethod
+    def _console_response(data: dict, *, status_code: int = 200):
+        return json_response(data, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    async def _console_command(self, *, send: bool):
+        actor = self._console_admin_username()
+        if not actor:
+            return self._player_admin_forbidden()
+        request_type = request.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if request_type != "application/json":
+            return self._console_response({"ok": False, "error": "需要 application/json 请求"}, status_code=415)
+        # 20 条 256 字符命令，即使每个字符都用 JSON 的代理对转义，仍在此限制内。
+        limit = 64 * 1024
+        try:
+            declared_size = int(request.headers.get("Content-Length", "0"))
+            body_size = 0 if declared_size > limit else len(await request.body())
+        except (RuntimeError, ValueError):
+            return self._console_response({"ok": False, "error": "请求体读取失败"}, status_code=400)
+        if max(declared_size, body_size) > limit:
+            return self._console_response({"ok": False, "error": "终端请求过大"}, status_code=413)
+        body, error = await self._body()
+        if error:
+            return self._console_response({"ok": False, "error": error}, status_code=400)
+        command = body.get("command")
+        try:
+            if send:
+                result = await web_console.execute(self.plugin, command, actor=actor)
+            else:
+                result = web_console.preview(self.plugin, command)
+        except ValueError as exc:
+            return self._console_response({"ok": False, "error": str(exc)}, status_code=400)
+        return self._console_response(result)
+
+    async def console_preview(self):
+        return await self._console_command(send=False)
+
+    async def console_execute(self):
+        return await self._console_command(send=True)
+
+    async def console_log(self):
+        if not self._console_admin_username():
+            return self._player_admin_forbidden()
+        result = await web_console.log_tail(self.plugin, request.query.get("cursor", ""))
+        return self._console_response(result)
 
     async def get_server_card(self):
         """实时服务器卡（v0.25.0）：四个字段 + 每个字段自己的状态。

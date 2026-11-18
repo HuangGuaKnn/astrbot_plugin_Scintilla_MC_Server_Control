@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) · [界面效果](gallery.md) · [配置详解](configure.md) · [使用指南](usage.md) · [版本支持](compatibility.md) · [常见问题](faq.md) · [路线图](roadmap.md)
 
-插件全部配置共 **10 个分组、100 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
+插件全部配置共 **10 个分组、101 项**。多数情况下只需要填「连接与服务端」里的 RCON 信息，其余保持默认即可使用。
 
 > 本页每一项的说明与插件内的提示文字一致。「默认」标注的是开箱值。
 
@@ -302,7 +302,13 @@
 
 ## 6. AI 工具（LLM 可调用）
 
-`tools` · 共 13 项
+`tools` · 共 14 项
+
+**`web_console_whitelist_mode`** — WebUI 终端只读模式
+
+<sub>开关 · 默认：关</sub>
+
+> 关闭时，AstrBot WebUI 管理员可使用完整 RCON 终端。开启后，只允许预定义的诊断查询。两个模式均需要面板管理员身份。此项仅控制 WebUI 终端。
 
 **`enable_all_tools`** — LLM 工具总开关  
 <sub>开关 · 默认：开</sub>
