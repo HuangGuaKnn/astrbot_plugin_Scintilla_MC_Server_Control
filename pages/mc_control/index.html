@@ -2521,21 +2521,25 @@ function bindConsole(){
 
 // ============ 服务器页 · 玩家管理 ============
 const PLAYER_ACTIONS = {
-  kick:"踢出", ban:"封禁", unban:"解封",
+  kick:"踢出", ban:"封禁", unban:"解封", unban_ip:"解封 IP",
   whitelist_add:"加入白名单", whitelist_remove:"移出白名单",
 };
-const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS);
+// `unban_ip` 只出现在封禁名单的 IP 行；在线玩家行不该有它 ——
+// 否则「解封 IP」会挂在一个玩家身上，语义完全对不上。
+const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS).filter(action => action !== "unban_ip");
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
-const escServer = value => esc(redactServerText(value));
+// v0.28.0：WebUI 是管理员专属页面，**不再脱敏** —— 服主要靠真实 IP 判断封哪个地址。
+// 聊天工具（进群）走的是另一条链路，那边仍按原口径处理；审计文件那一份继续脱敏。
+const escServer = value => esc(value);
 let playerSelection = null;
 let playerActionBusy = false;
 
+// v0.28.0：**这一层不再脱敏**。
+// WebUI 是管理员专属页面，服主要靠真实 IP 判断该封哪个地址（ban-ip 的实际用途）；
+// 聊天工具的输出走另一条链路、不经过这里；审计文件那一份仍由后端脱敏。
+// 函数名保留是为了让 9 个调用点不用改 —— 行为统一由这里决定。
 function redactServerText(value){
-  return String(value ?? "")
-    .replace(/\d+\.\d+\.\d+\.\d+/g, "[地址已隐藏]")
-    .replace(/(?<![\w:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]*(?:%[\w.-]+)?(?![\w:])/gi,
-      address => address.includes("::") || address.split(":").length >= 8
-        ? "[地址已隐藏]" : address);
+  return String(value ?? "");
 }
 
 function playerBadge(state, label){
@@ -2635,9 +2639,15 @@ function renderPlayerBans(bans, admin){
       ["操作者", item.source || "未知"], ["到期", expiryLabel],
     ].map(([label, value]) => `<span><span class="muted">${label}</span>${escServer(value)}</span>`).join("");
     const end = expired ? `<span class="muted">已过期</span>` : "";
-    return `<div class="player-row"><b>${escServer(item.name)}</b>
+    // v0.28.0：名单里现在同时有玩家封禁和 IP 封禁，用 kind 区分 ——
+    // 玩家要 `pardon`，IP 要 `pardon-ip`，发错命令服务端只会回一句 unknown。
+    const isIp = item.kind === "ip";
+    const action = isIp ? "unban_ip" : "unban";
+    const typeTag = isIp ? `<span class="badge dim" title="IP 封禁（pardon-ip）">IP</span>` : "";
+    const canAct = item.removable !== false && (isIp || PLAYER_NAME.test(item.name));
+    return `<div class="player-row">${typeTag}<b>${escServer(item.name)}</b>
       <div class="player-ban-info">${fields}${end}</div>
-      ${playerButtons(item.name, ["unban"], item.removable !== false && PLAYER_NAME.test(item.name))}</div>`;
+      ${playerButtons(item.name, [action], canAct)}</div>`;
   }).join("");
   host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
 }
@@ -2761,12 +2771,8 @@ function bindPlayerAdmin(){
     confirm.disabled = true;
     selection.command = "";
     const current = ++selection.previewRevision;
-    if(redactServerText(reason.value) !== reason.value){
-      reason.value = "";
-      $("player_command").textContent = "—";
-      $("player_preview_error").textContent = "原因不能包含地址，请重新填写";
-      return;
-    }
+    // 理由里允许出现地址（封 IP 时很常见：「封掉 192.0.2.9 的挂」）——
+    // 前端不再拦截；控制字符由后端统一校验。
     $("player_command").textContent = "正在更新…";
     setTimeout(() => {
       if(playerSelection === selection && selection.previewRevision === current && dialog.open){

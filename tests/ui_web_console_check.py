@@ -220,7 +220,9 @@ def check_private_literal_text(scenario):
             '<span id="console_injected">示例文字',
         )
     text = page.locator("#page_console").inner_text()
-    assert IPV4 not in text and IPV6 not in text, "T10 界面不得显示日志或回执中的 IPv4/IPv6"
+    # v0.28.0 反转：WebUI 是管理员专属页，界面**必须**显示真实地址（服主要靠它封 IP）。
+    assert IPV4 in text, "T10 界面应显示真实 IPv4（管理员要靠它判断封哪个地址）"
+    assert "[地址已隐藏]" not in text, "T10 界面不应再出现脱敏占位符"
     assert page.locator("#console_injected").count() == 0, "T10 回执和日志不能被当作 HTML"
     print("[PASS] T10 日志与回执均以文本呈现，并遮盖 IPv4 与 IPv6")
 

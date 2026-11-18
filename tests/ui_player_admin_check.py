@@ -178,10 +178,12 @@ def check_no_ip(scenario):
     page = scenario.page
     page.locator("#sv_events .ev").wait_for()
     assert "违规原因" in page.locator("#sv_bans").inner_text(), "P9 隐私样本未经过封禁卡渲染"
+    # v0.28.0 反转：WebUI 是管理员专属页面，**界面必须显示真实地址** ——
+    # 服主要靠它判断 ban-ip 封哪个地址；脱敏只保留在审计文件（_redact 那一份）里。
     dom = page.locator("#page_server").evaluate("el => el.outerHTML")
-    assert not re.search(r"\d+\.\d+\.\d+\.\d+", dom), "P9 DOM 出现 IPv4 地址"
-    assert IPV6 not in dom, "P9 DOM 出现 IPv6 地址"
-    print("[PASS] P9 含测试地址的封禁原因、原文、事件均经过 DOM 隐私检查")
+    assert IPV4 in dom, "P9 封禁原因里的真实 IPv4 应显示在界面"
+    assert "地址已隐藏" not in dom, "P9 界面不应再出现脱敏占位符"
+    print("[PASS] P9 WebUI 显示真实地址（审计仍脱敏，见后端用例）")
 
 
 def submit(scenario, button, player, command):

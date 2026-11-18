@@ -14,6 +14,8 @@ CORE = "core/player_admin.py"
 API = "core/web_api.py"
 HTML = "pages/mc_control/index.html"
 BACKEND_TEST = "tests/test_v0260_player_admin.py"
+#: v0.28.0：审计脱敏这条判据现在由终端用例守（v0.26 的 P07 只验「一行一条」）
+TERMINAL_TEST = "tests/test_v0270_web_console.py"
 UI_TEST = "tests/ui_player_admin_check.py"
 
 
@@ -45,13 +47,13 @@ MUTATIONS = (
     ),
     Mutation(
         "P2", "一律给踢出和封禁加原因", CORE,
-        'if action in ("kick", "ban") and reason and caps.at_least(ITEM_PREFLATTEN_CUTOVER):',
-        'if action in ("kick", "ban") and reason:',
+        'if action in ("kick", "ban", "ban_ip") and reason and caps.at_least(ITEM_PREFLATTEN_CUTOVER):',
+        'if action in ("kick", "ban", "ban_ip") and reason:',
         "P2 1.7.10 kick 原因世代分叉", BACKEND_TEST, "test_p02_reason_depends_on_generation",
     ),
     Mutation(
         "P3", "踢出后无视仍在名单里的玩家", CORE,
-        '    if present != (action in ("ban", "whitelist_add")):',
+        '    if present != (action in ("ban", "ban_ip", "whitelist_add")):',
         '    if present != (action in ("ban", "whitelist_add")) and action != "kick":',
         "P3 踢出仅在目标从完整名单消失时确认", BACKEND_TEST,
         "test_p03_kick_requires_absence_in_complete_list",
@@ -67,15 +69,15 @@ MUTATIONS = (
     ),
     Mutation(
         "P5", "白名单写回执跳过成员验证", CORE,
-        '    if present != (action in ("ban", "whitelist_add")):',
+        '    if present != (action in ("ban", "ban_ip", "whitelist_add")):',
         '    if present != (action in ("ban", "whitelist_add")) and not action.startswith("whitelist_"):',
         "P5 白名单增删须确认目标成员关系", BACKEND_TEST,
         "test_p05_whitelist_requires_membership_readback",
     ),
     Mutation(
         "P6", "写接口放行非管理员", API,
-        "        if not actor:\n            return self._player_admin_forbidden()",
-        "        if False:\n            return self._player_admin_forbidden()",
+        "    async def player_action(self):\n        actor = self._player_admin_username()\n        if not actor:\n            return self._player_admin_forbidden()",
+        "    async def player_action(self):\n        actor = self._player_admin_username()\n        if False:\n            return self._player_admin_forbidden()",
         "P6 action 拒绝直接调用者", BACKEND_TEST,
         "test_p06_direct_routes_require_dashboard_administrator",
     ),
@@ -91,25 +93,21 @@ MUTATIONS = (
     ),
     Mutation(
         "P7", "审计原文不截断", CORE,
-        '"raw_excerpt": result["raw"][:200]', '"raw_excerpt": result["raw"]',
-        "P7 审计原文截断到 200 字符", BACKEND_TEST, "test_p07_all_dispatched_writes_are_audited",
+        '"raw_excerpt": _redact(result["raw"])[:200],\n        }\n    else:', '"raw_excerpt": result["raw"][:200],\n        }\n    else:',
+        "192.0.2.9", TERMINAL_TEST, "test_t07_every_line_is_audited_even_when_rejected",
     ),
     Mutation(
         "P8", "名单失效时按钮仍可点", HTML,
         'const disabled = enabled ? "" : "disabled";', 'const disabled = "";',
         "P8 名单不可用时在线玩家操作没有全部 disabled", UI_TEST, "P8",
     ),
+    # v0.28.0 口径反转：WebUI 现在**必须**显示真实地址（服主要靠它封 IP）。
+    # 原来那两条「注入地址 / 跳过脱敏」已经失去意义 —— 守的方向改成「别又把手遮回去」。
     Mutation(
-        "P9", "注入模拟地址到在线名单组件", HTML,
-        'return `<div class="player-actions">${buttons.join("")}</div>`;',
-        'return `<div class="player-actions">192.0.2.9${buttons.join("")}</div>`;',
-        "P9 DOM 出现 IPv4 地址", UI_TEST, "P9",
-    ),
-    Mutation(
-        "P9", "跳过服务器文本的地址脱敏", HTML,
-        "const escServer = value => esc(redactServerText(value));",
-        "const escServer = value => esc(value);",
-        "P9 DOM 出现 IPv4 地址", UI_TEST, "P9",
+        "P9", "前端又把地址遮回去", HTML,
+        'const escServer = value => esc(value);',
+        'const escServer = value => esc(String(value ?? "").replace(/\\d+\\.\\d+\\.\\d+\\.\\d+/g, "[地址已隐藏]"));',
+        "P9 封禁原因里的真实 IPv4 应显示在界面", UI_TEST, "P9",
     ),
     Mutation(
         "P10", "忽略命令拒绝，只看名单", CORE,
@@ -139,7 +137,7 @@ MUTATIONS = (
     ),
     Mutation(
         "P12", "解封时忽略回读中的目标", CORE,
-        '    if present != (action in ("ban", "whitelist_add")):',
+        '    if present != (action in ("ban", "ban_ip", "whitelist_add")):',
         '    if present != (action in ("ban", "whitelist_add")) and action != "unban":',
         "P12 仍在封禁名单不可报已解封", BACKEND_TEST,
         "test_p12_unban_on_banlist_must_remove_target",
@@ -150,11 +148,14 @@ MUTATIONS = (
         "const confirmed = result?.ok === true;",
         "P12 未确认的解封被报为成功", UI_TEST, "P12",
     ),
+    # v0.28.0 口径反转：IP 封禁名单从「禁止读」改成「必须读」——
+    # 守的方向调成「别把它弄丢」：把读取的文件名改坏，P13 正向断言必须红。
     Mutation(
-        "P13", "源码出现 IP 封禁文件名", CORE,
-        '    path = Path(server_dir) / "banned-players.json"',
-        '    path = Path(server_dir) / "banned-players.json"  # banned-ips.json',
-        "P13 源码禁止触及 IP 封禁文件", BACKEND_TEST, "test_p13_no_ip_ban_file",
+        "P13", "IP 封禁名单不再读取（banned-ips.json 被弄丢）", CORE,
+        '    path = Path(server_dir) / "banned-ips.json"',
+        '    path = Path(server_dir) / "banned-ips-disabled.json"',
+        "P13 必须真的读取 IP 封禁名单", BACKEND_TEST,
+        "test_p13_ip_ban_file_is_supported_but_only_that_one",
     ),
     # v0.26.1（2026-11-17 现场）：主人手动在控制台 ban 了 123，两条封禁在 RCON 回包里
     # 粘成一行，旧实现整卡空着 —— 明明 banned-players.json 就在手边。

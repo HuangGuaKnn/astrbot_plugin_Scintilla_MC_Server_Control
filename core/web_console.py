@@ -127,7 +127,7 @@ def _tokens(text: str) -> list[tuple[int, str]]:
 
 
 def _warning(code: str, text: str, level: str) -> dict:
-    return {"code": code, "text": player_admin._redact(text), "level": level}
+    return {"code": code, "text": text, "level": level}
 
 
 def _warnings(text: str) -> tuple[list[dict], str, str]:
@@ -185,7 +185,7 @@ def _warnings(text: str) -> tuple[list[dict], str, str]:
         ):
             warnings.append(_warning("world", _WORLD[name], "high"))
         if name in _BROADCAST:
-            excerpt = player_admin._redact(segment)[:MAX_BROADCAST_LENGTH]
+            excerpt = segment[:MAX_BROADCAST_LENGTH]
             warnings.append(_warning("broadcast", f"{_BROADCAST_TEXT[name]}：{excerpt}", "medium"))
         # 自由消息里的字面文本不是实体参数。say 支持展开未引用的选择器。
         if name not in ("function", "schedule"):
@@ -217,7 +217,7 @@ def _prepare(command, current_mode: str) -> tuple[list[str], dict]:
         batch_warnings.append(_warning("multiline", f"将按顺序执行以下 {len(lines)} 条命令。", "medium"))
     results = []
     for line in lines:
-        shown_command = player_admin._redact(line)[:MAX_COMMAND_LENGTH].encode(
+        shown_command = line[:MAX_COMMAND_LENGTH].encode(
             "utf-8", errors="replace"
         ).decode("utf-8")
         item = {"command": shown_command, "warnings": [], "accepted": True}
@@ -387,7 +387,9 @@ def _read_tail(watcher: LogWatcher, cursor: str) -> dict:
     if offset:
         sample = sample.partition(b"\n")[2]
     sample = sample[:sample.rfind(b"\n") + 1]
-    lines = [player_admin._redact(line) for line in watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]]
+    # WebUI 是管理员专属页：日志尾给真实内容（含 IP），管理员要靠它判断该封哪个地址；
+    # 聊天工具不经过这里；审计文件那一份仍脱敏（见 player_admin._write_audit）。
+    lines = watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]
     if rotated:
         return _log_result(server_card.STATE_UNRECOGNIZED, "日志已轮转，已切换到当前文件。", lines, next_cursor)
     if not lines:

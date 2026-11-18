@@ -123,16 +123,17 @@ MUTATIONS = (
         "        if False:\n            return self._player_admin_forbidden()\n        request_type",
         "test_t09_permission_applies_to_all_routes", "T9 每条控制台路由均拒绝非管理员或无效令牌",
     ),
+    # v0.28.0 口径反转：WebUI 显示真地址、**审计继续脱敏**。所以守的是这两条：
     Mutation(
-        "T10", "日志尾不遮盖 IP", CORE,
-        "lines = [player_admin._redact(line) for line in watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]]",
-        "lines = watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]",
-        "test_t10_addresses_removed_from_replies_and_logs", "T10 日志尾包含未脱敏的地址",
+        "T10", "日志尾又把手遮回去（WebUI 该显示真实地址）", CORE,
+        "    lines = watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]",
+        "    lines = [player_admin._redact(line) for line in watcher._decode_chunk(sample).splitlines()[-_LOG_LINES:]]",
+        "test_t10_webui_shows_real_addresses_while_audit_stays_redacted", "T10 日志尾应显示真实地址",
     ),
     Mutation(
-        "T10", "回执不遮盖 IP", PLAYER_ADMIN,
-        '"raw": _redact(raw),', '"raw": raw,',
-        "test_t10_addresses_removed_from_replies_and_logs", "T10 回执或错误说明包含未脱敏的地址",
+        "T10", "审计不再脱敏（留档里出现明文地址）", PLAYER_ADMIN,
+        '"raw_excerpt": _redact(result["raw"])[:200],', '"raw_excerpt": result["raw"][:200],',
+        "test_t07_every_line_is_audited_even_when_rejected", "T7 审计摘要里地址必须被隐藏",
     ),
     Mutation(
         "T11", "删除非实时终端告知", HTML,

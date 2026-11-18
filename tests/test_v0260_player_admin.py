@@ -343,7 +343,8 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["state"], state)
                 self.assertEqual([item["name"] for item in result["items"]], players)
                 self.assertEqual(result["raw"], raw)
-                self.assertGuarded(plugin, "banlist players")
+                # v0.28.0：get_bans 会顺带读一次 IP 封禁名单（两条读命令，都过守卫）
+                self.assertGuarded(plugin, "banlist players", "banlist ips")
 
     async def test_bans_fall_back_to_file_when_rcon_reply_is_glued(self):
         """v0.26.1（现场）：多条封禁粘连导致回包认不出时，名单改用文件里的记录。
@@ -401,17 +402,26 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status, result["confirmed"]), (200, True))
         self.assertGuarded(plugin, "kick Steve test reason", "list")
 
-    async def test_addresses_are_redacted_before_api_and_audit(self):
+    async def test_webui_shows_real_ip_while_audit_stays_redacted(self):
+        """v0.28.0 口径反转：WebUI 给真 IP，审计继续脱敏。
+
+        为什么这么分：WebUI 是管理员专属页面（服主本来就有 RCON 权限，藏 IP 只会让
+        ban-ip 难用）；而审计是长期留档、可能被导出分享的文件，且聊天工具也不经过这里。
+        """
         sentinel = "192.0.2.25"
         address_v6 = "2001:db8::25"
         raw = f"No player was found ({sentinel}, [{address_v6}]:25600)"
         plugin = FakePlugin({"kick Steve": raw, "list": EMPTY})
         result = await player_admin.run_action(plugin, "kick", "Steve")
         self.assertFalse(result["confirmed"])
-        self.assertNotIn(sentinel, str(result))
-        self.assertNotIn(address_v6, str(result))
-        self.assertNotIn(sentinel, self.audit.read_text(encoding="utf-8"))
-        self.assertNotIn(address_v6, self.audit.read_text(encoding="utf-8"))
+        # WebUI 拿到的回执里，地址是原样的 —— 管理员要靠它判断封哪个 IP
+        self.assertIn(sentinel, result["raw"], "WebUI 回执应显示真实 IPv4")
+        self.assertIn(address_v6, result["raw"], "WebUI 回执应显示真实 IPv6")
+        # 审计那一份仍然脱敏
+        audit = self.audit.read_text(encoding="utf-8")
+        self.assertNotIn(sentinel, audit, "审计文件必须继续脱敏")
+        self.assertNotIn(address_v6, audit, "审计文件必须继续脱敏")
+        self.assertIn("[IP 已隐藏]", audit)
 
     async def test_write_and_readback_respect_version_guard_denial(self):
         plugin = FakePlugin({"pardon Steve": "Unbanned Steve", "banlist players": NO_BANS})
@@ -430,9 +440,21 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
             ("guard", "banlist players", "web_player_admin"),
         ])
 
-    def test_p13_no_ip_ban_file(self):
+    def test_p13_ip_ban_file_is_supported_but_only_that_one(self):
+        """v0.28.0 反转：从「禁止读 banned-ips.json」改成「必须读，且只认这一个」。
+
+        原因：WebUI 是管理员专属页，`ban-ip` 是服主真实会用的功能；把 IP 封禁名单
+        藏起来，等于让人去翻文件或凭肉眼认日志。
+        仍然守住的部分：**只读这一个 IP 相关文件**，不许顺手去读 ops.json / 玩家数据等。
+        """
         source = (PLUGIN_DIR / "core" / "player_admin.py").read_text(encoding="utf-8")
-        self.assertNotIn("banned-ips", source.casefold(), "P13 源码禁止触及 IP 封禁文件")
+        lowered = source.casefold()
+        # 精确到「真的去读这个文件」，而不是「文档里提过这个名字」——
+        # 否则把路径改坏、注释里还留着这个词，断言依然绿（第一版就漏了）。
+        self.assertIn('Path(server_dir) / "banned-ips.json"', source,
+                      "P13 必须真的读取 IP 封禁名单")
+        for forbidden in ("ops.json", "usercache.json", "banned-players-raw"):
+            self.assertNotIn(forbidden, lowered, f"P13 不应触碰 {forbidden}")
 
 
 if __name__ == "__main__":

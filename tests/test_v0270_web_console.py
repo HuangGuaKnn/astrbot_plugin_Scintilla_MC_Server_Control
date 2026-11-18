@@ -14,6 +14,7 @@ from starlette.requests import Request
 
 from _paths import PLUGIN_DIR
 from test_v0260_player_admin import ADMIN, OTHER, SECRET, FakePlugin
+from astrbot_plugin_Scintilla_MC_Server_Control.core import player_admin
 
 from astrbot.api.web import PluginRequest, bind_request_context
 from astrbot.dashboard.services.auth_service import DASHBOARD_JWT_COOKIE_NAME
@@ -196,7 +197,9 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("timed out", result["note"])
 
     async def test_t07_every_line_is_audited_even_when_rejected(self):
-        raw = "x" * 196 + f" {IPV4} {IPV6} " + "y" * 30
+        # v0.28.0：地址必须落在前 200 字符内 —— 否则 200 字符截断会把脱敏差异切掉，
+        # 这条「审计是否脱敏」的判据就会假绿（实测踩过）。
+        raw = f"{IPV4} {IPV6} " + "x" * 260 + "y" * 30
         plugin = ConsolePlugin({"list": raw}, whitelist=True)
         plugin.block.add("seed")
         code, payload = await call(plugin, "execute", "list\nstop\nseed")
@@ -215,8 +218,13 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["accepted"] for row in rows], [True, False, False],
                          "T7 审计保存每行是否被接收")
         self.assertIn("service", rows[1]["warnings"], "T7 审计需保留被拒命令的命中提示")
-        self.assertEqual(rows[0]["raw_excerpt"], payload["results"][0]["raw"][:200],
-                         "T7 回执先脱敏、再截取 200 字符")
+        # v0.28.0：WebUI 回执给真地址，审计那一份仍脱敏 —— 所以审计摘要是「脱敏后的回执」
+        # 截 200 字符，不再是回执本身的前 200 字符。
+        expected_excerpt = player_admin._redact(payload["results"][0]["raw"])[:200]
+        self.assertEqual(rows[0]["raw_excerpt"], expected_excerpt,
+                         "T7 审计摘要须先脱敏、再截取 200 字符")
+        # 200 字符截断可能把 `[IP 已隐藏]` 的括号切开，所以断言本质：地址本身不出现
+        self.assertNotIn(IPV4, rows[0]["raw_excerpt"], "T7 审计摘要里地址必须被隐藏")
         self.assertEqual(len(rows[0]["raw_excerpt"]), 200, "T7 审计原文上限 200 字符")
 
     async def test_t08_log_missing_empty_local_remote_and_rotated(self):
@@ -287,20 +295,27 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
                              "T9 管理员可保存布尔设置")
             save.assert_called_once_with({"web_console_whitelist_mode": True})
 
-    async def test_t10_addresses_removed_from_replies_and_logs(self):
+    async def test_t10_webui_shows_real_addresses_while_audit_stays_redacted(self):
+        """v0.28.0 口径反转：WebUI 回执与日志尾给**真实地址**，审计继续脱敏。
+
+        为什么：WebUI 是管理员专属页面 —— 服主本来就有 RCON 权限，藏 IP 只会让
+        ban-ip 难用；而审计是长期留档、可能被导出分享的文件。
+        """
         plugin = ConsolePlugin({"say hello": LOGIN, "seed": TimeoutError(LOGIN)}, server_dir=str(self.path))
         _, reply = await call(plugin, "execute", "say hello\nseed")
-        self.assert_redacted(reply, "T10 回执或错误说明包含未脱敏的地址")
-        self.assertIn("Alex", reply["results"][0]["raw"], "T10 原文保留地址以外的有效数据")
-        self.assertIn("[IP 已隐藏]", reply["results"][0]["raw"], "T10 回执须替换地址")
-        self.assert_redacted(self.audit.read_text(encoding="utf-8"), "T10 审计包含未脱敏的地址")
+        self.assertIn("Alex", reply["results"][0]["raw"], "T10 原文保留有效数据")
+        self.assertIn(IPV4, reply["results"][0]["raw"], "T10 WebUI 回执应显示真实 IPv4")
+        self.assertIn("2001:db8::42", reply["results"][0]["raw"], "T10 WebUI 回执应显示真实 IPv6")
+        audit_text = self.audit.read_text(encoding="utf-8")
+        self.assertNotIn(IPV4, audit_text, "T10 审计必须继续脱敏")
+        self.assertIn("[IP 已隐藏]", audit_text, "T10 审计须替换地址")
         log = self.path / "logs" / "latest.log"
         log.parent.mkdir()
         log.write_text(f"first\n{LOGIN}\nlast\n", encoding="utf-8")
         _, tail = await call(plugin, "log")
         self.assertEqual(tail["state"], "ok")
-        self.assert_redacted(tail, "T10 日志尾包含未脱敏的地址")
-        self.assertIn("[IP 已隐藏]", tail["lines"][1], "T10 日志须替换地址")
+        self.assertIn(IPV4, tail["lines"][1], "T10 日志尾应显示真实地址")
+        self.assertNotIn("[IP 已隐藏]", tail["lines"][1], "T10 日志尾不再脱敏")
 
     async def test_t10_long_non_address_is_left_intact(self):
         raw = "identifier 12ab:" + "9" * 5000

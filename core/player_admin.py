@@ -19,13 +19,17 @@ from .strict_bool import strict_bool
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, VersionInfo
 
 
-ACTIONS = ("kick", "ban", "unban", "whitelist_add", "whitelist_remove")
+ACTIONS = ("kick", "ban", "unban", "whitelist_add", "whitelist_remove", "unban_ip")
+#: IP 封禁动作：目标是 IP 而不是玩家名，校验与回读都另走一条
+_IP_ACTIONS = frozenset({"ban_ip", "unban_ip"})
 _WRITE_PREFIX = {
     "kick": "kick",
     "ban": "ban",
     "unban": "pardon",
     "whitelist_add": "whitelist add",
     "whitelist_remove": "whitelist remove",
+    "ban_ip": "ban-ip",
+    "unban_ip": "pardon-ip",
 }
 _READBACK_COMMAND = {
     "kick": "list",
@@ -33,8 +37,56 @@ _READBACK_COMMAND = {
     "unban": "banlist players",
     "whitelist_add": "whitelist list",
     "whitelist_remove": "whitelist list",
+    "ban_ip": "banlist ips",
+    "unban_ip": "banlist ips",
 }
 _PLAYER_NAME = re.compile(r"[A-Za-z0-9_]{1,16}")
+#: `banlist ips` 的确定形态：`<ip> was banned by <source>: <reason>`。
+#: 只认这种，不单独抓「看起来像 IP 的串」—— 理由里可能就写着别人的 IP。
+_IP_ENTRY = re.compile(r"(?P<ip>[0-9A-Fa-f:.]+)\s+was banned by\s+(?P<src>[^:]+):\s*(?P<reason>.*)", re.I)
+_BAN_COUNT = re.compile(r"There are\s+(\d+)\b", re.I)
+_NO_BANS = re.compile(r"There are no (?:IP )?bans?|total banned IPs:\s*$", re.I)
+
+
+def normalize_ip(text: str) -> str:
+    """校验并规范化 IP。原版 `ban-ip` 只接受单个地址，不支持 CIDR 网段。"""
+    if not isinstance(text, str):
+        raise ValueError("IP 需要字符串")
+    value = text.strip()
+    if not value:
+        raise ValueError("IP 不能为空")
+    if "/" in value:
+        raise ValueError("原版 ban-ip 只接受单个地址，不支持 CIDR 网段")
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise ValueError("不是合法的 IPv4 / IPv6 地址") from exc
+
+
+def _parse_ip_bans(text: str) -> list[str] | None:
+    """解析 `banlist ips`。只认「IP + was banned by」的确定形态，**不许猜**。
+
+    声明数量与条目数不符时返回 None（沿用 v0.26 对 `/list` 的口径）：
+    少一条 IP 就意味着页面显示不全，而 IP 列表是拿来做安全判断的，宁可报「认不出」。
+    """
+    clean = server_card.strip_color_codes(text or "").strip()
+    if not clean:
+        return None
+    if _NO_BANS.search(clean):
+        return []
+    found: list[str] = []
+    for match in _IP_ENTRY.finditer(clean):
+        candidate = match.group("ip")
+        try:
+            address = str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+        if address not in found:
+            found.append(address)
+    declared = _BAN_COUNT.search(clean)
+    if declared and int(declared.group(1)) != len(found):
+        return None
+    return found or None
 _IPV4 = re.compile(r"(?<!\d)\d+(?:\.\d+){3}")
 _IP_CANDIDATE = re.compile(r"(?<![\w:])[a-fA-F0-9:.]+(?:%[A-Za-z0-9_.-]+)?(?![\w:])")
 _LEGACY_BANS = re.compile(r"There are (\d+) total banned players:\s*(.*)", re.DOTALL)
@@ -75,23 +127,28 @@ def _redact(text: str) -> str:
 def build_command(action, player, reason, caps: VersionInfo) -> str:
     if not isinstance(action, str) or action not in ACTIONS:
         raise ValueError("不支持的玩家操作")
-    if not isinstance(player, str) or not _PLAYER_NAME.fullmatch(player):
+    if action in _IP_ACTIONS:
+        target = normalize_ip(player)          # 非法地址在这里抛 ValueError
+    elif not isinstance(player, str) or not _PLAYER_NAME.fullmatch(player):
         raise ValueError("玩家名须由 1–16 个字母、数字或下划线组成")
+    else:
+        target = player
     if not isinstance(reason, str):
         raise ValueError("reason 需要字符串")
     if any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"} for char in reason):
         raise ValueError("理由不能包含换行或控制字符")
-    # 理由既会出现在预览，也会由游戏服务端保存，保持输入和最终命令一致。
-    if _redact(reason) != reason:
-        raise ValueError("理由不能包含 IP 地址或颜色控制码")
+    # 理由里允许出现 IP：本版起支持 IP 封禁，管理员写「封掉 192.0.2.9 的挂」是正常需求。
+    # 控制字符仍然禁止（上面一步已挡），因为那会破坏命令行的单行语义。
+    if "\u00a7" in reason:
+        raise ValueError("理由不能包含颜色控制码")
     reason = reason.strip()
     if len(reason) > 200:
         raise ValueError("理由最多 200 个字符")
-    command = f"{_WRITE_PREFIX[action]} {player}"
+    command = f"{_WRITE_PREFIX[action]} {target}"
     # 2026-11-17 矩阵：1.7.10/1.12.2 的无理由 kick 可进入目标查询，ban 实际也接受理由。
     # MVP 对这两个旧版本省略理由；1.13.2 起已验证 kick 带理由进入目标查询、ban 带理由可保存。
     # 八台均接受 pardon；较新版本均拒绝 unban 别名，旧世代由版本守卫拒绝该别名。
-    if action in ("kick", "ban") and reason and caps.at_least(ITEM_PREFLATTEN_CUTOVER):
+    if action in ("kick", "ban", "ban_ip") and reason and caps.at_least(ITEM_PREFLATTEN_CUTOVER):
         command += f" {reason}"
     return command
 
@@ -142,11 +199,15 @@ async def _send(plugin, command: str, rcon=None) -> _Reply:
 
 
 def _status(state: str, note: str, raw: str) -> dict:
+    """构造状态字典。**这里刻意不脱敏**：
+    WebUI 是管理员专属页面，服主本来就有 RCON 权限，藏 IP 只会让 ban-ip 难用；
+    聊天工具走的是另一条链路、不经过这里；唯一继续脱敏的是审计文件（_write_audit）。
+    """
     return {
         "state": state,
         "state_label": server_card.STATE_LABEL[state],
-        "note": _redact(note),
-        "raw": _redact(raw),
+        "note": note,
+        "raw": raw,
     }
 
 
@@ -207,6 +268,8 @@ async def _read_roster(plugin, command: str, rcon=None) -> dict:
                 players = online["players"]
         elif command == "banlist players":
             players = _parse_bans(text)
+        elif command == "banlist ips":
+            players = _parse_ip_bans(text)
         else:
             players = _parse_whitelist(text)
 
@@ -257,7 +320,87 @@ def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:
     return details, ""
 
 
+def _ip_bans(plugin) -> tuple[dict[str, dict] | None, str]:
+    """读 `banned-ips.json` —— IP 封禁的权威名单。
+
+    v0.28.0 起**解锁**：这个文件以前被列进禁区（含 IP），但 WebUI 是管理员专属页面，
+    而 `ban-ip` 是服主真实会用的功能 —— 藏起来只会让人去翻文件、或者靠肉眼认日志。
+
+    容忍单条脏数据：一条格式不对的记录跳过，不让整份名单作废（名单宁可少一条，
+    也别因为一个坏字段变成"全都看不到"）；但整个文件读不出来时如实返回 None。
+    """
+    server_dir = str(plugin._cfg("server_dir", "") or "").strip()
+    if not server_dir:
+        return None, "未知（server_dir 未配置，读不到 banned-ips.json）"
+    if strict_bool(plugin._cfg("remote_rcon_mode", False), False, key="remote_rcon_mode"):
+        return None, "未知（异地 RCON 模式下读不到 banned-ips.json）"
+    path = Path(server_dir) / "banned-ips.json"
+    try:
+        if path.is_symlink():
+            return None, "未知（banned-ips.json 是符号链接）"
+        with io.open(path, encoding="utf-8-sig") as stream:
+            records = json.load(stream)
+    except (OSError, ValueError):
+        return None, "未知（无法读取 banned-ips.json）"
+    if not isinstance(records, list):
+        return None, "未知（banned-ips.json 格式无法识别）"
+    details: dict[str, dict] = {}
+    skipped = 0
+    for record in records:
+        ip = record.get("ip") if isinstance(record, dict) else None
+        if not isinstance(ip, str) or not ip.strip():
+            skipped += 1
+            continue
+        details[ip.strip()] = record
+    note = f"（{skipped} 条记录格式异常，已跳过）" if skipped else ""
+    return details, note
+
+
+async def _append_ip_bans(plugin, result: dict) -> None:
+    """把 IP 封禁名单并进 `get_bans` 的结果。以文件为准，回包只作交叉验证。"""
+    details, detail_note = _ip_bans(plugin)
+    listed = await _read_roster(plugin, "banlist ips")
+    from_reply = list(listed.get("players") or [])
+    if details:
+        ips = [ip for ip in details]
+        source = "banned-ips.json"
+        if from_reply:
+            # 文件与回包不一致时以文件为准，但要标明（不许静默合并）
+            diff = {ip for ip in from_reply if ip not in details}
+            if diff:
+                detail_note = (detail_note + "；" if detail_note else "") + \
+                    f"RCON 回包里有 {len(diff)} 个地址不在文件中"
+    else:
+        ips = from_reply
+        source = "banlist ips"
+        if not ips:
+            return
+    for ip in ips:
+        record = (details or {}).get(ip)
+        item = {
+            "kind": "ip",
+            "name": ip,
+            "detail_available": record is not None,
+            "removable": True,          # IP 本身就是校验过的目标，逐条可解封
+        }
+        for field in _DETAIL_FIELDS:
+            value = record.get(field) if record is not None else None
+            item[field] = value if isinstance(value, str) and value.strip() else _UNKNOWN
+        result["items"].append(item)
+    result["ip_count"] = len(ips)
+    result["ip_source"] = source
+    if detail_note:
+        result["ip_note"] = detail_note
+
+
 async def get_bans(plugin) -> dict:
+    """封禁名单 = 玩家封禁 + IP 封禁（v0.28.0 起两者并列，用 `kind` 区分）。"""
+    result = await _player_bans(plugin)
+    await _append_ip_bans(plugin, result)
+    return result
+
+
+async def _player_bans(plugin) -> dict:
     """封禁名单：RCON 的 ``banlist`` 为准，``banned-players.json`` 只补详情。
 
     v0.26.1（2026-11-17 现场发现）：RCON 回包**多条封禁粘连**时
@@ -303,7 +446,7 @@ async def get_bans(plugin) -> dict:
         }
         for field in _DETAIL_FIELDS:
             value = detail.get(field) if detail is not None else None
-            item[field] = _redact(value) if isinstance(value, str) and value.strip() else _UNKNOWN
+            item[field] = value if isinstance(value, str) and value.strip() else _UNKNOWN
         result["items"].append(item)
 
     if listed["state"] == server_card.STATE_EMPTY and details is not None:
@@ -343,7 +486,9 @@ def _write_audit(stream, actor: str, result: dict) -> None:
             "command": result["command"],
             "state": result["state"],
             "confirmed": result["confirmed"],
-            "raw_excerpt": result["raw"][:200],
+            # 审计是长期留档、可能被导出分享的文件 —— 它这一份**继续脱敏**，
+            # 与 WebUI 实时显示（真 IP，管理员要用）刻意不同（v0.28.0 口径）。
+            "raw_excerpt": _redact(result["raw"])[:200],
         }
     stream.write(json.dumps(record, ensure_ascii=False) + "\n")
     stream.flush()
@@ -386,7 +531,8 @@ async def _apply_action(plugin, result: dict) -> None:
         result.update(_status(server_card.STATE_UNREACHABLE, note, reply.raw))
         return
 
-    result["raw"] = _redact(reply.raw)
+    # WebUI 回执给真实原文（含 IP）：管理员要用它做 ban-ip 判断；审计里那一份仍脱敏
+    result["raw"] = reply.raw
     readback = await _read_roster(plugin, _READBACK_COMMAND[action], reply.rcon)
     result["readback"] = readback
     if not reply.verdict.ok:
@@ -399,8 +545,17 @@ async def _apply_action(plugin, result: dict) -> None:
     if readback["state"] not in (server_card.STATE_OK, server_card.STATE_EMPTY):
         result.update(_status(readback["state"], f"已发出但未确认：{readback['note']}", reply.raw))
         return
-    present = result["player"].casefold() in {name.casefold() for name in readback["players"]}
-    if present != (action in ("ban", "whitelist_add")):
+    # IP 动作要比规范化后的地址（`::1` 与 `0:0:0:0:0:0:0:1` 是同一个地址，
+    # 而服务端与用户写法未必一致）；玩家名仍按大小写不敏感比较。
+    if action in _IP_ACTIONS:
+        try:
+            wanted = normalize_ip(result["player"])
+        except ValueError:
+            wanted = result["player"]
+        present = wanted in set(readback["players"])
+    else:
+        present = result["player"].casefold() in {name.casefold() for name in readback["players"]}
+    if present != (action in ("ban", "ban_ip", "whitelist_add")):
         result.update(_status(server_card.STATE_UNRECOGNIZED, "已发出但未确认：回读名单未证实操作生效", reply.raw))
         return
 
