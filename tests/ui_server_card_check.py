@@ -22,7 +22,7 @@ import json
 import ui_theme_check as F
 from _paths import UI_LAUNCH_KWARGS
 from _ui_page import VIEWPORT
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 CAPS = {"known": True, "version": "1.20.6", "raw": "MC 1.20.6 · Forge 50.1.0",
         "source": "detected", "source_label": "服务端文件探测",
@@ -105,6 +105,50 @@ def payload_for(card_obj: dict | None, *, ok: bool = True, error: str = "") -> d
     return p
 
 
+def check_server_tabs(page) -> None:
+    content = {
+        "monitor": ("#sv_status", "#sv_events"),
+        "players": ("#sv_players", "#sv_ban_card"),
+        "tools": ("#bc_modes", "#bc_text_color"),
+        "audit": ("#sv_audit_card",),
+    }
+    tabs = page.locator('#page_server button[role="tab"][data-server-tab]')
+    assert tabs.evaluate_all("elements => elements.map(tab => tab.dataset.serverTab)") == list(content)
+    selected_tab = page.locator('#page_server button[role="tab"][aria-selected="true"]')
+    for category, selectors in content.items():
+        panel = page.locator(f"#server_panel_{category}")
+        for selector in selectors:
+            assert panel.locator(selector).count() == 1, f"{selector} 未放在 {category} 分类"
+    assert page.locator("#page_settings #srv_color_card").count() == 1, "文本颜色卡应放在设置页"
+
+    def check_selection(selected):
+        expect(selected_tab).to_have_count(1)
+        expect(selected_tab).to_have_attribute("data-server-tab", selected)
+        expect(page.locator('#page_server [role="tabpanel"]:visible')).to_have_count(1)
+        expect(page.locator(f"#server_panel_{selected}")).to_be_visible()
+
+    check_selection("monitor")
+    tabs.first.press("ArrowRight")
+    check_selection("players")
+    expect(tabs.nth(1)).to_be_focused()
+    tabs.nth(1).press("End")
+    check_selection("audit")
+    expect(tabs.last).to_be_focused()
+    tabs.last.press("ArrowLeft")
+    check_selection("tools")
+    expect(tabs.nth(2)).to_be_focused()
+    tabs.nth(2).press("Home")
+    check_selection("monitor")
+    expect(tabs.first).to_be_focused()
+
+    tabs.nth(2).click()
+    check_selection("tools")
+    page.locator('button.tab[data-page="overview"]').click()
+    page.locator("#page_overview").get_by_role("button", name="查看全部 →").click()
+    check_selection("monitor")
+    print("[PASS] 服务器分类默认打开监控，支持键盘切换，概览的最近事件入口返回监控")
+
+
 def main() -> None:
     state = {"payload": {**LEGACY, "version_caps": CAPS}}
 
@@ -124,6 +168,9 @@ def main() -> None:
         page.route(F.API_GLOB, route)
         page.goto(F.PAGE_URL)
         page.locator('button.tab[data-page="server"]').click()
+        check_server_tabs(page)
+        monitor_tab = page.locator('[data-server-tab="monitor"]')
+        players_tab = page.locator('[data-server-tab="players"]')
 
         def show(payload: dict, wait_selector: str) -> None:
             state["payload"] = payload
@@ -149,7 +196,9 @@ def main() -> None:
         assert row("tps").locator(".sc-src").inner_text().strip() == "/tps（探针）", \
             "TPS 字段必须标采样来源"
         assert page.locator("#sv_status .sc-raw").count() == 0, "全正常时不该出现原文块"
-        assert "空服" not in page.locator("#sv_online_tag").inner_text()
+        players_tab.click()
+        expect(page.locator("#sv_online_tag")).not_to_contain_text("空服")
+        monitor_tab.click()
 
         # ---- 2) 空服 + 该世代不支持：两种状态必须分开说，原文必须摊开 ----
         show(payload_for(CARD_EMPTY),
@@ -163,9 +212,10 @@ def main() -> None:
         raws = page.locator("#sv_status .sc-raw").all_inner_texts()
         assert any("/time <set|add> <value>" in t for t in raws), raws
         assert any("Unknown command" in t for t in raws), raws
-        assert "空服" in page.locator("#sv_online_tag").inner_text(), \
-            page.locator("#sv_online_tag").inner_text()
-        assert "当前没有玩家在线" in page.locator("#sv_players").inner_text()
+        players_tab.click()
+        expect(page.locator("#sv_online_tag")).to_contain_text("空服")
+        expect(page.locator("#sv_players")).to_contain_text("当前没有玩家在线")
+        monitor_tab.click()
 
         # ---- 3) 回执认不出：必须带原文，且不许把「认不出」说成「没人」----
         show(payload_for(CARD_UNRECOGNIZED),
@@ -174,9 +224,10 @@ def main() -> None:
         assert "回执认不出" in page.locator("#sv_status .sc-head").inner_text()
         raw_text = page.locator("#sv_status .sc-raw").first.inner_text()
         assert "Players online (2): Steve, Alex" in raw_text, raw_text
-        players_text = page.locator("#sv_players").inner_text()
-        assert "当前没有玩家在线" not in players_text, players_text
-        assert "拿不到" in players_text, players_text
+        players_tab.click()
+        expect(page.locator("#sv_players")).to_contain_text("拿不到")
+        expect(page.locator("#sv_players")).not_to_contain_text("当前没有玩家在线")
+        monitor_tab.click()
 
         # ---- 4) 连不上：卡片照样画，版本字段仍可用 ----
         show(payload_for(CARD_UNREACHABLE, ok=False, error="RCON 连接失败：拒绝连接"),

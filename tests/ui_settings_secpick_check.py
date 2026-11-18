@@ -1,18 +1,17 @@
 """v0.23.7 回归：设置页三项单色的「格式化符号」下拉（真浏览器实跑）。
 
-用户 2026-10-05 点名：设置那一页**最好也能单独选择格式化符号**，
-但**取色器不必**（那里已经专门引导用户去服务器页『文本颜色』卡片设置）。
+用户 2026-10-05 点名：设置页的手动配置也要能单独选择格式化符号。
 
 于是设置页三项单色各配一个 `§0`-`§f` 下拉：
   · 三个下拉**各自独立**（改一项绝不动另外两项）；
   · 选中即把「§+码」写进左边单色框（`§6` 与色名 `gold` 在后端 _parse_color 里等价）；
   · 反方向也同步：手打 hex / 色名 / §码 时下拉跟着对位（hex 走与后端同源的最近色名）；
   · 认不出的值（RGB() / 十进制 / 空）→ 下拉回到「（原样保留）」，**绝不改值、绝不清空**；
-  · 设置页**不引入取色器**（`input[type=color]` 在设置页必须为 0）。
+  · 取色器集中在可视化配色卡。
 
 覆盖：
-  1) 静态：三对 id 齐全（txt + sec）／设置页没有取色器／选项文案带 §码 + 中文 + 色名；
-  2) 动态：三个下拉真渲染、可见、在 #page_settings 内、各 17 个选项（原样保留 + 16 符号）；
+  1) 静态：三对 id 齐全（txt + sec）／选项文案带 §码 + 中文 + 色名；
+  2) 动态：三个下拉真渲染、可见、在 #page_settings 内、各 17 个选项（原样保留 + 16 符号），取色器集中在可视化配色卡；
   3) 动态：初值对位（white → §f／gold → §6）；
   4) 动态：选中 §c 后文本框 == "§c"（点保存就会存这个值）；
   5) 动态：反向同步（#FFAA00 → §6；RGB(255,0,0) → 原样保留且值不变）；
@@ -49,14 +48,11 @@ def check(desc: str, cond: bool, extra: str = "") -> None:
 def main() -> int:
     src = HTML.read_text(encoding="utf-8")
 
-    print("[1] 静态：三对 id 齐全、设置页无取色器、选项文案带 §码")
+    print("[1] 静态：三对 id 齐全、选项文案带 §码")
     for tid, sid in PAIRS:
         check(f"#{tid} 存在（单色文本框）", f'id="{tid}"' in src)
         check(f"#{sid} 存在（格式化符号下拉）", f'id="{sid}"' in src)
-    set_block = src.split('id="page_settings"', 1)[1].split("<script", 1)[0]
-    check("设置页块内没有 input[type=color]（取色器留在服务器页）",
-          "type=\"color\"" not in set_block)
-    check("选项文案 = §码 + 中文 + 色名（与服务器页同款）",
+    check("选项文案 = §码 + 中文 + 色名（与可视化配色同款）",
           '§${i.toString(16)} ${MC_NAME_CN[n]} ${n}' in src)
     check("三项配对表 SEC_PICKER_PAIRS 覆盖三对 id",
           all(f'"{tid}"' in src and f'"{sid}"' in src for tid, sid in PAIRS)
@@ -82,6 +78,11 @@ def main() -> int:
         pg.wait_for_timeout(1000)
         pg.click('button.tab[data-page="settings"]')
         pg.wait_for_timeout(600)
+
+        visual_pickers = pg.locator("#page_settings #srv_color_card input[type=color]")
+        all_pickers = pg.locator("#page_settings input[type=color]")
+        check("设置页的三个取色器集中在可视化配色卡",
+              visual_pickers.count() == all_pickers.count() == 3)
 
         info = pg.evaluate(
             """(pairs) => pairs.map(([tid, sid]) => {

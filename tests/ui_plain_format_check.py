@@ -6,13 +6,13 @@
     并把版本号标清楚」
 
 断言：
-  [1] 服务器页颜色卡：下拉 2 项（hex / named），标签带版本号，值与后端键一致；
+  [1] 设置页的可视化颜色卡：下拉 2 项（hex / named），标签带版本号，值与后端键一致；
   [2] 打开时按 GET /colors 的 plain.format 回显；
   [3] 显隐关系：单色格式行常驻可见（渐变关闭也在）；渐变格式行随开关显隐，开启后两者并存；
-  [4] 点保存 → POST colors/save 载荷里带 plain_color_format；
-  [5] 设置页镜像：#cfg_plain_fmt 同款 2 项 + 按 settings 载荷回显；
+  [4] 设置页镜像：#cfg_plain_fmt 同款 2 项 + 按 settings 载荷回显；
+  [5] 保存颜色带 plain_color_format，随后保存全部设置沿用已保存的颜色和其他草稿；
   [6] 重置 → 回默认 hex。
-  [7] 两框对调：单色格式行在渐变输出格式行**之前**（服务器页 + 设置页镜像同序）；
+  [7] 单色格式行在渐变输出格式行**之前**（两套控件同序）；
   [8] 单色格式＝固定格式化色 → 取色器换成 16 色名选项框（§0-§f 顺序、标签带符号与中文），
       hex 值按下后端的最近色名回显（#FFD700 → gold），且**不静默改写**原始值；
   [9] 选色名 → 保存载荷直接写色名（gold / red）；切回 hex → 取色器与文本框回来；
@@ -22,23 +22,20 @@
 """
 from __future__ import annotations
 
-import json
-import os
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
-from _ui_page import API_GLOB, make_router  # noqa: E402
+from _ui_page import API_GLOB, PAGE_URL, make_router  # noqa: E402
 
 
 _patch_pw_driver()
 
-from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402
+from playwright.sync_api import expect, sync_playwright  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-PAGE_URL = serve_plugin_root() + "/pages/mc_control/index.html"
 SHOTS = PLUGIN / "tests" / "_shots"
 SHOTS.mkdir(exist_ok=True)
 
@@ -74,22 +71,25 @@ COLORS = {
     },
     "plain": {"format": "named", "formats": {"hex": "mock", "named": "mock"}},
 }
-state: dict = {"saves": []}
-
-
-def _json(route_obj, payload: dict) -> None:
-    route_obj.fulfill(status=200, content_type="application/json",
-                      body=json.dumps(payload, ensure_ascii=False))
+state: dict = {"saves": [], "settings_saves": []}
 
 
 # v0.24.11 技术债收尾：GET/POST 分发统一走 _ui_page.make_router（未知路径约定回 {"ok": True}）
 def _post(url, body):
     if url == "colors/save":
         state["saves"].append(body)
-        COLORS["plain"]["format"] = str(body.get("plain_color_format") or "hex")
-        payload = dict(COLORS)
-        payload.update({"notice": "mock：设置已保存并即时生效", "save_warning": ""})
-        return payload
+        SETTINGS.update(body)
+        COLORS["plain"]["format"] = body["plain_color_format"]
+        COLORS["gradient"]["format"] = body["gradient_format"]
+        COLORS["gradient"]["enabled"] = body["gradient_enabled"]
+        COLORS["gradient"]["stops"].update({key: body[key] for key in COLORS["gradient"]["stops"]})
+        COLORS["colors"].update({key: body[key] for key in COLORS["colors"]})
+        return {**COLORS, "notice": "mock：设置已保存并即时生效"}
+    if url == "settings/save":
+        settings = body["settings"]
+        state["settings_saves"].append(settings)
+        SETTINGS.update(settings)
+        return {"ok": True, "applied": settings, "notice": "mock：设置已保存"}
     return {"ok": True}
 
 
@@ -120,11 +120,10 @@ def main() -> int:
         page = browser.new_page(viewport={"width": 1280, "height": 1000})
         page.route(API_GLOB, route)
         page.goto(PAGE_URL)
-        # 颜色卡在「服务器」页 —— 默认停在概览，先切页再断言（不可见元素也点不动）
-        page.click('[data-page="server"]')
+        page.click('[data-page="settings"]')
+        page.wait_for_selector("#page_settings #srv_color_card")
         page.wait_for_function(
-            "document.querySelector('#clr_plain_fmt')"
-            " && document.querySelector('#clr_plain_fmt').options.length===2",
+            "document.querySelector('#clr_plain_fmt')?.value === 'named'",
             timeout=10000)
 
         print("[1] 颜色卡下拉：选项与版本号")
@@ -152,10 +151,23 @@ def main() -> int:
                              "el=>{el.checked=false; el.dispatchEvent(new Event('change'));}")
         check("关回渐变 → 单色行仍在", page.is_visible("#plain_fmt_row"))
 
-        print("[4] 保存载荷带 plain_color_format")
+        print("[4] 设置页镜像下拉")
+        expect(page.locator("#cfg_plain_fmt")).to_have_value("named")
+        o2 = opts(page, "#cfg_plain_fmt")
+        check("恰好 2 项", len(o2) == 2, str(len(o2)))
+        check("选项值与颜色卡一致",
+              [v for v, _ in o2] == ["hex", "named"], str([v for v, _ in o2]))
+        check("标签带版本号", "1.16+" in o2[0][1] and "全世代" in o2[1][1])
+        check("按 settings 载荷回显 named（不是硬编码默认）",
+              page.input_value("#cfg_plain_fmt") == "named",
+              page.input_value("#cfg_plain_fmt"))
+
+        print("[5] 保存载荷带 plain_color_format，保存全部设置沿用已保存颜色")
+        feedback_draft = "署名草稿"
+        page.fill("#cfg_feedback_name", feedback_draft)
         page.select_option("#clr_plain_fmt", "hex")
         page.click("#clr_save")
-        page.wait_for_timeout(700)
+        expect(page.locator("#clr_notice")).to_contain_text("✓")
         body = state["saves"][-1] if state["saves"] else {}
         check("POST colors/save 已发出", bool(state["saves"]), str(state["saves"])[:80])
         check("载荷 plain_color_format == hex", body.get("plain_color_format") == "hex",
@@ -167,49 +179,42 @@ def main() -> int:
         check("保存后与后端回显一致（hex）",
               page.input_value("#clr_plain_fmt") == "hex")
 
-        print("[5] 设置页镜像下拉")
-        page.click('[data-page="settings"]')
-        page.wait_for_function(
-            "document.querySelector('#cfg_plain_fmt')"
-            " && document.querySelector('#cfg_plain_fmt').options.length===2",
-            timeout=8000)
-        o2 = opts(page, "#cfg_plain_fmt")
-        check("恰好 2 项", len(o2) == 2, str(len(o2)))
-        check("选项值与颜色卡一致",
-              [v for v, _ in o2] == ["hex", "named"], str([v for v, _ in o2]))
-        check("标签带版本号", "1.16+" in o2[0][1] and "全世代" in o2[1][1])
-        check("按 settings 载荷回显 named（不是硬编码默认）",
-              page.input_value("#cfg_plain_fmt") == "named",
-              page.input_value("#cfg_plain_fmt"))
+        check("颜色保存后同步到手动设置",
+              page.input_value("#cfg_plain_fmt") == "hex")
+        check("颜色保存后反馈署名草稿仍保留",
+              page.input_value("#cfg_feedback_name") == feedback_draft)
+        with page.expect_response("**/colors"):
+            with page.expect_response("**/settings/save"):
+                page.click("#btn_save_cfg_top")
+        all_settings = state["settings_saves"][-1]
+        check("保存全部设置提交已保存的颜色和反馈署名",
+              all_settings.get("plain_color_format") == "hex"
+              and all_settings.get("feedback_name") == feedback_draft)
 
         print("[6] 重置回默认 hex")
-        page.click('[data-page="server"]')
+        page.select_option("#clr_plain_fmt", "named")
         page.click("#clr_reset")
         check("重置后为 hex", page.input_value("#clr_plain_fmt") == "hex")
 
         print("[7] 两框对调：单色格式行在渐变输出格式行之前")
-        check("服务器页：单色格式行在前",
+        check("可视化颜色卡的单色格式行在前",
               page.evaluate("""()=>{
                 const a=document.querySelector('#plain_fmt_row'),
                       b=document.querySelector('#grad_fmt_row');
                 return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
               }"""))
-        page.click('[data-page="settings"]')
-        page.wait_for_selector("#cfg_plain_fmt")
         check("设置页镜像同序（单色在前）",
               page.evaluate("""()=>{
                 const a=document.querySelector('#cfg_plain_fmt'),
                       b=document.querySelector('#cfg_grad_fmt');
                 return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
               }"""))
-        page.click('[data-page="server"]')
-        page.wait_for_selector("#clr_plain_fmt")
 
         print("[8] 单色格式＝固定格式化色 → 16 色名选项框（替代取色器）")
-        # 先走一遍保存往返：mock 会把 color_say 回显成自定义 hex（#FFD700）——
-        # 正好用来验「hex 值 → 后端最近色名」这条链路（重置后的默认值是 white，样本不够刁）
+        # 保存自定义 hex，作为最近色名回显的样本。
+        page.fill("#clr_say_txt", "#FFD700")
         page.click("#clr_save")
-        page.wait_for_timeout(700)
+        expect(page.locator("#clr_notice")).to_contain_text("✓")
         check("保存往返后 color_say = #FFD700（样本就位）",
               page.evaluate("()=>document.querySelector('#clr_say_txt').value") == "#FFD700",
               page.evaluate("()=>document.querySelector('#clr_say_txt').value"))
@@ -245,7 +250,7 @@ def main() -> int:
               page.evaluate("()=>document.querySelector('#clr_say_txt').value") == "aqua")
         page.select_option("#clr_title_sel", "red")
         page.click("#clr_save")
-        page.wait_for_timeout(700)
+        expect(page.locator("#clr_notice")).to_contain_text("✓")
         body2 = state["saves"][-1] if state["saves"] else {}
         check("载荷 color_say == aqua", body2.get("color_say") == "aqua", str(body2.get("color_say")))
         check("载荷 color_title == red", body2.get("color_title") == "red", str(body2.get("color_title")))
@@ -304,7 +309,7 @@ def main() -> int:
         for f in FAILS:
             print("  FAIL", f)
         return 1
-    print("全部通过 ✅（单色格式下拉：默认 hex / 旧版回退 / 版本号标注 / 双页面镜像）")
+    print("全部通过 ✅（单色格式下拉：默认 hex / 旧版回退 / 版本号标注 / 两套控件同步）")
     return 0
 
 

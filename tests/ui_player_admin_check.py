@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import ui_theme_check as F
 from _paths import UI_LAUNCH_KWARGS
 from _ui_page import API_GLOB, PAGE_URL, VIEWPORT, fulfill, split_url
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ONLINE_OK = {"state": "ok", "players": ["Alex"], "online": 1, "max": 20}
 BAN = {
@@ -101,14 +101,19 @@ class Scenario:
     def open(self):
         self.page.goto(PAGE_URL)
         self.page.locator('button.tab[data-page="server"]').click()
+        self.select("players")
         self.page.wait_for_function(
-            """() => !document.getElementById("sv_refresh").disabled &&
+            """() => !document.getElementById("sv_players_refresh").disabled &&
               document.querySelector("#sv_players .ply, #sv_players .player-state")"""
         )
 
+    def select(self, category):
+        self.page.locator(f'[data-server-tab="{category}"]').click()
+
     def refresh(self):
-        self.page.locator("#sv_refresh").click()
-        self.page.wait_for_function('!document.getElementById("sv_refresh").disabled')
+        refresh = self.page.locator("#sv_players_refresh")
+        refresh.click()
+        expect(refresh).to_be_enabled()
 
 def check_four_states(scenario):
     page = scenario.page
@@ -138,8 +143,12 @@ def check_permission(scenario):
     scenario.refresh()
     assert page.locator("#sv_players button[data-action], #sv_bans button[data-action]").count() == 0, \
         "P6 非管理员仍有玩家管理按钮"
-    assert page.locator("#sv_ban_card").is_hidden() and page.locator("#sv_audit_card").is_hidden(), \
-        "P6 非管理员仍看得到封禁名单或审计卡"
+    expect(page.locator("#sv_ban_card")).to_be_hidden()
+    scenario.select("audit")
+    expect(page.locator("#sv_audit_card")).to_be_hidden()
+    audit_unavailable = page.locator("#sv_audit_unavailable")
+    expect(audit_unavailable).to_be_visible()
+    expect(audit_unavailable).to_have_text("当前会话无权查看操作记录")
     assert page.locator("#sv_bans .player-row, #sv_audit .player-row").count() == 0, \
         "P6 降权后管理数据仍留在 DOM"
     print("[PASS] P6 管理员可操作，接口拒绝后移除管理入口和数据")
@@ -176,7 +185,9 @@ def check_no_ip(scenario):
     scenario.status_note = f"异常原文 {IPV4} / {IPV6}"
     scenario.open()
     page = scenario.page
+    scenario.select("monitor")
     page.locator("#sv_events .ev").wait_for()
+    scenario.select("players")
     assert "违规原因" in page.locator("#sv_bans").inner_text(), "P9 隐私样本未经过封禁卡渲染"
     # v0.28.0 反转：WebUI 是管理员专属页面，**界面必须显示真实地址** ——
     # 服主要靠它判断 ban-ip 封哪个地址；脱敏只保留在审计文件（_redact 那一份）里。
@@ -197,7 +208,7 @@ def submit(scenario, button, player, command):
     before = sum(not post.get("preview") for post in scenario.posts)
     page.locator("#player_confirm").click()
     page.locator("#player_dialog").wait_for(state="hidden")
-    page.wait_for_function('!document.getElementById("sv_refresh").disabled')
+    expect(page.locator("#sv_players_refresh")).to_be_enabled()
     writes = [post for post in scenario.posts if not post.get("preview")]
     assert len(writes) == before + 1 and writes[-1]["expected_command"] == command, \
         "确认后须执行且只执行一次所展示的命令"
@@ -263,8 +274,12 @@ def check_unban(scenario):
         "P12 回读目标消失后应显示已确认"
     assert unban.count() == 0 and "当前没有封禁记录" in page.locator("#sv_bans").inner_text(), \
         "P12 解封确认后没有刷新名单"
-    assert "pardon Steve" in page.locator("#sv_audit").inner_text() and scenario.audit_limits[-1] == ["20"], \
-        "P12 结果未刷新最近操作或缺少 limit=20"
+    audit = page.locator("#sv_audit")
+    expect(audit).to_contain_text("pardon Steve")
+    expect(audit.locator(".badge.ok")).to_have_text("已确认")
+    assert scenario.audit_limits[-1] == ["20"], "P12 最近操作请求缺少 limit=20"
+    scenario.select("audit")
+    expect(audit).to_be_visible()
     print("[PASS] P12 封禁卡解封预览、提交、未确认与已确认、审计和回读刷新")
 
 

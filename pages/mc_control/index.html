@@ -152,8 +152,20 @@ main{padding:20px;max-width:1280px;margin:0 auto}
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
 :is(.grid,.pr-wrap)>.card+.card{margin-top:0}
-/* 服务器页首行双卡之后接着的卡片不属于同一个网格，补齐与卡片栈一致的垂直间距。 */
-#page_server>.grid + .card{margin-top:14px}
+.server-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;width:min(100%,440px);padding:4px;margin-bottom:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel2)}
+.server-tabs button{min-height:40px;border:1px solid transparent;border-radius:8px;color:var(--dim);font-size:13px;font-weight:700}
+.server-tabs button:hover{color:var(--text);background:var(--panel3)}
+.server-tabs [aria-selected="true"]{color:var(--amber);background:var(--panel3);border-color:var(--border2)}
+.server-monitor{grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start}
+#bc_send{flex:0 0 auto;justify-content:center}
+#sv_online_tag:empty{display:none}
+#sv_online_tag:not(:empty){margin-right:6px}
+#srv_color_card{margin-top:14px}
+@media(max-width:780px){.server-monitor{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:420px){
+  .server-monitor .sc-row[data-key="version"]{grid-template-columns:minmax(0,1fr)}
+  .server-monitor .sc-row[data-key="version"] .sc-v{justify-content:space-between}
+}
 .card h3{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .card h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber)}
 .card h3 .right{margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;font-size:11px}
@@ -250,8 +262,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--cyan)}
 textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5px;line-height:1.5}
 .frow{display:flex;gap:8px}
 .frow>*{flex:1;min-width:0}
-/* v0.23.7：设置页三项单色各带一个「格式化符号」下拉（§0-§f）。取色器不在这里 —— 
-   可视化调色是服务器页『文本颜色』卡片的活，设置页只做「原始值」层面最省的表达。 */
+/* 手动配色的三项单色各带一个格式化符号（§0-§f）下拉。 */
 .fcell{display:flex;gap:6px;min-width:0}
 .fcell>input{flex:1;min-width:0}
 .fcell>select{flex:0 0 auto;width:auto;max-width:190px}
@@ -427,7 +438,7 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
   border-left:2px solid var(--warn);background:var(--panel2);font-family:var(--mono);font-size:11px;
   color:var(--dim);white-space:pre-wrap;word-break:break-all}
 .sc-raw b{display:block;margin-bottom:2px;font-family:var(--sans);font-size:10px;font-weight:600;color:var(--faint)}
-.bc-modes{display:flex;gap:6px;margin-bottom:10px}
+.bc-modes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .bc-mode{font-size:11.5px;font-weight:600;padding:5px 13px;border-radius:8px;border:1px solid var(--border2);color:var(--faint);transition:.15s}
 .bc-mode.active{background:var(--cyan);border-color:var(--cyan);color:#fff}
 .bc-out{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:11.5px;color:var(--dim);font-family:var(--mono);margin-top:10px;min-height:38px;word-break:break-all}
@@ -1042,7 +1053,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div id="ov_rcon"><span class="muted">未测试</span></div>
     </div>
     <div class="card">
-      <h3><span class="dot" style="background:var(--cyan)"></span>最近事件 <span class="right"><button onclick="goTab('server')">查看全部 →</button></span></h3>
+      <h3><span class="dot" style="background:var(--cyan)"></span>最近事件 <span class="right"><button onclick="goTab('server', 'monitor')">查看全部 →</button></span></h3>
       <div id="ov_events"><span class="muted">暂无事件</span></div>
     </div>
   </div>
@@ -1055,109 +1066,63 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 
 <!-- ================= 服务器 ================= -->
 <div class="page" id="page_server">
-  <div class="grid g2">
-    <div class="card">
-      <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
-      <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
-      <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
-      <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
+  <div class="server-tabs" role="tablist" aria-label="服务器功能">
+    <button type="button" id="server_tab_monitor" role="tab" data-server-tab="monitor" aria-controls="server_panel_monitor" aria-selected="true">监控</button>
+    <button type="button" id="server_tab_players" role="tab" data-server-tab="players" aria-controls="server_panel_players" aria-selected="false" tabindex="-1">玩家</button>
+    <button type="button" id="server_tab_tools" role="tab" data-server-tab="tools" aria-controls="server_panel_tools" aria-selected="false" tabindex="-1">工具</button>
+    <button type="button" id="server_tab_audit" role="tab" data-server-tab="audit" aria-controls="server_panel_audit" aria-selected="false" tabindex="-1">审计</button>
+  </div>
+
+  <section id="server_panel_monitor" role="tabpanel" aria-labelledby="server_tab_monitor" tabindex="0">
+    <div class="grid server-monitor">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
+        <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
+        <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
+        <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--faint)"></span>服务器事件流 <span class="right"><button id="sv_ev_refresh">刷新</button></span></h3>
+        <div id="sv_events"><span class="muted">加载中…</span></div>
+      </div>
     </div>
+  </section>
+
+  <section id="server_panel_players" role="tabpanel" aria-labelledby="server_tab_players" tabindex="0" hidden>
     <div class="card">
-      <h3><span class="dot" style="background:var(--amber)"></span>在线玩家 <span class="right" id="sv_online_tag"></span></h3>
+      <h3><span class="dot" style="background:var(--amber)"></span>在线玩家 <span class="right"><span id="sv_online_tag"></span> <button id="sv_players_refresh">刷新</button></span></h3>
       <div id="sv_players"><span class="muted">加载中…</span></div>
       <div class="player-result" id="sv_player_result" role="status" aria-live="polite"></div>
     </div>
-  </div>
-  <section class="card" id="sv_ban_card" hidden aria-labelledby="sv_ban_title">
-    <h3 id="sv_ban_title"><span class="dot" style="background:var(--bad)"></span>封禁名单</h3>
-    <div id="sv_bans"></div>
-    <div class="player-result" id="sv_ban_result" role="status" aria-live="polite"></div>
+    <section class="card" id="sv_ban_card" hidden aria-labelledby="sv_ban_title">
+      <h3 id="sv_ban_title"><span class="dot" style="background:var(--bad)"></span>封禁名单</h3>
+      <div id="sv_bans"></div>
+      <div class="player-result" id="sv_ban_result" role="status" aria-live="polite"></div>
+    </section>
   </section>
-  <div class="card">
-    <h3><span class="dot" style="background:var(--cyan)"></span>广播控制台</h3>
-    <div class="bc-modes" id="bc_modes">
-      <button class="bc-mode active" data-mode="chat">聊天栏</button>
-      <button class="bc-mode" data-mode="title">全屏标题</button>
-      <button class="bc-mode" data-mode="task">模拟任务输出</button>
-    </div>
-    <div class="frow"><input type="text" id="bc_msg" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
-    <div class="bc-out" id="bc_out">广播结果会显示在这里</div>
-    <div class="hint" style="margin-top:8px">颜色跟随下方「文本颜色」卡片：聊天栏 / 全屏标题 / 模拟任务输出，各用同名那一格的颜色。署名：聊天栏固定 <b>[Server]</b>（对全服公开说话，不冒充任何身份）；模拟任务输出按「反馈署名」配置加前缀；全屏标题不带前缀</div>
-  </div>
-  <div class="card" id="srv_color_card">
-    <h3><span class="dot" style="background:var(--ok)"></span>文本颜色 <span class="right muted" style="font-weight:normal">保存后即时生效</span></h3>
-    <div class="sw-row" style="border-top:none">
-      <div class="sw-t"><b>启用渐变色</b><span>MC 1.16+ 逐字符渐变 · 支持多锚点（可添加多个颜色）· 空格不参与渐变</span></div>
-      <label class="sw"><input type="checkbox" id="clr_grad_en"><span class="sl"></span></label>
-    </div>
-    <!-- v0.23.7（B2④ 追加·用户点名）：单色格式在上、渐变输出格式在下（两组下拉对调位置） -->
-    <div class="frow" id="plain_fmt_row" style="margin-bottom:10px">
-      <span class="muted" style="flex:0 0 auto;font-size:12px">单色格式</span>
-      <select id="clr_plain_fmt" style="flex:1"></select>
-      <span class="muted" style="flex:0 0 auto;font-size:11px">hex 需客户端 1.16+ · 旧版自动回退</span>
-    </div>
-    <div class="frow grad-wrap" id="grad_fmt_row" style="display:none;margin-bottom:10px">
-      <span class="muted" style="flex:0 0 auto;font-size:12px">输出格式</span>
-      <select id="clr_grad_fmt" style="flex:1"></select>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
-      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">聊天栏 <span class="muted">chat</span></div>
-        <div class="frow">
-          <input type="color" id="clr_say" value="#ffffff" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
-          <span class="clr-name-sw" id="clr_say_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
-          <select class="clr-name-sel" id="clr_say_sel" style="display:none"></select>
-          <input type="text" id="clr_say_txt" placeholder="#FFFFFF 或 255,255,255" value="#ffffff">
-        </div>
-        <div class="grad-wrap" id="grad_block_say" style="display:none">
-          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
-          <div id="stops_say"></div>
-          <button class="btn sm" data-add="say" style="margin-top:6px">＋ 添加颜色</button>
-        </div>
+
+  <section id="server_panel_tools" role="tabpanel" aria-labelledby="server_tab_tools" tabindex="0" hidden>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--cyan)"></span>广播控制台 <span class="right"><button type="button" class="jump" id="bc_text_color">文本颜色 →</button></span></h3>
+      <div class="bc-modes" id="bc_modes">
+        <button class="bc-mode active" data-mode="chat">聊天栏</button>
+        <button class="bc-mode" data-mode="title">全屏标题</button>
+        <button class="bc-mode" data-mode="task">模拟任务输出</button>
       </div>
-      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">全屏标题 <span class="muted">title</span></div>
-        <div class="frow">
-          <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
-          <span class="clr-name-sw" id="clr_title_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
-          <select class="clr-name-sel" id="clr_title_sel" style="display:none"></select>
-          <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
-        </div>
-        <div class="grad-wrap" id="grad_block_title" style="display:none">
-          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
-          <div id="stops_title"></div>
-          <button class="btn sm" data-add="title" style="margin-top:6px">＋ 添加颜色</button>
-        </div>
-      </div>
-      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
-        <div style="font-size:13px;margin-bottom:6px">模拟任务输出 <span class="muted">反馈</span></div>
-        <div class="frow">
-          <input type="color" id="clr_fb" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
-          <span class="clr-name-sw" id="clr_fb_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
-          <select class="clr-name-sel" id="clr_fb_sel" style="display:none"></select>
-          <input type="text" id="clr_fb_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
-        </div>
-        <div class="grad-wrap" id="grad_block_fb" style="display:none">
-          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
-          <div id="stops_fb"></div>
-          <button class="btn sm" data-add="fb" style="margin-top:6px">＋ 添加颜色</button>
-        </div>
-      </div>
+      <div class="frow"><input type="text" id="bc_msg" aria-label="广播内容" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
+      <div class="bc-out" id="bc_out" role="status">广播结果会显示在这里</div>
+      <div class="hint" style="margin-top:8px">三种广播分别使用「设置 → 外观」中对应的文本颜色。聊天栏固定署名 <b>[Server]</b>。模拟任务输出使用配置的「反馈署名」。全屏标题只显示正文。</div>
     </div>
-    <div class="btnrow" style="margin-top:10px">
-      <button class="btn primary" id="clr_save">保存颜色</button>
-      <button class="btn sm" id="clr_reset">恢复默认</button>
-      <span class="muted" id="clr_color_hint">取色器点选 / 文本框填 hex 或 RGB，保存后立即生效；渐变开启时按锚点逐字符渐变</span>
+  </section>
+
+  <section id="server_panel_audit" role="tabpanel" aria-labelledby="server_tab_audit" tabindex="0" hidden>
+    <div class="card">
+      <h3 id="sv_audit_title"><span class="dot" style="background:var(--faint)"></span>最近操作 <span class="right"><button id="sv_audit_refresh">刷新</button></span></h3>
+      <div id="sv_audit_card" hidden>
+        <div id="sv_audit"></div>
+      </div>
+      <div class="muted" id="sv_audit_unavailable" role="status">正在读取最近操作…</div>
     </div>
-    <div class="notice" id="clr_notice"></div>
-  </div>
-  <div class="card">
-    <h3><span class="dot" style="background:var(--faint)"></span>服务器事件流 <span class="right"><button id="sv_ev_refresh">刷新</button></span></h3>
-    <div id="sv_events"><span class="muted">加载中…</span></div>
-  </div>
-  <section class="card" id="sv_audit_card" hidden aria-labelledby="sv_audit_title">
-    <h3 id="sv_audit_title"><span class="dot" style="background:var(--faint)"></span>最近操作</h3>
-    <div id="sv_audit"></div>
   </section>
 </div>
 
@@ -1773,14 +1738,14 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <input type="text" id="cfg_feedback_name" placeholder="RCON">
       <div class="hint" style="margin-top:6px">仅用于任务反馈与「模拟任务输出」预览：广播 / 聊天栏发言固定署名 <b>[Server]</b>，不受此项影响</div>
       <div class="sw-row" style="border-bottom:none;margin-top:6px">
-        <div class="sw-t"><b>游戏内任务完成后将在公屏反馈</b><span>命令执行成功后发送署名提示；反馈文字颜色可在「服务器」页的『文本颜色』卡片更改</span></div>
+        <div class="sw-t"><b>游戏内任务完成后将在公屏反馈</b><span>命令执行成功后发送署名提示；反馈文字颜色可在同组「文本颜色」中更改</span></div>
         <label class="sw"><input type="checkbox" id="cfg_feedback_tellraw"><span class="sl"></span></label>
       </div>
     </div>
     <div class="card">
-      <h3><span class="dot" style="background:var(--amber)"></span>文本颜色</h3>
+      <h3><span class="dot" style="background:var(--amber)"></span>文本颜色 · 手动设置 <span class="right"><button type="button" class="jump" id="jump_text_color">可视化调色 →</button></span></h3>
       <div class="sw-row" style="border-top:none">
-        <div class="sw-t"><b>启用渐变色（MC 1.16+）</b><span>按锚点逐字符渐变 · 空格不参与<br>更推荐去「服务器」页的『文本颜色』卡片调色，那里有取色器、可视化预览 <a class="jump" id="jump_text_color">前往该卡片 →</a></span></div>
+        <div class="sw-t"><b>启用渐变色（MC 1.16+）</b><span>按锚点逐字符渐变 · 空格不参与</span></div>
         <label class="sw"><input type="checkbox" id="cfg_grad_en"><span class="sl"></span></label>
       </div>
       <label class="f">单色格式（不开渐变时生效）</label>
@@ -1811,8 +1776,76 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         </div>
         <input type="text" id="cfg_grad_fb_t" placeholder="#FFAA00,#55FF55">
       </div>
-      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0) / 格式化符号（<code>§0</code>-<code>§f</code> 或 <code>&amp;0</code>-<code>&amp;f</code>）；每项单色右侧的「§」下拉可直接挑一个符号色（全世代通用，选中即写入左边框）。渐变锚点 ≥2 个、逗号分隔。需要<b>取色器</b>可视化调色请到「服务器」页的『文本颜色』卡片（<a class="jump" id="jump_text_color2">点这里过去 →</a>）</div>
+      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0) / 格式化符号（<code>§0</code>-<code>§f</code> 或 <code>&amp;0</code>-<code>&amp;f</code>）；每项单色右侧的「§」下拉可直接挑一个符号色（全世代通用，选中即写入左边框）。渐变锚点 ≥2 个、逗号分隔。手动修改后，点击「保存全部设置」生效。</div>
     </div>
+  </div>
+
+  <div class="card" id="srv_color_card" tabindex="-1">
+    <h3><span class="dot" style="background:var(--ok)"></span>文本颜色 <span class="right muted" style="font-weight:normal">保存后即时生效</span></h3>
+    <div class="sw-row" style="border-top:none">
+      <div class="sw-t"><b>启用渐变色</b><span>MC 1.16+ 逐字符渐变 · 支持多锚点（可添加多个颜色）· 空格不参与渐变</span></div>
+      <label class="sw"><input type="checkbox" id="clr_grad_en"><span class="sl"></span></label>
+    </div>
+    <!-- v0.23.7（B2④ 追加·用户点名）：单色格式在上、渐变输出格式在下（两组下拉对调位置） -->
+    <div class="frow" id="plain_fmt_row" style="margin-bottom:10px">
+      <span class="muted" style="flex:0 0 auto;font-size:12px">单色格式</span>
+      <select id="clr_plain_fmt" style="flex:1"></select>
+      <span class="muted" style="flex:0 0 auto;font-size:11px">hex 需客户端 1.16+ · 旧版自动回退</span>
+    </div>
+    <div class="frow grad-wrap" id="grad_fmt_row" style="display:none;margin-bottom:10px">
+      <span class="muted" style="flex:0 0 auto;font-size:12px">输出格式</span>
+      <select id="clr_grad_fmt" style="flex:1"></select>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">聊天栏 <span class="muted">chat</span></div>
+        <div class="frow">
+          <input type="color" id="clr_say" value="#ffffff" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_say_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_say_sel" style="display:none"></select>
+          <input type="text" id="clr_say_txt" placeholder="#FFFFFF 或 255,255,255" value="#ffffff">
+        </div>
+        <div class="grad-wrap" id="grad_block_say" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_say"></div>
+          <button class="btn sm" data-add="say" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">全屏标题 <span class="muted">title</span></div>
+        <div class="frow">
+          <input type="color" id="clr_title" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_title_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_title_sel" style="display:none"></select>
+          <input type="text" id="clr_title_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
+        </div>
+        <div class="grad-wrap" id="grad_block_title" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_title"></div>
+          <button class="btn sm" data-add="title" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+      <div style="background:var(--sub);border:1px solid var(--sub-bd);border-radius:8px;padding:10px">
+        <div style="font-size:13px;margin-bottom:6px">模拟任务输出 <span class="muted">反馈</span></div>
+        <div class="frow">
+          <input type="color" id="clr_fb" value="#ffaa00" style="width:52px;height:34px;padding:2px;flex:0 0 auto">
+          <span class="clr-name-sw" id="clr_fb_sw" style="display:none;flex:0 0 auto;width:34px;height:34px;border-radius:6px;border:1px solid var(--sub-bd)"></span>
+          <select class="clr-name-sel" id="clr_fb_sel" style="display:none"></select>
+          <input type="text" id="clr_fb_txt" placeholder="#FFAA00 或 255,170,0" value="#ffaa00">
+        </div>
+        <div class="grad-wrap" id="grad_block_fb" style="display:none">
+          <div class="muted" style="font-size:12px;margin:8px 0 2px">渐变色锚点（≥2 个，按顺序逐字符渐变）</div>
+          <div id="stops_fb"></div>
+          <button class="btn sm" data-add="fb" style="margin-top:6px">＋ 添加颜色</button>
+        </div>
+      </div>
+    </div>
+    <div class="btnrow" style="margin-top:10px">
+      <button class="btn primary" id="clr_save">保存颜色</button>
+      <button class="btn sm" id="clr_reset">恢复默认</button>
+      <span class="muted" id="clr_color_hint">取色器点选 / 文本框填 hex 或 RGB，保存后立即生效；渐变开启时按锚点逐字符渐变</span>
+    </div>
+    <div class="notice" id="clr_notice"></div>
   </div>
 
   <div class="set-sec">自动化 · 多Agent 工作流</div>
@@ -1924,7 +1957,7 @@ async function callPost(p,b){
 function inIframe(){ try{ return window.self !== window.top; }catch(e){ return true; } }
 function openStandalone(){ window.open(location.pathname, "_blank"); }
 window.openStandalone = openStandalone;
-window.goTab = p => switchTab(p);
+window.goTab = switchTab;
 
 // ============ 二次点击确认 ============
 // iframe sandbox 无 allow-modals → 原生 confirm/alert 被浏览器静默拒绝（返回 false）
@@ -2051,7 +2084,7 @@ function jumpToCard(target, {layoutDelay=0, focus=false}={}){
 window.jumpToCard = jumpToCard;
 
 // ============ Tab 切换 ============
-function switchTab(name){
+function switchTab(name, serverSection){
   if(!document.getElementById("page_" + name)) return;
   cancelCardJump();
   if(window.scrollY > 0) window.scrollTo({top:0, behavior:"auto"});
@@ -2063,7 +2096,11 @@ function switchTab(name){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.page===name));
   document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.id==="page_"+name));
   if(name==="overview") loadOverview();
-  if(name==="server") loadServer();
+  if(name==="server"){
+    const tab = serverTabs.find(button => button.dataset.serverTab === serverSection);
+    if(tab) switchServerTab(tab);
+    loadServer();
+  }
   if(name==="knowledge") loadKnowledge();
   if(name==="workflow") loadWorkflow();
   if(name==="prompts") loadPrompts();
@@ -2074,16 +2111,41 @@ function switchTab(name){
 }
 document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click", ()=>switchTab(t.dataset.page)));
 
-// 跨页跳转：设置页「启用渐变色」→ 服务器页『文本颜色』卡片（切页 + 平滑滚动 + 高亮闪烁）
+const serverTabs = Array.from(document.querySelectorAll("[data-server-tab]"));
+function switchServerTab(selectedTab){
+  for(const tab of serverTabs){
+    const selected = tab === selectedTab;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    $(tab.getAttribute("aria-controls")).hidden = !selected;
+  }
+}
+serverTabs.forEach((tab, index) => {
+  tab.addEventListener("click", () => switchServerTab(tab));
+  tab.addEventListener("keydown", event => {
+    const last = serverTabs.length - 1;
+    let next;
+    switch(event.key){
+      case "ArrowRight": next = index === last ? 0 : index + 1; break;
+      case "ArrowLeft": next = index === 0 ? last : index - 1; break;
+      case "Home": next = 0; break;
+      case "End": next = last; break;
+      default: return;
+    }
+    event.preventDefault();
+    switchServerTab(serverTabs[next]);
+    serverTabs[next].focus();
+  });
+});
+
 function jumpToTextColor(){
-  switchTab("server");
-  jumpToCard("srv_color_card", {layoutDelay:440});
+  const changingPage = !$("page_settings").classList.contains("active");
+  if(changingPage) switchTab("settings");
+  jumpToCard("srv_color_card", {layoutDelay:changingPage ? 440 : 0, focus:true});
 }
 window.jumpToTextColor = jumpToTextColor;
-["jump_text_color","jump_text_color2"].forEach(id=>{
-  const el = document.getElementById(id);
-  if(el) el.onclick = jumpToTextColor;
-});
+$("bc_text_color").onclick = jumpToTextColor;
+$("jump_text_color").onclick = jumpToTextColor;
 
 // ============ RCON 结束边界 · 运行态（v0.22.4 / v0.22.5） ============
 // 三个**互不替代**的状态各自独立显示，绝不能把「没有自动降级」当成「响应可靠」：
@@ -2652,11 +2714,15 @@ function renderPlayerBans(bans, admin){
   host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
 }
 
-function renderPlayerAudit(audit, admin){
+function renderPlayerAudit(audit, admin, bans){
   $("sv_audit_card").hidden = !admin;
+  const unavailable = $("sv_audit_unavailable");
+  unavailable.hidden = admin;
   const host = $("sv_audit");
   if(!admin){
     host.replaceChildren();
+    unavailable.textContent = bans?.status === 403 || bans?.authorized === false
+      ? "当前会话无权查看操作记录" : "无法读取操作记录，请刷新重试";
     return;
   }
   if(audit?.ok !== true){
@@ -2792,18 +2858,20 @@ function bindPlayerAdmin(){
 }
 
 // ============ 服务器页 ============
+const serverRefreshButtons = ["sv_refresh", "sv_players_refresh", "sv_audit_refresh"].map($);
 async function loadServer(){
   if(loadServer._pending || playerActionBusy) return;
-  const status = $("sv_status"), players = $("sv_players"), refresh = $("sv_refresh");
+  const status = $("sv_status"), players = $("sv_players");
   loadServer._pending = true;
   disablePlayerButtons();
   status.classList.add("is-loading");
   players.classList.add("is-loading");
   status.setAttribute("aria-busy", "true");
   players.setAttribute("aria-busy", "true");
-  if(refresh) refresh.disabled = true;
+  for(const button of serverRefreshButtons) button.disabled = true;
   try{
     // 保留上一份内容，查询期间只降低明度，避免成功 / 失败两种高度切换造成页面跳动。
+    loadServerEvents();
     const [statusReply, bans] = await Promise.all([
       callGet("server/status").catch(() => ({ok:false,error:"请求失败"})),
       callGet("player/bans").catch(() => null),
@@ -2813,7 +2881,7 @@ async function loadServer(){
     const audit = admin ? await callGet("player/audit", {limit:20}).catch(() => null) : null;
     renderOnlinePlayers(r, bans?.online, admin);
     renderPlayerBans(bans, admin);
-    renderPlayerAudit(audit, admin);
+    renderPlayerAudit(audit, admin, bans);
     // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
     // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
     renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
@@ -2851,15 +2919,13 @@ async function loadServer(){
     if(RMT.on) status.insertAdjacentHTML("beforeend",
       `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
       + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
-    // 事件流
-    loadServerEvents();
   }finally{
     loadServer._pending = false;
     status.classList.remove("is-loading");
     players.classList.remove("is-loading");
     status.removeAttribute("aria-busy");
     players.removeAttribute("aria-busy");
-    if(refresh) refresh.disabled = false;
+    for(const button of serverRefreshButtons) button.disabled = false;
   }
 }
 async function loadServerEvents(){
@@ -4944,7 +5010,7 @@ async function loadSettings(){
       : "AstrBot 聊天平台指令（不是在游戏里输入）；群聊里需先按 AstrBot 的唤醒词唤醒，私聊可直接发送 "
         + "<code>mcs 帮助</code>";
   }
-  // 渐变输出格式下拉（选项来源与服务器页一致）
+  // 渐变输出格式下拉（与可视化调色卡片共享选项）
   const fmtSel = $("cfg_grad_fmt");
   if(fmtSel && !fmtSel.options.length){
     fmtSel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
@@ -5197,7 +5263,7 @@ async function saveSettings(){
     }
     await loadSettings();
     loadWorkflow();
-    loadColors();
+    await loadColors();
     // v0.21.9：保存了「服务器目录 / 词典·知识库启停」就等于换了服务端 —— 立刻补检指纹不匹配。
     // 此前只有切页签、刷新页面才会检测，用户停在设置页反复换服务端时会一直等不到弹窗。
     if(["server_dir","dictionary_enabled","knowledge_enabled"].some(k => k in settings)){
@@ -5657,10 +5723,7 @@ function nearestNamedColor(v){
   return best;
 }
 // ── 设置页：三项单色各配一个「格式化符号」下拉（v0.23.7）──────────────────────
-// 为什么设置页给符号、不给取色器：`§6` 与色名 `gold` 在后端 _parse_color 里是**同一条路**
-// （parse_section_color → gold），但符号是「全世代通用、零近似」的最省表达 —— 
-// 设置页本来就以原始值为准，配一个符号下拉正好；可视化取色器留给服务器页『文本颜色』卡片
-// （那边有取色器与预览，设置页有引导跳转）。
+// 手动设置支持 `§6` 等格式化符号色码，按固定色解析，适用于所有版本。
 const SEC_PICKER_PAIRS = [["cfg_color_say_t",   "cfg_color_say_sec"],
                           ["cfg_color_title_t", "cfg_color_title_sec"],
                           ["cfg_color_fb_t",    "cfg_color_fb_sec"]];
@@ -5802,7 +5865,6 @@ function bindColors(){
     btn.onclick = ()=>{ const key = btn.dataset.add; gradState[key].push("#FFFFFF"); renderStops(key); };
   });
   $("clr_grad_en").addEventListener("change", refreshGradVisibility);
-  $("clr_save").onclick = saveColors;
   $("clr_reset").onclick = resetColors;
   const sel = $("clr_grad_fmt");
   sel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
@@ -5855,6 +5917,20 @@ async function saveColors(){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);
     }
+    // 同步手动表单里的颜色字段，避免稍后保存全部设置时写回旧颜色。
+    const saved = {
+      ...payload, ...r.colors, ...g.stops,
+      gradient_enabled: g.enabled ?? payload.gradient_enabled,
+      gradient_format: g.format || payload.gradient_format,
+      plain_color_format: r.plain?.format || payload.plain_color_format,
+    };
+    for(const [id, key, type] of CFG_FIELDS){
+      if(!Object.prototype.hasOwnProperty.call(saved, key)) continue;
+      if(type === "b") $(id).checked = parseCfgBool(saved[key], false);
+      else $(id).value = saved[key];
+    }
+    syncSecPickers();
+    syncAnimatedSelects();
   } else {
     setNotice($("clr_notice"), "✗ " + (r.error||"保存失败"), true);
   }
@@ -5871,7 +5947,7 @@ async function resetColors(){
 // ============ 事件绑定 ============
 function bind(){
   bindPlayerAdmin();
-  $("sv_refresh").onclick = loadServer;
+  for(const button of serverRefreshButtons) button.onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
   const wfRefresh = $("wf_refresh");
   if(wfRefresh) wfRefresh.onclick = ()=>loadWorkflow();
@@ -5999,8 +6075,17 @@ function bind(){
   $("sw_wf_enabled").onchange = ()=>saveWfSwitch("agent_workflow_enabled", $("sw_wf_enabled"), $("wf_notice"));
   $("sw_wf_tool").onchange = ()=>saveWfSwitch("enable_mc_workflow", $("sw_wf_tool"), $("wf_notice"));
   // v0.21.3：底部保存按钮已撤，统一走顶部吸顶条的「保存全部设置」；null-safe 绑定，缺按钮也不影响其它绑定
-  const saveBtn = $("btn_save_cfg_top");
-  if(saveBtn) saveBtn.onclick = saveSettings;
+  const saveButtons = [[$("btn_save_cfg_top"), saveSettings], [$("clr_save"), saveColors]];
+  for(const [button, save] of saveButtons){
+    button.onclick = async () => {
+      for(const [control] of saveButtons) control.disabled = true;
+      try{
+        await save();
+      }finally{
+        for(const [control] of saveButtons) control.disabled = false;
+      }
+    };
+  }
   bindColors();
   bindPrompts();
   bindTargets();

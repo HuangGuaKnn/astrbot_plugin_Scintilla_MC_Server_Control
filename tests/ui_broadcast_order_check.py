@@ -6,38 +6,33 @@
 
 判定：
   1) 广播控制台 tab 名称 = 聊天栏 / 全屏标题 / 模拟任务输出；
-  2) 服务器页『文本颜色』三格的中文标题，**按视觉从左到右的顺序**与 tab 完全一致；
-  3) 设置页『文本颜色』里三段「单色 / 渐变锚点」标签也是同一顺序、同一叫法；
+  2) 设置页可视化配色三格的中文标题，**按视觉从左到右的顺序**与 tab 完全一致；
+  3) 手动配置中三段「单色 / 渐变锚点」标签也是同一顺序、同一叫法；
   4) 每格仍然握着自己的输入框（标着聊天栏的那格必须装 clr_say，别串台）；
-  5) 控制台配色说明写的是「下方」——颜色卡确实在它下面。
+  5) 控制台配色快捷入口打开设置页，高亮可视化配色卡。
 
 跑法：python tests\\ui_broadcast_order_check.py
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import sys
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
-from _ui_page import PAGE_URL  # noqa: E402
+from _ui_page import API_GLOB, PAGE_URL, make_router  # noqa: E402
 
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402
 
-PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 WANT = ["聊天栏", "全屏标题", "模拟任务输出"]
 
 MEASURE_JS = r"""
 () => {
-  document.querySelectorAll('.page').forEach(p => p.classList.add('active'));
-  const tabs = [...document.querySelectorAll('#bc_modes .bc-mode')]
-                 .map(b => b.textContent.trim());
-  // 服务器页『文本颜色』三格：按视觉位置（左→右、上→下）排序，免得再被 HTML 顺序骗到
+  // 可视化配色三格按视觉位置（左→右、上→下）排序。
   const card = document.getElementById('srv_color_card');
   const boxes = [...card.querySelectorAll('div[style*="border-radius:8px"]')].map(b => {
     const r = b.getBoundingClientRect();
@@ -47,15 +42,10 @@ MEASURE_JS = r"""
              add: (b.querySelector('button[data-add]') || {}).dataset?.add || '',
              y: +r.top.toFixed(1), x: +r.left.toFixed(1) };
   }).sort((a, b) => (Math.abs(a.y - b.y) > 4 ? a.y - b.y : a.x - b.x));
-  const hint = (card.previousElementSibling.querySelector('.hint') || {}).textContent || '';
-  // 设置页那张卡的三段标签
-  const setCard = [...document.querySelectorAll('#page_settings .card')].find(c => {
-    const h = c.querySelector('h3');
-    return h && h.textContent.trim().replace(/\s+/g, '').startsWith('文本颜色');
-  });
+  const setCard = document.getElementById('cfg_plain_fmt')?.closest('.card');
   const setLabels = setCard ? [...setCard.querySelectorAll('label.f')]
                     .map(l => l.textContent.trim()).filter(t => /渐变锚点/.test(t)) : [];
-  return { tabs, boxes, hint, setLabels };
+  return { boxes, setLabels };
 }
 """
 
@@ -76,12 +66,18 @@ def main() -> int:
             print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        page.route(API_GLOB, make_router({}))
         page.goto(PAGE_URL)
-        page.wait_for_timeout(1500)
+        page.click('button.tab[data-page="server"]')
+        page.click('button[role="tab"][data-server-tab="tools"]')
+        broadcast_card = page.locator(".card").filter(has=page.locator("#bc_modes"))
+        tabs = [label.strip() for label in broadcast_card.locator(".bc-mode").all_text_contents()]
+        hint = " ".join(broadcast_card.locator(".hint").all_text_contents())
+        page.click("#bc_text_color")
+        page.locator("#page_settings.active #srv_color_card.jump-highlight").wait_for(timeout=6000)
         m = page.evaluate(MEASURE_JS)
         browser.close()
 
-    tabs = m["tabs"]
     print("广播控制台 tab ：", tabs)
     if tabs != WANT:
         fails.append(f"控制台 tab 顺序/叫法不是 {WANT}，实际 {tabs}")
@@ -99,18 +95,14 @@ def main() -> int:
         if missing:
             fails.append(f"「{b['label']}」那格少了 {sorted(missing)} —— 改顺序时把格子串台了")
 
-    print("控制台配色说明：", m["hint"].strip())
-    if "下方" not in m["hint"] or "上方" in m["hint"]:
-        fails.append("控制台配色说明里的「上方/下方」不对：颜色卡就在它下面，应写「下方」")
+    print("控制台配色说明：", hint.strip())
     for name in WANT:
-        if name not in m["hint"]:
+        if name not in hint:
             fails.append(f"控制台配色说明里没提到「{name}」")
 
     print("设置页标签：", m["setLabels"])
-    for name, lbl in zip(WANT, m["setLabels"]):
-        if not lbl.startswith(name):
-            fails.append(f"设置页『文本颜色』标签顺序/叫法不一致：期望以「{name}」开头，实际 {m['setLabels']}")
-            break
+    if [label.split("·", 1)[0].strip() for label in m["setLabels"]] != WANT:
+        fails.append(f"设置页『文本颜色』标签顺序/叫法不一致：{m['setLabels']}")
 
     if fails:
         print("\nFAIL")
