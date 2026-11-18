@@ -19,7 +19,7 @@ from .strict_bool import strict_bool
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, VersionInfo
 
 
-ACTIONS = ("kick", "ban", "unban", "whitelist_add", "whitelist_remove", "unban_ip")
+ACTIONS = ("kick", "ban", "unban", "whitelist_add", "whitelist_remove", "ban_ip", "unban_ip")
 #: IP 封禁动作：目标是 IP 而不是玩家名，校验与回读都另走一条
 _IP_ACTIONS = frozenset({"ban_ip", "unban_ip"})
 _WRITE_PREFIX = {

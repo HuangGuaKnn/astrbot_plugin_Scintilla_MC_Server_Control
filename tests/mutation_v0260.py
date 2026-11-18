@@ -101,6 +101,23 @@ MUTATIONS = (
         'const disabled = enabled ? "" : "disabled";', 'const disabled = "";',
         "P8 名单不可用时在线玩家操作没有全部 disabled", UI_TEST, "P8",
     ),
+    # v0.29.0：IP 封禁。守两件事 —— 网段不许放过（原版 ban-ip 只吃单地址）、
+    # 回读必须查 IP 名单而不是玩家名单。
+    # 注：不能把「删掉 `if "/" in value`」当变异 —— `ipaddress.ip_address("x/24")` 本身
+    # 就会抛错，那个分支只让报错更准，删了用例照样绿（第一版就选错了目标，实测过）。
+    # 真正该守的是「地址有没有被校验并规范化」。
+    Mutation(
+        "P14", "地址不校验也不规范化（非法串与 IPv6 写法直接透传）", CORE,
+        '        return str(ipaddress.ip_address(value))',
+        '        return value',
+        "P14", BACKEND_TEST, "test_p14_ip_ban_actions",
+    ),
+    Mutation(
+        "P14", "IP 封禁回读查了玩家名单", CORE,
+        '    "ban_ip": "banlist ips",',
+        '    "ban_ip": "banlist players",',
+        "P14", BACKEND_TEST, "test_p14_ip_ban_actions",
+    ),
     # v0.28.0 口径反转：WebUI 现在**必须**显示真实地址（服主要靠它封 IP）。
     # 原来那两条「注入地址 / 跳过脱敏」已经失去意义 —— 守的方向改成「别又把手遮回去」。
     Mutation(

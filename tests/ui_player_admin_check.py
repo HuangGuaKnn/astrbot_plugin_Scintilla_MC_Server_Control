@@ -283,8 +283,34 @@ def check_unban(scenario):
     print("[PASS] P12 封禁卡解封预览、提交、未确认与已确认、审计和回读刷新")
 
 
+def check_ban_ip_entry(scenario):
+    scenario.open()
+    page = scenario.page
+    """P14（v0.29.0）：手动封禁 IP 的入口。
+
+    校验三件事：目标原样带进确认弹窗、理由框对 IP 封禁也要露出来（`ban-ip <ip> [reason]`）、
+    网段写法（`/24`）在本地就被挡下 —— 原版 `ban-ip` 只吃单个地址，发出去只会静默失败。
+    """
+    scenario.select("players")
+    page.locator("#sv_ban_ip").fill("192.0.2.9")
+    page.locator("#sv_ban_ip_btn").click()
+    page.locator("#player_dialog[open]").wait_for()
+    assert page.locator("#player_target").inner_text().strip() == "192.0.2.9", \
+        "P14 确认弹窗里的目标应就是这个 IP"
+    assert page.locator("#player_reason_wrap").is_visible(), "P14 IP 封禁同样要能填原因"
+    page.locator("#player_cancel").click()
+    page.locator("#player_dialog").wait_for(state="hidden")
+    page.locator("#sv_ban_ip").fill("192.0.2.0/24")
+    page.locator("#sv_ban_ip_btn").click()
+    assert "不是 IPv4" in page.locator("#sv_ban_ip_hint").inner_text(), \
+        "P14 网段写法应在本地被挡下并说明原因"
+    assert page.locator("#player_dialog").is_hidden(), "P14 非法输入不该弹出确认框"
+    print("[PASS] P14 手动封禁 IP：目标正确、理由可填、网段本地拦下")
+
+
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
-         "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban}
+         "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
+         "P14": check_ban_ip_entry}
 
 
 def main(args):

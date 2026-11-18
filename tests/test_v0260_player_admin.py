@@ -169,6 +169,37 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(player_admin.build_command("unban", "Steve", "", caps),
                                  "pardon Steve")
 
+    def test_p14_ip_ban_actions(self):
+        """v0.29.0：IP 封禁 —— 命令按世代带原因、地址严格校验、回读查 IP 名单。
+
+        `ban-ip` 在 1.13+ 才有 `[原因]` 参数（与 kick/ban 同一条分界线）；
+        地址必须是单个 IPv4/IPv6（原版不支持 CIDR 网段，写 /24 会静默失败）。
+        """
+        for version, suffix in (("1.7.10", ""), ("1.13.2", " scanner")):
+            with self.subTest(version=version):
+                caps = resolve_version_info(version)
+                self.assertEqual(
+                    player_admin.build_command("ban_ip", "192.0.2.9", "scanner", caps),
+                    f"ban-ip 192.0.2.9{suffix}",
+                    f"P14 {version} ban-ip 原因世代分叉",
+                )
+                self.assertEqual(player_admin.build_command("unban_ip", "192.0.2.9", "", caps),
+                                 "pardon-ip 192.0.2.9")
+        # IPv6 规范化：用户写法与服务端写法未必一致（`::1` vs `0:0:0:0:0:0:0:1`）
+        self.assertEqual(
+            player_admin.build_command("ban_ip", "2001:0db8:0:0:0:0:0:1", "",
+                                       resolve_version_info("1.13.2")),
+            "ban-ip 2001:db8::1",
+        )
+        # 原版 ban-ip 只接受单个地址：CIDR 段与非法串一律拒绝，别发出去静默失败
+        for bad in ("192.0.2.0/24", "300.1.1.1", "not-an-ip", ""):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    player_admin.build_command("ban_ip", bad, "", resolve_version_info("1.13.2"))
+        # 回读必须查 IP 名单 —— 查 `banlist players` 会永远报「未确认」
+        self.assertEqual(player_admin._READBACK_COMMAND["ban_ip"], "banlist ips")
+        self.assertEqual(player_admin._READBACK_COMMAND["unban_ip"], "banlist ips")
+
     async def test_p03_kick_requires_absence_in_complete_list(self):
         cases = (
             (ONLINE, False, "unrecognized"),
