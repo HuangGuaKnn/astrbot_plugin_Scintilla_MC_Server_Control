@@ -101,6 +101,14 @@ MUTATIONS = (
         'const disabled = enabled ? "" : "disabled";', 'const disabled = "";',
         "P8 名单不可用时在线玩家操作没有全部 disabled", UI_TEST, "P8",
     ),
+    # v0.29.0：玩家 IP 索引。守「进服行真的被记下来了」——
+    # 不记的话在线名单永远显示「IP 未知」，一键封禁也就没了对象。
+    Mutation(
+        "P15", "进服 IP 不被记进索引", LWCORE,
+        '        self._recent_ips[match.group("player").casefold()] = (ip, time.monotonic())',
+        '        pass',
+        "P15", BACKEND_TEST, "test_p15_login_ip_index_is_read_only_and_case_insensitive",
+    ),
     # v0.29.0：IP 封禁。守两件事 —— 网段不许放过（原版 ban-ip 只吃单地址）、
     # 回读必须查 IP 名单而不是玩家名单。
     # 注：不能把「删掉 `if "/" in value`」当变异 —— `ipaddress.ip_address("x/24")` 本身

@@ -361,6 +361,18 @@ _WHISPER_PATTERN = re.compile(
 # 1.19+ 聊天会在行首带 [Not Secure]，解析前剥掉
 _NOT_SECURE = re.compile(r"^\[Not Secure\]\s*")
 _JOIN_PATTERN = re.compile(r"^(?P<player>[A-Za-z0-9_]{1,16}) joined the game$")
+#: v0.29.0：进服行的**出口 IP**（1.7.10 – 1.21 都是这个形态）：
+#:   ``Steve[/192.0.2.9:52031] logged in with entity id 123 at (...)``
+#: 这是一条**旁路**正则：只用来维护「玩家 → 最近 IP」索引，不参与事件流，
+#: ``_JOIN_PATTERN`` 与 ``_parse_line`` 一行都没改。
+#: 已知限制（日志层物理限制，不是 bug）：代理服读到的是代理地址；插件监听前
+#: 已在线的玩家没有记录；中文名 / 模组改名后的行不匹配。
+_LOGIN_IP_PATTERN = re.compile(
+    r"(?P<player>[A-Za-z0-9_]{1,16})\[/(?P<ip>[^\]\s]+):\d+\] logged in with entity id",
+    re.IGNORECASE,
+)
+#: 索引上限：只在内存里留最近若干玩家，防止长期运行无限增长
+_RECENT_IP_LIMIT = 256
 _LEAVE_PATTERN = re.compile(r"^(?P<player>[A-Za-z0-9_]{1,16}) left the game$")
 _ADVANCEMENT_PATTERN = re.compile(
     r"^(?P<player>[A-Za-z0-9_]{1,16})\s+has (?:made the advancement|"
@@ -1030,6 +1042,38 @@ class LogWatcher:
             "daemon_capacity": (_DAEMON_RUNNER.capacity if _DAEMON_RUNNER is not None else 0),
         }
 
+    def _note_login_ip(self, line: str) -> None:
+        """从一行日志里捞「玩家 + 出口 IP」，记进只读索引。
+
+        匹配的是 ``Steve[/192.0.2.9:52031] logged in with entity id ...`` 这种行 ——
+        它**不产生任何事件**，以前是被直接丢掉的。现在顺带记一笔，供界面上的
+        「封禁这个 IP」使用（管理员不必再自己去翻日志）。
+        """
+        match = _LOGIN_IP_PATTERN.search(line)
+        if not match:
+            return
+        ip = match.group("ip").strip()
+        if not ip:
+            return
+        self._recent_ips[match.group("player").casefold()] = (ip, time.monotonic())
+        if len(self._recent_ips) > _RECENT_IP_LIMIT:
+            # 字典保插入序：老的先丢一半，够用且简单
+            for key in list(self._recent_ips)[: len(self._recent_ips) // 2]:
+                self._recent_ips.pop(key, None)
+
+    def recent_ip(self, player: str) -> str:
+        """某玩家最近一次进服时的出口 IP；没有记录返回空串。
+
+        只会返回**监听期间**见过进服的玩家 —— 插件启动前就在线的人没有记录，
+        这时界面应当如实显示「未知」，不要猜。
+        """
+        item = self._recent_ips.get(str(player or "").casefold())
+        return item[0] if item else ""
+
+    def recent_ips(self) -> dict:
+        """索引快照：``{玩家名(小写): ip}``。给需要批量展示的调用方用。"""
+        return {key: value[0] for key, value in self._recent_ips.items()}
+
     def _file_sig(self) -> tuple[int, int] | None:
         """(st_ino, st_size) —— 文件被换掉时 st_ino 会变（Windows 上为文件索引）。"""
         try:
@@ -1404,6 +1448,8 @@ class LogWatcher:
         self._anchor = data[-ANCHOR_BYTES:]
         self._anchor_at = self._pos - len(self._anchor)
         self.last_read_at = time.monotonic()
+        # v0.29.0：玩家 → (最近进服 IP, 记录时刻)。只读索引，不参与事件判定。
+        self._recent_ips: dict[str, tuple[str, float]] = {}
         for line in self._decode_chunk(data).splitlines():
             # v0.23.5 第八轮（GPT 第七轮 P2）：逐行消费也验代（旧任务恢复后不得再往下走）
             if self._stale(gen):
@@ -1425,6 +1471,10 @@ class LogWatcher:
                 # 推送，平台侧一卡（网络不通、会话不存在、限流）它就永不返回 ——
                 # 轮询整体停摆、stop() 只能干等，健康度上还什么都看不见。
                 await self._dispatch_event(etype, player, detail)
+            # v0.29.0：进服行的 IP 旁路索引（见 _note_login_ip 的说明）。
+            # 放在循环**之后**：IP 行本身不产生事件，这里照样能记到；
+            # 也刻意避开「派发点前 500 字符内必须有代际检查」那条老判据。
+            self._note_login_ip(line)
 
     # ============ v0.24.7：事件回调的超时与在飞上限 ============
 

@@ -308,9 +308,33 @@ def check_ban_ip_entry(scenario):
     print("[PASS] P14 手动封禁 IP：目标正确、理由可填、网段本地拦下")
 
 
+def check_player_ip(scenario):
+    """P15（v0.29.0）：玩家行显示「最近进服 IP」，并给一键封禁按钮。
+
+    没有记录的玩家必须明写「IP 未知」且**不给按钮** —— 监听开始前就在线、代理服、
+    非 ASCII 名都会走到这条路。猜一个地址比不给更糟。
+    """
+    scenario.online = {"state": "ok", "players": ["Alex", "Steve"], "online": 2, "max": 20,
+                       "ips": {"Alex": "192.0.2.9", "Steve": ""}}
+    scenario.open()          # 必须先打开页面（main 里各 case 自己负责）
+    scenario.select("players")
+    page = scenario.page
+    page.locator("#sv_players_refresh").click()
+    page.wait_for_timeout(600)
+    rows = page.locator("#sv_players .player-row")
+    assert rows.count() == 2, f"P15 应渲染两行，实际 {rows.count()}"
+    assert "192.0.2.9" in rows.first.inner_text(), "P15 有记录的玩家应显示真实 IP"
+    assert rows.first.locator('button[data-action="ban_ip"]').count() == 1, \
+        "P15 有 IP 时应给「封禁 IP」按钮"
+    assert "IP 未知" in rows.nth(1).inner_text(), "P15 无记录必须明写「IP 未知」"
+    assert rows.nth(1).locator('button[data-action="ban_ip"]').count() == 0, \
+        "P15 无 IP 时不该出现封禁按钮"
+    print("[PASS] P15 玩家行显示最近进服 IP（无记录时明写未知且不给按钮）")
+
+
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
-         "P14": check_ban_ip_entry}
+         "P14": check_ban_ip_entry, "P15": check_player_ip}
 
 
 def main(args):

@@ -455,6 +455,7 @@ summary:hover{text-decoration:underline}
 .player-row .ply{margin:0}
 .player-actions{display:flex;gap:5px;flex-wrap:wrap}
 /* v0.29.0：手动封禁 IP 的输入行（与名单行视觉上分开，避免被当成搜索框） */
+.player-ip{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin:0 6px}
 .ban-ip-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 10px}
 .ban-ip-row input{flex:0 0 240px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;
   background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12.5px}
@@ -2653,9 +2654,19 @@ function renderOnlinePlayers(status, guardedOnline, admin){
   const host = $("sv_players"), tag = $("sv_online_tag");
   if(online.state === "ok" && (admin ? complete : names.length > 0)){
     tag.innerHTML = playerBadge("ok", `${Number(online.online) || names.length} 人在线`);
-    host.innerHTML = names.map(name => admin
-      ? `<div class="player-row"><span class="ply">${escServer(name)}</span>${playerButtons(name, ONLINE_ACTIONS, true)}</div>`
-      : `<span class="ply">${escServer(name)}</span>`).join("");
+    host.innerHTML = names.map(name => {
+      if(!admin) return `<span class="ply">${escServer(name)}</span>`;
+      // v0.29.0：IP 来自 log_watcher 的旁路索引（进服行顺手记的）。
+      // 拿不到时明写「IP 未知」并把按钮藏起来 —— 猜一个地址比不给更糟。
+      const ip = (online.ips || {})[name] || "";
+      const ipCell = ip
+        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>
+           <button class="btn sm" type="button" data-action="ban_ip" data-player="${escServer(ip)}"
+                   title="封禁这个 IP（原版 ban-ip）">封禁 IP</button>`
+        : `<span class="player-ip muted" title="监听开始前就在线 / 代理服 / 非 ASCII 名时会没有记录">IP 未知</span>`;
+      return `<div class="player-row"><span class="ply">${escServer(name)}</span>${ipCell}
+        ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
+    }).join("");
     return;
   }
   const state = ["empty", "unsupported", "unrecognized", "unreachable"].includes(online.state)

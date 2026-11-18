@@ -291,7 +291,20 @@ async def _read_roster(plugin, command: str, rcon=None) -> dict:
 
 
 async def get_online(plugin) -> dict:
-    return await _read_roster(plugin, "list")
+    """在线名单 + 每个人的「最近进服 IP」（v0.29.0）。
+
+    IP 来自 `log_watcher` 的只读索引 —— 从进服行顺手记下的旁路数据，不参与事件判定。
+
+    三种情况拿不到（一律留空，界面写「IP 未知」，不猜）：
+    * 插件监听开始前就在线的人；
+    * 代理服（读到的是代理地址，不是玩家真实出口）；
+    * 玩家名不是 ASCII（进服行正则只认 `[A-Za-z0-9_]`）。
+    """
+    result = await _read_roster(plugin, "list")
+    watcher = getattr(plugin, "_watcher", None)
+    if watcher is not None and callable(getattr(watcher, "recent_ip", None)):
+        result["ips"] = {name: watcher.recent_ip(name) for name in result.get("players") or []}
+    return result
 
 
 def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:

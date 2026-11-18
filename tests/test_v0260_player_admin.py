@@ -169,6 +169,48 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(player_admin.build_command("unban", "Steve", "", caps),
                                  "pardon Steve")
 
+    def test_p15_login_ip_index_is_read_only_and_case_insensitive(self):
+        """v0.29.0：进服行的 IP 旁路索引。
+
+        这条索引**不产生事件**（`_JOIN_PATTERN` / `_parse_line` 一行没改），
+        只是顺带记下「玩家 → 最近出口 IP」，供界面上的「封禁这个 IP」使用。
+        查不到时返回空串 —— 界面据此显示「IP 未知」，绝不猜一个地址。
+        """
+        from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as LW
+
+        watcher = LW.LogWatcher.__new__(LW.LogWatcher)      # 只测索引，不启动线程
+        watcher._recent_ips = {}
+        watcher._note_login_ip(
+            "[16:30:01] [Server thread/INFO]: Steve[/192.0.2.9:52031] "
+            "logged in with entity id 42 at (0.5, 64.0, -12.5)")
+        self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9")
+        self.assertEqual(watcher.recent_ip("steve"), "192.0.2.9", "键应大小写不敏感")
+        self.assertEqual(watcher.recent_ip("Alex"), "", "没有记录的玩家必须返回空串")
+        # 不带 IP 的进服行（离线服 / 老格式）不该覆盖已有记录，也不该抛错
+        watcher._note_login_ip("[16:31:02] [Server thread/INFO]: Steve joined the game")
+        self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9")
+        # IPv6 也要能捞（方括号里带冒号）
+        watcher._note_login_ip(
+            "[16:32:00] [Server thread/INFO]: Alex[/2001:db8::42:52031] "
+            "logged in with entity id 7 at (1.0, 64.0, 2.0)")
+        self.assertEqual(watcher.recent_ip("alex"), "2001:db8::42")
+
+    async def test_p15_online_carries_ips_without_guessing(self):
+        """在线名单附带 IP；索引里没有的人留空，界面显示「IP 未知」。"""
+        plugin = FakePlugin({"list": "There are 2 of a max of 20 players online: Steve, Alex"})
+
+        class _Watcher:
+            def recent_ip(self, name):
+                return {"steve": "192.0.2.9"}.get(str(name).casefold(), "")
+
+        plugin._watcher = _Watcher()
+        result = await player_admin.get_online(plugin)
+        self.assertEqual(result["ips"], {"Steve": "192.0.2.9", "Alex": ""})
+        # 没有 watcher（未启用日志监听）时不该多出 ips 字段，也不该炸
+        bare = FakePlugin({"list": "There are 1 of a max of 20 players online: Steve"})
+        result2 = await player_admin.get_online(bare)
+        self.assertNotIn("ips", result2)
+
     def test_p14_ip_ban_actions(self):
         """v0.29.0：IP 封禁 —— 命令按世代带原因、地址严格校验、回读查 IP 名单。
 
