@@ -40,13 +40,38 @@ class Scenario:
         self.color_load_ok = True
         self.color_saves = []
         self.settings_saves = []
+        self.workflow_config = None
+        self.workflow_logs = []
+        self.workflow_reject = False
+        self.workflow_hold = False
+        self.workflow_held = []
+        self.settings_reads = 0
         self.errors = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route(API_GLOB, self.route)
 
     def route(self, route_obj):
         endpoint = split_url(route_obj)
-        if endpoint == "colors" and self.color_config is not None:
+        if endpoint == "workflow/status" and self.workflow_config is not None:
+            payload = F.workflow_status()
+            payload.update(enabled=self.workflow_config["agent_workflow_enabled"],
+                           tool_enabled=self.workflow_config["enable_mc_workflow"],
+                           tool_setting_enabled=self.workflow_config["enable_mc_workflow"],
+                           master_enabled=True, logs=self.workflow_logs)
+            fulfill(route_obj, payload)
+        elif endpoint == "settings" and self.workflow_config is not None:
+            self.settings_reads += 1
+            payload = F.settings()
+            payload["settings"].update(self.workflow_config)
+            fulfill(route_obj, payload)
+        elif endpoint == "settings/save" and self.workflow_config is not None:
+            body = route_obj.request.post_data_json["settings"]
+            self.settings_saves.append(body)
+            if self.workflow_hold:
+                self.workflow_held.append((route_obj, body))
+            else:
+                self.finish_workflow_save(route_obj, body)
+        elif endpoint == "colors" and self.color_config is not None:
             fulfill(route_obj, self.colors_payload() if self.color_load_ok else {"ok": False, "error": "颜色配置暂不可用"})
         elif endpoint == "settings" and self.color_config is not None:
             payload = F.settings()
@@ -117,6 +142,13 @@ class Scenario:
             fulfill(route_obj, result)
         else:
             F.route(route_obj)
+
+    def finish_workflow_save(self, route_obj, body):
+        if self.workflow_reject:
+            fulfill(route_obj, {"ok": False, "error": "模拟保存失败"})
+        else:
+            self.workflow_config.update(body)
+            fulfill(route_obj, {"ok": True, "applied": body, "ignored": [], "config_saved": True})
 
     def colors_payload(self):
         cfg = self.color_config
@@ -501,10 +533,135 @@ def check_single_color_card(scenario):
     print("[PASS] P20 唯一颜色卡、三个非默认初值、独立双向交互、渐变/色名、两种保存与广播跳转")
 
 
+def check_invalid_ip_bans(scenario):
+    """P21：异常 IP 保留原文并转义显示，只有合法地址可解封。"""
+    malicious = '<img src=x onerror="window.ipInjected=true">'
+    scenario.bans = {"state": "ok", "items": [
+        {**BAN, "kind": "ip", "name": "192.0.2.9", "removable": True},
+        *[{**BAN, "kind": "ip", "name": name, "removable": False,
+           "note": f"格式异常，不能在这里解封；原记录：{json.dumps({'ip': name}, ensure_ascii=False)}"}
+          for name in ("192.0.2.0/24", "not-an-ip", malicious)],
+    ]}
+    scenario.open()
+    rows = scenario.page.locator("#sv_bans .player-row")
+    assert rows.count() == 4, "P21 合法与异常 IP 记录都必须可见"
+    expect(rows.first.locator('button[data-action="unban_ip"]')).to_be_enabled()
+    for row, name in zip(rows.all()[1:], ("192.0.2.0/24", "not-an-ip", malicious)):
+        assert name in row.inner_text(), f"P21 异常 IP 原文缺失：{name}"
+        assert row.locator("button").count() == 0, "P21 异常 IP 行不得渲染解封按钮"
+        note = row.locator(".player-ip-invalid.muted")
+        expect(note, "P21 异常 IP 行必须显示灰色说明").to_be_visible()
+        assert "格式异常" in note.inner_text() and "原记录" in note.inner_text(), \
+            "P21 异常 IP 说明必须包含格式异常与原记录"
+    assert rows.locator("img, script").count() == 0, "P21 异常 IP 原文未正确转义"
+    assert scenario.page.evaluate("() => window.ipInjected === undefined"), "P21 异常 IP 原文执行了脚本"
+    print("[PASS] P21 合法 IP 可解封，异常 IP 保留原文、灰色说明、无按钮并转义显示")
+
+
+def check_workflow_single_writer(scenario):
+    """P23：设置只读并指路，唯一写入口即时保存且不覆盖其他设置草稿。"""
+    scenario.workflow_config = {"agent_workflow_enabled": True, "enable_mc_workflow": False,
+                                "feedback_name": "原有反馈署名"}
+    scenario.open()
+    page = scenario.page
+    page.locator('button.tab[data-page="settings"]').click()
+    expect(page.locator("#cfg_feedback_name")).to_have_value("原有反馈署名")
+    for selector in ("#cfg_wf_enabled", "#cfg_wf_tool"):
+        expect(page.locator(selector), "P23 设置页两个工作流开关必须只读").to_be_disabled()
+    expect(page.locator("#cfg_wf_enabled")).to_be_checked()
+    expect(page.locator("#cfg_wf_tool")).not_to_be_checked()
+    jump = page.locator("#cfg_wf_jump")
+    expect(jump, "P23 设置页必须提供工作流修改入口").to_be_visible()
+    expect(jump).to_contain_text("到工作流页修改")
+    draft = "不能因工作流开关丢失的署名草稿"
+    page.locator("#cfg_feedback_name").fill(draft)
+    settings_reads = scenario.settings_reads
+    jump.click()
+    expect(page.locator("#page_workflow"), "P23 跳转必须打开工作流页").to_be_visible()
+    expect(page.locator("#wf_refresh")).to_be_enabled()
+    expect(page.locator("#sw_wf_enabled")).to_be_checked()
+    expect(page.locator("#sw_wf_tool")).not_to_be_checked()
+
+    for selector, mirror, key, value in (
+        ("#sw_wf_enabled", "#cfg_wf_enabled", "agent_workflow_enabled", False),
+        ("#sw_wf_tool", "#cfg_wf_tool", "enable_mc_workflow", True),
+    ):
+        control = page.locator(selector)
+        expect(control, "P23 工作流页开关必须可写").to_be_enabled()
+        scenario.workflow_hold = True
+        with page.expect_request("**/settings/save"):
+            page.locator("label.sw").filter(has=control).click()
+        for other in ("#sw_wf_enabled", "#sw_wf_tool"):
+            expect(page.locator(other), "P23 保存期间两开关必须共同禁用").to_be_disabled()
+        assert len(scenario.workflow_held) == 1, "P23 一次切换只能提交一个保存请求"
+        with page.expect_response("**/settings/save"):
+            scenario.finish_workflow_save(*scenario.workflow_held.pop())
+        scenario.workflow_hold = False
+        expect(control).to_be_enabled()
+        assert scenario.settings_saves[-1] == {key: value}, \
+            f"P23 工作流切换必须单独提交对应开关：{scenario.settings_saves[-1]}"
+        assert control.is_checked() is value, "P23 工作流开关保存后显示不符"
+        assert page.locator(mirror).is_checked() is value, "P23 设置页只读状态未同步"
+        assert scenario.settings_reads == settings_reads, "P23 工作流保存不得重载整张设置表"
+        expect(page.locator("#cfg_feedback_name"), "P23 工作流保存不得覆盖无关草稿").to_have_value(draft)
+    expect(page.locator("#wf_banner")).to_contain_text("agent_workflow_enabled")
+    expect(page.locator("#cfg_wf_tip")).to_contain_text("工作流总开关")
+    assert "改动未保存" not in page.locator("#cfg_wf_tip").inner_text(), "P23 只读状态不得提示批量保存"
+
+    page.reload()
+    page.locator('button.tab[data-page="workflow"]').click()
+    expect(page.locator("#wf_refresh")).to_be_enabled()
+    expect(page.locator("#sw_wf_enabled"), "P23 总开关重载后必须保留保存值").not_to_be_checked()
+    expect(page.locator("#sw_wf_tool"), "P23 工具开关重载后必须保留保存值").to_be_checked()
+    page.locator('button.tab[data-page="settings"]').click()
+    expect(page.locator("#cfg_feedback_name")).to_have_value("原有反馈署名")
+    expect(page.locator("#cfg_wf_enabled")).not_to_be_checked()
+    expect(page.locator("#cfg_wf_tool")).to_be_checked()
+    # 即使 DOM 中只读展示被改写，批量保存也不得把它当成第二个写入口。
+    page.locator("#cfg_wf_enabled").evaluate("el => { el.checked = true; }")
+    page.locator("#cfg_wf_tool").evaluate("el => { el.checked = false; }")
+    page.locator("#cfg_feedback_name").fill("正常批量设置")
+    with page.expect_response("**/settings/save"):
+        page.locator("#btn_save_cfg_top").click()
+    submitted = scenario.settings_saves[-1]
+    assert not ({"agent_workflow_enabled", "enable_mc_workflow"} & set(submitted)), \
+        "P23 设置页批量保存不得包含工作流开关"
+    assert scenario.workflow_config["agent_workflow_enabled"] is False \
+        and scenario.workflow_config["enable_mc_workflow"] is True, "P23 批量保存改写了工作流状态"
+    expect(page.locator("#cfg_feedback_name")).to_have_value("正常批量设置")
+    scenario.workflow_reject = True
+    page.locator("#cfg_wf_jump").click()
+    expect(page.locator("#wf_refresh")).to_be_enabled()
+    with page.expect_response("**/settings/save"):
+        page.locator("label.sw").filter(has=page.locator("#sw_wf_enabled")).click()
+    expect(page.locator("#wf_notice")).to_contain_text("模拟保存失败")
+    expect(page.locator("#sw_wf_enabled")).not_to_be_checked()
+    expect(page.locator("#sw_wf_enabled")).to_be_enabled()
+    assert not scenario.errors, f"P23 页面异常：{scenario.errors}"
+    print("[PASS] P23 设置只读并跳转，工作流两开关单独保存、重载保留、草稿不丢、批量不覆写及失败回滚")
+
+
+def check_workflow_history(scenario):
+    scenario.workflow_config = {"agent_workflow_enabled": True, "enable_mc_workflow": True}
+    scenario.workflow_logs = [
+        {"status": "running", "historical": True, "request": "历史任务 · Alex",
+         "detail": "复杂任务进入后台流水线", "ts": "2026-11-19 10:00:00"},
+        {"status": "running", "request": "当前任务", "ts": "10:00:10"},
+    ]
+    scenario.open()
+    page = scenario.page
+    page.locator('button.tab[data-page="workflow"]').click()
+    history = page.locator("#wf_logs .wf").filter(has_text="历史任务 · Alex")
+    expect(history).to_contain_text("历史 · 未记录结果")
+    expect(page.locator("#wf_stats"), "P24 恢复的历史任务不得计为正在执行").to_contain_text("1 执行中")
+    print("[PASS] P24 历史摘要回显，历史运行条目不计入当前执行数")
+
+
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
          "P14": check_ban_ip_entry, "P15": check_player_ip, "P16": check_online_actions,
-         "P18": check_console_notice, "P20": check_single_color_card}
+         "P18": check_console_notice, "P20": check_single_color_card,
+         "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history}
 
 
 def main(args):

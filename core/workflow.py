@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from astrbot.api.event import AstrMessageEvent
@@ -40,6 +42,7 @@ from .command_result import (
     is_silent_command,
     looks_like_complex_task,
 )
+from .player_admin import _audit_path, _redact
 from .rcon import RconError, RconTimeoutError
 from .text_outbound import RCON_SAFE_BYTES, fit_command_to_budget
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, preflatten_block_reason
@@ -47,6 +50,13 @@ from .version_caps import ITEM_PREFLATTEN_CUTOVER, preflatten_block_reason
 MAX_IMPLEMENT_ROUNDS = 3      # 实现器单次最多尝试轮数
 MAX_CORRECT_ROUNDS = 2        # 纠错循环最多轮数
 KB_RESULT_LIMIT = 6           # 知识库检索条数
+RECENT_LOG_LIMIT = 200        # 最近任务只留记录；超出后删除最旧的一半
+_RECENT_LOG_FIELDS = ("ts", "kind", "target", "status", "detail_excerpt")
+
+
+def _recent_log_path() -> Path:
+    """与玩家审计放在同一个插件数据目录；路径不来自任务入参。"""
+    return _audit_path().with_name("workflow_recent.jsonl")
 
 # ---- v0.24.7（GPT 第二轮复核 P1-5）：工作流资源边界默认值 ----
 #: 单批（实现器一次返回）命令数上限。挡住「一口气返回几百条命令」的批次。
@@ -172,16 +182,100 @@ class MCWorkflow:
         self.logger = plugin.logger
         self.agent = AgentLLM(plugin.context, plugin.config, plugin._cfg, logger=plugin.logger)
         self._tasks: set[asyncio.Task] = set()
-        self.logs: deque[dict] = deque(maxlen=30)  # 最近任务日志（WebUI 展示）
+        self.logs: deque[dict] = deque()  # 最近任务日志（WebUI 展示，保留上限见 _trim_logs）
+        self._recent_path: Path | None = None
+        self._recent_log_warned = False
+        try:
+            self._recent_path = _recent_log_path()
+            self._load_recent_logs()
+        except Exception as exc:                              # 日志故障不得阻止工作流初始化
+            self._warn_recent_logs(exc)
         # v0.23.2：已知服务端 < 1.13 的标记（发送前守门用，见 _refresh_version_context）
         self._preflatten = False
 
     def _log(self, **kw) -> None:
         """记录一条任务日志。"""
         self.logs.appendleft({
-            "ts": time.strftime("%H:%M:%S"),
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             **kw,
         })
+        self._trim_logs()
+        self._persist_recent_logs()
+
+    def _trim_logs(self) -> None:
+        if len(self.logs) > RECENT_LOG_LIMIT:
+            for _ in range(len(self.logs) // 2):
+                self.logs.pop()
+
+    @staticmethod
+    def _recent_record(row: dict) -> dict:
+        """只落五个最小字段；全部文本沿用玩家审计脱敏，详情最多 200 字符。"""
+        return {
+            "ts": _redact(str(row.get("ts", ""))),
+            "kind": _redact(str(row.get("kind", ""))),
+            "target": _redact(str(row.get("player", row.get("target", "")))),
+            "status": _redact(str(row.get("status", ""))),
+            "detail_excerpt": _redact(str(row.get("detail", row.get("detail_excerpt", ""))))[:200],
+        }
+
+    def _warn_recent_logs(self, exc: Exception) -> None:
+        """每个实例只告警一次；日志落盘故障不升级为任务失败。"""
+        if not getattr(self, "_recent_log_warned", False):
+            self._recent_log_warned = True
+            self.logger.warning("最近任务记录读写失败，任务仍正常执行：%s: %s",
+                                type(exc).__name__, _redact(str(exc)))
+
+    def _load_recent_logs(self) -> None:
+        """启动时仅恢复展示记录，不恢复协程、不调用任何任务执行入口。"""
+        try:
+            with self._recent_path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        row = json.loads(line)
+                        if not isinstance(row, dict) or not all(
+                            isinstance(row.get(key), str) for key in _RECENT_LOG_FIELDS
+                        ):
+                            raise ValueError("最近任务记录字段不完整")
+                    except (ValueError, TypeError) as exc:
+                        self._warn_recent_logs(exc)
+                        continue
+                    record = self._recent_record(row)
+                    # 保持现有 WebUI 的 request / player / detail 消费字段。原始请求
+                    # 不在最小留档字段里，重载后明确说明，不能把摘要伪装成原始请求。
+                    self.logs.appendleft({
+                        **record,
+                        "request": "历史任务" + (f" · {record['target']}" if record["target"] else ""),
+                        "player": record["target"],
+                        "detail": record["detail_excerpt"],
+                        "historical": True,
+                    })
+                    self._trim_logs()
+        except FileNotFoundError:
+            pass
+
+    def _persist_recent_logs(self) -> None:
+        # 未经过 __init__ 的隔离替身继续只记内存；绝不在 _log 懒解析真实数据目录。
+        path = getattr(self, "_recent_path", None)
+        if path is None:
+            return
+        temporary = None
+        try:
+            # 最多 200 行的小快照。先写临时文件再替换，失败时仍保留上一份完整记录。
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n", dir=path.parent,
+                prefix=path.name + ".", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                for row in reversed(self.logs):
+                    stream.write(json.dumps(self._recent_record(row), ensure_ascii=False) + "\n")
+            temporary.replace(path)
+        except Exception as exc:                              # 不干扰任务执行与完成通知
+            self._warn_recent_logs(exc)
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def recent_logs(self, limit: int = 12) -> list[dict]:
         return list(self.logs)[:limit]

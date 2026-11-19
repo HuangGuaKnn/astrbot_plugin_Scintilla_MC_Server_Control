@@ -25,9 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import logging
 import sys
+import tempfile
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
@@ -307,11 +312,143 @@ def prompt_cases() -> None:
           "附魔锋利5的下界合金剑" in CLASSIFIER_SYSTEM, "")
 
 
+def p24_persistence_cases() -> None:
+    """P24 使用完整构造但所有文件均在临时目录；不读取实际插件记录。"""
+    from astrbot_plugin_Scintilla_MC_Server_Control.core import workflow as module
+
+    def plugin():
+        return SimpleNamespace(logger=Mock(), context=SimpleNamespace(), config={},
+                               _cfg=lambda key, default=None: default)
+
+    fields = {"ts", "kind", "target", "status", "detail_excerpt"}
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "workflow_recent.jsonl"
+        with patch.object(module, "_recent_log_path", return_value=path):
+            wf = MCWorkflow(plugin())
+            wf._log(kind="simple", player="Steve", status="done", request="不落盘的原始请求",
+                    detail="已完成；192.0.2.9 与 2001:db8::42 " + "长" * 240, cost="1.0s")
+            wf._log(kind="complex", player="192.0.2.10", status="failed",
+                    request="另一个原始请求", detail="失败；[2001:db8::99]:25565")
+            # 从磁盘重建真实实例；严禁“恢复日志”顺带恢复任务。
+            with (patch.object(MCWorkflow, "dispatch", new=AsyncMock()) as dispatch,
+                  patch.object(MCWorkflow, "_run_simple", new=AsyncMock()) as simple,
+                  patch.object(MCWorkflow, "_run_complex_async", new=AsyncMock()) as complex_task,
+                  patch.object(asyncio, "create_task") as spawn):
+                rebuilt = MCWorkflow(plugin())
+            rows = rebuilt.recent_logs(200)
+            check("P24 两条日志重建实例后仍可读取（删除持久化调用必须红）",
+                  len(rows) == 2, str(rows))
+            check("P24 启动只读记录，不执行或重新排队任务",
+                  not any(call.called for call in (dispatch, simple, complex_task, spawn))
+                  and not rebuilt._tasks)
+            check("P24 重载保持最新在前与 WebUI request/player/detail 字段",
+                  len(rows) == 2 and rows[0]["kind"] == "complex"
+                  and rows[1]["kind"] == "simple"
+                  and rows[0]["player"] == "[IP 已隐藏]"
+                  and rows[0]["request"] == "历史任务 · [IP 已隐藏]"
+                  and rows[0]["detail"] == rows[0]["detail_excerpt"]
+                  and all(row["historical"] is True for row in rows), str(rows))
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            records = [json.loads(line) for line in text.splitlines()]
+            check("P24 JSONL 只落五个完整字段，不存原始请求/cost/执行命令",
+                  len(records) == 2 and all(set(row) == fields for row in records)
+                  and "原始请求" not in text, text[:200])
+            check("P24 与审计同源遮蔽 IPv4/IPv6，详情先脱敏后截断至200字符",
+                  len(records) == 2 and len(records[0]["detail_excerpt"]) == 200
+                  and records[0]["detail_excerpt"].count("[IP 已隐藏]") == 2
+                  and all(ip not in text for ip in
+                          ("192.0.2.9", "192.0.2.10", "2001:db8::42", "2001:db8::99")), text[:250])
+            check("P24 当前内存继续保留现有 request/detail/cost，不改任务回执",
+                  wf.recent_logs(2)[1]["request"] == "不落盘的原始请求"
+                  and wf.recent_logs(2)[1]["cost"] == "1.0s"
+                  and "192.0.2.9" in wf.recent_logs(2)[1]["detail"])
+
+        # 210条越过200后删旧一半：保留第100至209条，共110条。
+        path = Path(td) / "rolling.jsonl"
+        with patch.object(module, "_recent_log_path", return_value=path):
+            rolling = MCWorkflow(plugin())
+            for index in range(210):
+                rolling._log(kind="simple", player=f"Player{index}", status="done",
+                             detail=f"record {index}")
+            latest = MCWorkflow(plugin()).recent_logs(500)
+            disk = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+            check("P24 210条后删去最旧一半，内存/磁盘/重载均为110条且≤200",
+                  len(rolling.logs) == len(latest) == len(disk) == 110,
+                  f"memory={len(rolling.logs)} reload={len(latest)} disk={len(disk)}")
+            check("P24 截断保留最新区间与顺序（209→100），不误删新任务",
+                  [row["target"] for row in latest] == [f"Player{i}" for i in range(209, 99, -1)])
+
+        # 存量损坏、末行截断和额外敏感字段：只恢复五字段记录，坏行不执行。
+        path = Path(td) / "damaged.jsonl"
+        valid = {"ts": "2026-11-19 00:00:00", "kind": "simple", "target": "Steve",
+                 "status": "done", "detail_excerpt": "192.0.2.11", "request": "不能恢复这个字段"}
+        path.write_text("not json\n" + json.dumps(valid, ensure_ascii=False)
+                        + '\n{"ts": "truncated"', encoding="utf-8")
+        host = plugin()
+        with patch.object(module, "_recent_log_path", return_value=path):
+            recovered = MCWorkflow(host)
+            rows = recovered.recent_logs()
+            check("P24 损坏行与残行跳过，合法记录仍恢复并重新脱敏",
+                  len(rows) == 1 and rows[0]["detail"] == "[IP 已隐藏]"
+                  and rows[0]["request"] == "历史任务 · Steve", str(rows))
+            check("P24 存量损坏只记一次警告", host.logger.warning.call_count == 1)
+            recovered._log(status="error", detail="new")
+            clean = path.read_text(encoding="utf-8")
+            check("P24 下一次写入修复损坏快照，默认kind/target仍完整",
+                  len(clean.splitlines()) == 2
+                  and all(set(json.loads(line)) == fields for line in clean.splitlines()))
+
+        # 所有老测试的 __new__ 替身不应在 _log 时偷偷解析真实插件数据目录。
+        isolated = MCWorkflow.__new__(MCWorkflow)
+        isolated.logs = deque(maxlen=30)
+        with patch.object(module, "_recent_log_path", side_effect=AssertionError("触及真实目录")) as resolve:
+            isolated._log(status="done", detail="memory only")
+        check("P24 未完整初始化的隔离实例只写内存，不解析真实插件数据目录",
+              len(isolated.logs) == 1 and not resolve.called)
+
+
+async def p24_write_failure_cases() -> None:
+    """P24 写失败不改 dispatch/simple 的执行结果，且连续失败只告警一次。"""
+    from astrbot_plugin_Scintilla_MC_Server_Control.core import workflow as module
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "workflow_recent.jsonl"
+        rcon = StubRcon(REAL_OK)
+        host = StubPlugin(rcon)
+        host.logger = Mock()
+        host.context = SimpleNamespace()
+        host.config = {}
+        host._cfg = lambda key, default=None: default
+        with patch.object(module, "_recent_log_path", return_value=path):
+            wf = MCWorkflow(host)
+            wf._log(kind="simple", player="Steve", status="done", detail="existing")
+            previous = path.read_bytes() if path.exists() else b""
+            wf.agent.classify = AsyncMock(return_value={"type": "simple", "commands": ["give Steve diamond 1"]})
+            wf._refresh_version_context = lambda: None
+            wf._decide_player = AsyncMock(return_value={"abort": False, "player": "Steve", "source": "explicit"})
+            wf._apply_player_to_commands = lambda commands, player: commands
+            event = SimpleNamespace(unified_msg_origin="p24-test")
+            with patch.object(Path, "replace", side_effect=PermissionError("192.0.2.50 denied")):
+                results = [await wf.dispatch(event, "give Steve diamond 1", "Steve") for _ in range(2)]
+            check("P24 落盘失败不改变任务执行，两次任务各发一次且返回完成",
+                  rcon.sent == ["give Steve diamond 1", "give Steve diamond 1"]
+                  and all("[MC工作流·完成]" in result for result in results), str(results))
+            check("P24 连续写失败只记一条脱敏警告，内存仍保留新日志",
+                  host.logger.warning.call_count == 1 and len(wf.logs) == 3
+                  and "192.0.2.50" not in str(host.logger.warning.call_args),
+                  str(host.logger.warning.call_args))
+            check("P24 原子替换失败保留上一份完整快照并清理临时文件",
+                  bool(previous) and path.read_bytes() == previous
+                  and not any(path.parent.glob(path.name + ".*.tmp")))
+
+
 async def main_async() -> int:
     if WORKFLOW_OK:
         await simple_cases()
         await complex_cases()
         prompt_cases()
+        p24_persistence_cases()
+        await p24_write_failure_cases()
     else:
         # N11：导入失败**不是**「环境限制」。导入断了说明环境或被测代码坏了，必须红。
         check("导入插件运行时（core.workflow / core.rcon）", False,
@@ -329,5 +466,19 @@ async def main_async() -> int:
     return 0
 
 
+async def p24_only() -> None:
+    """定向变异入口：失败汇总用 AssertionError，保留可定位的 P24 判据名称。"""
+    if not WORKFLOW_OK:
+        raise AssertionError(f"P24 插件运行时导入失败：{IMPORT_ERR}")
+    p24_persistence_cases()
+    await p24_write_failure_cases()
+    if FAIL:
+        raise AssertionError("P24 判据失败：" + "；".join(FAIL))
+    print("P24 PASS: 最近任务持久化、保留上限、脱敏、只读恢复和写失败隔离")
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main_async()))
+    if sys.argv[1:] == ["P24"]:
+        asyncio.run(p24_only())
+    else:
+        sys.exit(asyncio.run(main_async()))

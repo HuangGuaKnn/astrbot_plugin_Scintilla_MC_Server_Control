@@ -333,14 +333,14 @@ def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:
     return details, ""
 
 
-def _ip_bans(plugin) -> tuple[dict[str, dict] | None, str]:
+def _ip_bans(plugin) -> tuple[list | None, str]:
     """读 `banned-ips.json` —— IP 封禁的权威名单。
 
     v0.28.0 起**解锁**：这个文件以前被列进禁区（含 IP），但 WebUI 是管理员专属页面，
     而 `ban-ip` 是服主真实会用的功能 —— 藏起来只会让人去翻文件、或者靠肉眼认日志。
 
-    容忍单条脏数据：一条格式不对的记录跳过，不让整份名单作废（名单宁可少一条，
-    也别因为一个坏字段变成"全都看不到"）；但整个文件读不出来时如实返回 None。
+    保留每条原始记录（包括缺失 IP、非对象和重复记录），由展示层标注格式异常，
+    不因为单条脏数据藏掉整行；但整个文件读不出来时如实返回 None。
     """
     server_dir = str(plugin._cfg("server_dir", "") or "").strip()
     if not server_dir:
@@ -357,50 +357,56 @@ def _ip_bans(plugin) -> tuple[dict[str, dict] | None, str]:
         return None, "未知（无法读取 banned-ips.json）"
     if not isinstance(records, list):
         return None, "未知（banned-ips.json 格式无法识别）"
-    details: dict[str, dict] = {}
-    skipped = 0
-    for record in records:
-        ip = record.get("ip") if isinstance(record, dict) else None
-        if not isinstance(ip, str) or not ip.strip():
-            skipped += 1
-            continue
-        details[ip.strip()] = record
-    note = f"（{skipped} 条记录格式异常，已跳过）" if skipped else ""
-    return details, note
+    return records, ""
 
 
 async def _append_ip_bans(plugin, result: dict) -> None:
     """把 IP 封禁名单并进 `get_bans` 的结果。以文件为准，回包只作交叉验证。"""
-    details, detail_note = _ip_bans(plugin)
+    records, detail_note = _ip_bans(plugin)
     listed = await _read_roster(plugin, "banlist ips")
     from_reply = list(listed.get("players") or [])
-    if details:
-        ips = [ip for ip in details]
+    from_file = bool(records)
+    if from_file:
         source = "banned-ips.json"
-        if from_reply:
-            # 文件与回包不一致时以文件为准，但要标明（不许静默合并）
-            diff = {ip for ip in from_reply if ip not in details}
-            if diff:
-                detail_note = (detail_note + "；" if detail_note else "") + \
-                    f"RCON 回包里有 {len(diff)} 个地址不在文件中"
     else:
-        ips = from_reply
+        records = [{"ip": ip} for ip in from_reply]
         source = "banlist ips"
-        if not ips:
+        if not records:
             return
-    for ip in ips:
-        record = (details or {}).get(ip)
+    valid_ips = set()
+    malformed = 0
+    for record in records:
+        raw_ip = record.get("ip") if isinstance(record, dict) else None
+        try:
+            ip = normalize_ip(raw_ip)
+            removable = True
+            valid_ips.add(ip)
+        except ValueError:
+            ip = raw_ip if isinstance(raw_ip, str) and raw_ip else json.dumps(record, ensure_ascii=False)
+            removable = False
+            malformed += 1
         item = {
             "kind": "ip",
             "name": ip,
-            "detail_available": record is not None,
-            "removable": True,          # IP 本身就是校验过的目标，逐条可解封
+            "detail_available": from_file and isinstance(record, dict),
+            "removable": removable,
         }
+        if not removable:
+            item["raw_record"] = json.dumps(record, ensure_ascii=False)
+            item["note"] = "格式异常，不能在这里解封；原记录：" + item["raw_record"]
         for field in _DETAIL_FIELDS:
-            value = record.get(field) if record is not None else None
+            value = record.get(field) if isinstance(record, dict) else None
             item[field] = value if isinstance(value, str) and value.strip() else _UNKNOWN
         result["items"].append(item)
-    result["ip_count"] = len(ips)
+    if malformed:
+        detail_note = f"{malformed} 条记录格式异常，已保留原记录，不能在这里解封"
+    if from_file and from_reply:
+        # 文件与回包不一致时以文件为准；合法 IP 用同一规范化形式比较。
+        diff = set(from_reply) - valid_ips
+        if diff:
+            detail_note = (detail_note + "；" if detail_note else "") + \
+                f"RCON 回包里有 {len(diff)} 个地址不在文件中"
+    result["ip_count"] = len(records)
     result["ip_source"] = source
     if detail_note:
         result["ip_note"] = detail_note

@@ -1243,7 +1243,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div style="height:14px"></div>
   <div class="grid g2">
     <div class="card">
-      <h3><span class="dot"></span>流水线开关</h3>
+      <h3 id="wf_switch_title"><span class="dot"></span>流水线开关</h3>
       <div class="banner" id="wf_banner"></div>
       <div class="sw-row">
         <div class="sw-t"><b>总开关 agent_workflow_enabled</b><span>复杂任务自动走 分类→模板判断→前瞻建库→实现→纠错</span></div>
@@ -1830,9 +1830,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <div class="card">
     <h3><span class="dot" style="background:var(--cyan)"></span>流水线与 Agent 配置</h3>
     <div class="sw-grid" style="margin-top:2px">
-      <div class="sw-row"><div class="sw-t"><b>工作流总开关</b><span>复杂任务自动走 分类→模板判断→前瞻建库→实现→纠错（含「玩家守门」）</span></div><label class="sw"><input type="checkbox" id="cfg_wf_enabled"><span class="sl"></span></label></div>
-      <div class="sw-row"><div class="sw-t"><b>mc_workflow 工具</b><span>是否把复杂任务总入口暴露给 LLM；关闭后调用只会收到导航提示</span></div><label class="sw"><input type="checkbox" id="cfg_wf_tool"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>工作流总开关</b><span>复杂任务自动走 分类→模板判断→前瞻建库→实现→纠错（含「玩家守门」）</span></div><label class="sw"><input type="checkbox" id="cfg_wf_enabled" disabled aria-label="工作流总开关（只读）"><span class="sl"></span></label></div>
+      <div class="sw-row"><div class="sw-t"><b>mc_workflow 工具</b><span>是否把复杂任务总入口暴露给 LLM；关闭后调用只会收到导航提示</span></div><label class="sw"><input type="checkbox" id="cfg_wf_tool" disabled aria-label="mc_workflow 工具（只读）"><span class="sl"></span></label></div>
     </div>
+    <div class="hint" style="margin-top:8px">以上为已保存状态，只能在工作流页修改。<button type="button" class="jump" id="cfg_wf_jump">到工作流页修改 →</button></div>
     <div class="cv-tip" id="cfg_wf_tip"></div>
     <label class="f">主 Provider（llm_provider_id）</label>
     <select id="cfg_wf_provider"></select>
@@ -2672,6 +2673,7 @@ function renderPlayerBans(bans, admin){
     !stateOk && bans.roster_source && bans.roster_source !== "banlist players"
       ? `名单来源：${bans.roster_source}（RCON 回包未按预期解析）` : "",
     bans.detail_note,
+    bans.ip_note,
     Number(bans.mismatch_count) > 0 ? `与文件记录不一致（${Number(bans.mismatch_count)} 条）` : "",
   ].filter(Boolean).map(note => `<div class="player-warning">${escServer(note)}</div>`).join("");
   const head = stateOk ? "" : `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
@@ -2692,9 +2694,12 @@ function renderPlayerBans(bans, admin){
     const action = isIp ? "unban_ip" : "unban";
     const typeTag = isIp ? `<span class="badge dim" title="IP 封禁（pardon-ip）">IP</span>` : "";
     const canAct = item.removable !== false && (isIp || PLAYER_NAME.test(item.name));
+    const actionCell = isIp && !canAct
+      ? `<span class="muted player-ip-invalid">${escServer(item.note || "格式异常，不能在这里解封")}</span>`
+      : playerButtons(item.name, [action], canAct);
     return `<div class="player-row">${typeTag}<b>${escServer(item.name)}</b>
       <div class="player-ban-info">${fields}${end}</div>
-      ${playerButtons(item.name, [action], canAct)}</div>`;
+      ${actionCell}</div>`;
   }).join("");
   host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
 }
@@ -3463,7 +3468,7 @@ async function loadWorkflow(silent){
   const logs = r.logs||[];
   const done = logs.filter(l=>l.status==="done").length;
   const bad = logs.filter(l=>l.status==="failed"||l.status==="error").length;
-  const run = logs.filter(l=>l.status==="running").length;
+  const run = logs.filter(l=>l.status==="running" && !l.historical).length;
   const masterOff = r.master_enabled===false;
   const toolStatus = masterOff?"总开关已关闭":r.tool_enabled===false?"工具不可用":"工具已开放";
   $("wf_stats").innerHTML =
@@ -3472,6 +3477,7 @@ async function loadWorkflow(silent){
     statHTML("近 15 次任务", done, `${run} 执行中 · ${bad} 失败`, done>0?done/Math.max(logs.length,1):"", done>0?"g":"");
   $("sw_wf_enabled").checked = r.enabled!==false;
   $("sw_wf_tool").checked = (r.tool_setting_enabled ?? r.tool_enabled)!==false;
+  syncWfSettings($("sw_wf_enabled").checked, $("sw_wf_tool").checked);
   // 持续性状态横幅：停用时长期可见，并指向实际生效的开关。
   const banner = $("wf_banner");
   if(masterOff){
@@ -3498,7 +3504,8 @@ async function loadWorkflow(silent){
   const _rd = r.rounds || {};
   $("wf_rounds").textContent = `实现器最多 ${_rd.implement ?? "-"} 轮 / 纠错循环最多 ${_rd.correct ?? "-"} 轮`;
   $("wf_logs").innerHTML = logs.length ? logs.map(l=>{
-    const [bcls,btxt] = WF_BADGE[l.status]||["dim","-"];
+    const [bcls,btxt] = l.historical && l.status==="running"
+      ? ["dim","历史 · 未记录结果"] : WF_BADGE[l.status]||["dim","-"];
     return `<div class="wf">
       <span class="ts">${esc(l.ts)}</span><span class="badge ${bcls}">${btxt}</span>
       ${l.kind?`<span class="badge info">${esc(l.kind)}</span>`:""}
@@ -3726,8 +3733,6 @@ const CFG_FIELDS = [
   ["cfg_feedback_name","feedback_name","s"],
   ["cfg_feedback_tellraw","feedback_tellraw","b",true],
   // 自动化 · 多Agent 工作流
-  ["cfg_wf_enabled","agent_workflow_enabled","b",true],
-  ["cfg_wf_tool","enable_mc_workflow","b",true],
   ["cfg_wf_provider","llm_provider_id","s"],
   ["cfg_wf_p_classifier","agent_classifier_provider_id","s"],
   ["cfg_wf_p_judge","agent_judge_provider_id","s"],
@@ -4781,8 +4786,12 @@ function admMsg(txt, isErr, isOk){
   el.textContent = txt || "";
 }
 
-// 多 Agent 开关说明：随勾选状态变化，并与「已保存的值」对比标记待保存（v0.17.6）
-let WF_SAVED = null;
+// 工作流页唯一写入口；设置页只展示已保存状态，不参与批量提交。
+function syncWfSettings(wf, tool){
+  $("cfg_wf_enabled").checked = parseCfgBool(wf, true);
+  $("cfg_wf_tool").checked = parseCfgBool(tool, true);
+  renderWfTip();
+}
 function renderWfTip(){
   const el = $("cfg_wf_tip");
   if(!el) return;
@@ -4808,9 +4817,6 @@ function renderWfTip(){
   }
   if(!(wf && tool)){
     html += `<br>数值计算（配比/产量/耗材等）/ 满配枪械 / 复杂 NBT 这类任务的成功率会明显下降，如非排查问题不建议关闭。`;
-  }
-  if(WF_SAVED && (wf !== WF_SAVED.wf || tool !== WF_SAVED.tool)){
-    html += ` <span class="pend">改动未保存 · 点「保存全部设置」生效</span>`;
   }
   el.className = cls;
   el.innerHTML = html;
@@ -5036,8 +5042,8 @@ async function loadSettings(){
   // 之后用户随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
   RMT.saved = !!$("cfg_remote_rcon_mode").checked;
   syncRemoteModeUI();
-  // 多 Agent 开关的动态说明（随勾选状态实时变化，v0.17.6）
-  WF_SAVED = { wf: !!$("cfg_wf_enabled").checked, tool: !!$("cfg_wf_tool").checked };
+  // 只回显工作流状态，配置表没有这两项，保存全部设置不会写回旧值。
+  syncWfSettings(cfg.agent_workflow_enabled, cfg.enable_mc_workflow);
   bindPolicyUI();
   bindTerminalUI();
   const rcr = $("btn_rcon_reset");
@@ -5055,10 +5061,6 @@ async function loadSettings(){
       el.addEventListener("input", renderAdvSummary);
     });
   renderAdvSummary();
-  ["cfg_wf_enabled","cfg_wf_tool"].forEach(id=>{
-    const el = $(id); if(el) el.onchange = renderWfTip;
-  });
-  renderWfTip();
   // 知识库模型下拉：改动后即时刷新提示（v0.21.43）
   ["cfg_kb_embed_p","cfg_kb_rerank_p"].forEach(id=>{
     const el = $(id); if(el) el.onchange = renderKbModelTips;
@@ -5624,16 +5626,25 @@ function setSaveNotice(msg, isErr){
 window.renderSaveWarn = renderSaveWarn;   // 内联 onclick / 端到端检查的入口（与 openAdvRcon 同款）
 window.clearSaveWarn = clearSaveWarn;
 async function saveWfSwitch(key, el, noticeEl){
+  const checked = el.checked;
+  const controls = [$("sw_wf_enabled"), $("sw_wf_tool")];
+  for(const control of controls) control.disabled = true;
   setNotice(noticeEl, "保存中…");
-  const r = await callPost("settings/save", { settings: { [key]: el.checked } }).catch(()=>({ok:false,error:"请求失败"}));
-  if(r.ok){
-    setNotice(noticeEl, "✓ " + (r.notice||"已保存"));
-    loadSettings();
-    // 立即刷新流水线状态，让停用/启用横幅与统计同步变化
-    if(typeof loadWorkflow==="function") loadWorkflow(true);
-  }else{
-    setNotice(noticeEl, r.error||"保存失败", true);
-    el.checked = !el.checked;
+  try{
+    const r = await callPost("settings/save", { settings: { [key]: checked } }).catch(()=>({ok:false,error:"请求失败"}));
+    if(r.ok){
+      setNotice(noticeEl, "✓ " + (r.notice||"已保存"));
+      el.checked = parseCfgBool(r.applied?.[key], checked);
+      syncWfSettings($("sw_wf_enabled").checked, $("sw_wf_tool").checked);
+      // 立即刷新流水线状态，让停用/启用横幅与统计同步变化。
+      // 整个保存与回读期间两开关共同禁用，避免第二次切换被前一次回包覆盖。
+      if(typeof loadWorkflow==="function") await loadWorkflow(true);
+    }else{
+      setNotice(noticeEl, r.error||"保存失败", true);
+      el.checked = !checked;
+    }
+  }finally{
+    for(const control of controls) control.disabled = false;
   }
 }
 
@@ -6014,6 +6025,7 @@ function bind(){
   });
   $("sw_wf_enabled").onchange = ()=>saveWfSwitch("agent_workflow_enabled", $("sw_wf_enabled"), $("wf_notice"));
   $("sw_wf_tool").onchange = ()=>saveWfSwitch("enable_mc_workflow", $("sw_wf_tool"), $("wf_notice"));
+  $("cfg_wf_jump").onclick = ()=>switchTab("workflow");
   // v0.21.3：底部保存按钮已撤，统一走顶部吸顶条的「保存全部设置」；null-safe 绑定，缺按钮也不影响其它绑定
   const saveButtons = [[$("btn_save_cfg_top"), saveSettings], [$("clr_save"), saveColors]];
   for(const [button, save] of saveButtons){

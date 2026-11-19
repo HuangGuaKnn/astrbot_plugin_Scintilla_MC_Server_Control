@@ -422,6 +422,41 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
         self.assertIs(unknown["results"][0]["accepted"], True,
                       "P18 表外插件命令仍可执行")
 
+    async def test_p22_world_write_subcommands_warn_without_flagging_queries(self):
+        plugin = ConsolePlugin()
+        writes = (
+            "data remove entity @e[type=item] Item",
+            "data merge entity @s {Silent:1b}",
+            "execute as @s run minecraft:data modify entity @s CustomName set value 'Example'",
+            "item replace entity @s weapon.mainhand with minecraft:air",
+            "/minecraft:worldborder set 100",
+        )
+        for command in writes:
+            with self.subTest(command=command):
+                code, payload = await call(plugin, "preview", command)
+                self.assertEqual(code, 200)
+                result, = payload["results"]
+                world = [hint for hint in result["warnings"] if hint["code"] == "world"]
+                self.assertEqual(len(world), 1, "P22 写子命令须命中 C 组提示")
+                self.assertEqual(world[0]["level"], "high", "P22 C 组提示强度须为 high")
+                self.assertIn("不可撤销", world[0]["text"], "P22 C 组提示须说明不可撤销")
+                self.assertTrue(result["accepted"], "P22 提示须保留预览可执行状态")
+        for command, expected_codes in (
+            ("data get entity @s", []),
+            ("minecraft:data get entity @e[type=item,limit=1] Item", []),
+            ("data", []),
+            ("worldborder get", []),
+            ('say "data remove"', ["broadcast"]),
+        ):
+            with self.subTest(command=command):
+                code, payload = await call(plugin, "preview", command)
+                self.assertEqual(code, 200)
+                result, = payload["results"]
+                self.assertEqual([hint["code"] for hint in result["warnings"]], expected_codes,
+                                 "P22 查询和引号中的命令文字不可触发写操作提示")
+        self.assertEqual(plugin.events, [], "P22 预览不向 RCON 发送命令")
+        self.assertFalse(self.audit.exists(), "P22 预览不写执行审计")
+
     async def test_t14_soft_hints_never_block_dispatch(self):
         command = "execute as @a at @e[type=item] run stop"
         plugin = ConsolePlugin({command: STOP, "list": ONLINE})

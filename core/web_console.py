@@ -71,6 +71,14 @@ _WORLD = {
     "weather": "会修改世界天气，影响相关游戏机制。",
     "spreadplayers": "会批量改变目标位置，可能把玩家或实体分散到不同地点。",
 }
+# C 组的多词命令按词法分析后的首词及第二词匹配，查询命令不在此表。
+_WORLD_SUBCOMMANDS = {
+    ("data", "remove"): "会删除目标的 NBT 数据，删除不可撤销。",
+    ("data", "merge"): "会合并并覆盖目标的 NBT 数据，变更不可撤销。",
+    ("data", "modify"): "会修改目标的 NBT 数据，变更不可撤销。",
+    ("item", "replace"): "会替换目标物品栏中的物品，原物品的损失不可撤销。",
+    ("worldborder", "set"): "会设置世界边界大小，因边界收缩造成的损失不可撤销。",
+}
 _BROADCAST = frozenset({"say", "tellraw", "title", "actionbar", "me", "teammsg", "tm"})
 _BROADCAST_TEXT = {
     "say": "会向全服广播",
@@ -188,11 +196,14 @@ def _warnings(text: str) -> tuple[list[dict], str, str]:
             or (name == "forceload" and subcommand == "query")
         ):
             warnings.append(_warning("world", _WORLD[name], "high"))
+        world_change = _WORLD_SUBCOMMANDS.get((name, subcommand))
+        if world_change:
+            warnings.append(_warning("world", world_change, "high"))
         if name in _BROADCAST:
             excerpt = segment[:MAX_BROADCAST_LENGTH]
             warnings.append(_warning("broadcast", f"{_BROADCAST_TEXT[name]}：{excerpt}", "medium"))
-        # 自由消息里的字面文本不是实体参数。say 支持展开未引用的选择器。
-        if name not in ("function", "schedule"):
+        # 自由消息字面量不是实体参数。data get 的选择器只用于读取。
+        if name not in ("function", "schedule") and (name, subcommand) != ("data", "get"):
             selector_tokens.extend(words[1:])
         break
     for token in dict.fromkeys(selector_tokens):

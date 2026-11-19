@@ -380,6 +380,66 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player_admin._READBACK_COMMAND["ban_ip"], "banlist ips")
         self.assertEqual(player_admin._READBACK_COMMAND["unban_ip"], "banlist ips")
 
+    async def test_p21_invalid_ip_bans_remain_visible_without_unban_action(self):
+        """P21 真实文件读取：合法 IP、CIDR、非法文本全部保留，写入口仅给合法地址。"""
+        records = [{"ip": value, "reason": "fixture"} for value in (
+            "192.0.2.9", "192.0.2.0/24", "not-an-ip",
+        )]
+        (self.path / "banned-ips.json").write_text(json.dumps(records), encoding="utf-8")
+        plugin = FakePlugin({"banlist players": NO_BANS, "banlist ips": NO_BANS},
+                            server_dir=str(self.path))
+        result = await player_admin.get_bans(plugin)
+        self.assertEqual([item["name"] for item in result["items"]],
+                         [record["ip"] for record in records], "P21 坏记录不得从名单消失")
+        self.assertEqual([item["removable"] for item in result["items"]],
+                         [True, False, False], "P21 只有 normalize_ip 通过的目标可以解封")
+        self.assertIs(result["items"][0]["removable"], True)
+        for item, record in zip(result["items"][1:], records[1:]):
+            self.assertIs(item["removable"], False)
+            self.assertIn("格式异常", item["note"], "P21 异常行必须解释无法解封")
+            self.assertIn("不能在这里解封", item["note"])
+            self.assertEqual(json.loads(item["raw_record"]), record,
+                             "P21 必须保留原始记录供管理员排查")
+            self.assertIn(item["raw_record"], item["note"])
+        self.assertEqual(result["ip_count"], 3)
+        self.assertEqual(result["ip_source"], "banned-ips.json")
+        self.assertIn("2 条记录格式异常", result["ip_note"])
+        self.assertNotIn("已跳过", result["ip_note"])
+
+    async def test_p21_malformed_records_and_duplicates_are_not_dropped(self):
+        records = [None, "broken", {"ip": ""}, {"ip": None}, {"source": "plugin"},
+                   {"ip": "not-an-ip"}, {"ip": "not-an-ip"}, {"ip": {"bad": []}}]
+        (self.path / "banned-ips.json").write_text(json.dumps(records), encoding="utf-8")
+        plugin = FakePlugin({"banlist ips": NO_BANS}, server_dir=str(self.path))
+        result = {"items": []}
+        await player_admin._append_ip_bans(plugin, result)
+        self.assertEqual(len(result["items"]), len(records), "P21 原文件每条坏记录均应有行")
+        self.assertEqual([json.loads(item["raw_record"]) for item in result["items"]], records)
+        for item in result["items"]:
+            self.assertIs(item["removable"], False)
+            self.assertIn("格式异常", item["note"])
+        self.assertIn(f"{len(records)} 条记录格式异常", result["ip_note"])
+
+    async def test_p21_valid_ipv6_and_rcon_fallback_stay_actionable(self):
+        records = [{"ip": "2001:0db8:0:0:0:0:0:9", "source": "Server"}]
+        path = self.path / "banned-ips.json"
+        path.write_text(json.dumps(records), encoding="utf-8")
+        reply = "There are 1 bans: 2001:db8::9 was banned by Server: fixture"
+        plugin = FakePlugin({"banlist ips": reply}, server_dir=str(self.path))
+        for local_file in (True, False):
+            with self.subTest(local_file=local_file):
+                if not local_file:
+                    path.unlink()
+                result = {"items": []}
+                await player_admin._append_ip_bans(plugin, result)
+                self.assertEqual(len(result["items"]), 1)
+                item = result["items"][0]
+                self.assertEqual(item["name"], "2001:db8::9")
+                self.assertIs(item["removable"], True)
+                self.assertNotIn("note", item)
+                self.assertEqual(item["detail_available"], local_file)
+                self.assertNotIn("不在文件中", result.get("ip_note", ""))
+
     async def test_p03_kick_requires_absence_in_complete_list(self):
         cases = (
             (ONLINE, False, "unrecognized"),
