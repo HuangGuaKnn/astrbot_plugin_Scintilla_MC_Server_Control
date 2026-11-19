@@ -25,13 +25,12 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, add_sys_paths  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, add_sys_paths, check_ui_shots, ui_shot_dir  # noqa: E402
 from _ui_page import make_router  # noqa: E402
 
 add_sys_paths()
 import ui_theme_check as F  # noqa: E402  复用：驱动补丁 + 假后端夹具（导入即打补丁）
 
-SHOTS = F.PLUGIN / "tests" / "_shots"
 
 from astrbot_plugin_Scintilla_MC_Server_Control.core import version_caps as VC  # noqa: E402
 
@@ -92,13 +91,15 @@ def save_and_wait(page) -> None:
 
 
 def main() -> int:
-    SHOTS.mkdir(parents=True, exist_ok=True)
     with F.sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001 —— 兜底要打印原因，否则真错误会被静默吞掉
             print(f"⚠ 通道 {UI_CHANNEL!r} 启动失败（{e}），改用 playwright 自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="light")
         page = ctx.new_page()
         errors: list[str] = []
@@ -129,7 +130,7 @@ def main() -> int:
         check("★能力警示行不在折叠区内（收起也看得见）",
               page.evaluate("() => !document.getElementById('ver_caps_line')"
                             ".closest('details.adv-fold')") is True)
-        page.screenshot(path=str(SHOTS / "ver_override_1_unknown.png"))
+        page.screenshot(path=str(shots / "ver_override_1_unknown.png"))
 
         # v0.22.11：版本 / 语法收进了「进阶设置」折叠区（默认收起）——
         # 后续要改值得先展开；顺带把「默认收起」这条契约钉住。
@@ -139,7 +140,7 @@ def main() -> int:
         page.click("#adv_rcon > summary")
         page.wait_for_timeout(300)
         check("展开后版本输入框可见（可改）", page.is_visible("#cfg_server_version"))
-        page.screenshot(path=str(SHOTS / "ver_override_1b_expanded.png"))
+        page.screenshot(path=str(shots / "ver_override_1b_expanded.png"))
 
         print("[2] 只改草稿、不保存 → 后端状态与能力行都不该动")
         calls_before = STATE["status_calls"]
@@ -171,7 +172,7 @@ def main() -> int:
         check("★显示版本号 1.20.1", "1.20.1" in caps_after, caps_after[:160])
         check("保存提示出现在吸顶条", "已保存" in page.inner_text("#cfg_notice_top"),
               page.inner_text("#cfg_notice_top")[:80])
-        page.screenshot(path=str(SHOTS / "ver_override_2_saved.png"))
+        page.screenshot(path=str(shots / "ver_override_2_saved.png"))
 
         print("[4] 清空版本再保存 → 回到「无法确定」")
         page.fill("#cfg_server_version", "")
@@ -184,7 +185,7 @@ def main() -> int:
               "无法确定" in caps_clear, caps_clear[:140])
         check("★不再残留上一次的 legacy_nbt 结论",
               "legacy_nbt" not in caps_clear, caps_clear[:140])
-        page.screenshot(path=str(SHOTS / "ver_override_3_cleared.png"))
+        page.screenshot(path=str(shots / "ver_override_3_cleared.png"))
 
         print("[5] 填 1.12.2 → 保存 → 能力行标出 legacy_preflatten（B5：可生成，域内值硬约束）")
         page.fill("#cfg_server_version", "1.12.2")
@@ -203,7 +204,7 @@ def main() -> int:
               "手动" in caps12 or "升级" in caps12, caps12[:200])
         check("★1.12.2 → 与「版本未知」区分（不再说「无法确定」）",
               "无法确定" not in caps12, caps12[:200])
-        page.screenshot(path=str(SHOTS / "ver_override_4_preflatten.png"))
+        page.screenshot(path=str(shots / "ver_override_4_preflatten.png"))
 
         print("[6] 1.12.2 下手填 legacy_nbt → 世代的判定不受手填影响（仍 legacy_preflatten）")
         page.select_option("#cfg_item_syntax", "legacy_nbt")
@@ -212,12 +213,15 @@ def main() -> int:
         check("★★已知 1.12.2 时手填 legacy_nbt 不放行"
               "（legacy_nbt 是 1.13~1.20.4 的写法；世代由版本定 = legacy_preflatten）",
               "legacy_nbt" not in caps12b and "legacy_preflatten" in caps12b, caps12b[:220])
-        page.screenshot(path=str(SHOTS / "ver_override_5_preflatten_override.png"))
+        page.screenshot(path=str(shots / "ver_override_5_preflatten_override.png"))
 
         check("全程无 JS 异常（pageerror）", not errors, "；".join(errors[:3]))
-        print(f"  截图目录：{SHOTS}")
+        print(f"  截图目录：{shots}")
         ctx.close()
         browser.close()
+        check_ui_shots(shots, {"ver_override_1_unknown.png", "ver_override_1b_expanded.png",
+                               "ver_override_2_saved.png", "ver_override_3_cleared.png",
+                               "ver_override_4_preflatten.png", "ver_override_5_preflatten_override.png"}, channel)
 
     print()
     if failed:

@@ -1,4 +1,4 @@
-"""六组变异的统一入口：串行验收、隔离修改、按目标断言统计。"""
+"""历史变异与当前专项的统一入口：串行验收、隔离修改、按目标断言统计。"""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +18,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = ("v0248", "v0249", "v0260", "v0270", "v0300", "v0310")
+SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310")
+CURRENT_CHECKS = "v0330-checks"
 VERDICTS = ("KILLED", "SURVIVED", "INVALID")
 
 
@@ -31,9 +32,12 @@ class Case:
     after: str
     command: tuple[str, ...]
     failure: str = ""
+    baseline: tuple[str, ...] | None = None
 
 
 def registered_cases(module) -> list[Case]:
+    if hasattr(module, "mutation_cases"):
+        return module.mutation_cases()
     if hasattr(module, "CASES"):
         return [Case(c.cid, c.note, c.rel, c.old, c.new,
                      (sys.executable, "-B", "-X", "utf8", c.test),
@@ -165,10 +169,10 @@ def classify(result, marker: str) -> tuple[str, str]:
     failures = re.findall(r"(?ms)^AssertionError: (.*?)(?=^={8,}|^-{8,}|\Z)", result.stderr)
     if marker and result.returncode == 1 and any(marker in part for part in failures):
         return "KILLED", f"AssertionError: {marker}"
-    if not marker and result.returncode == 1 and "Traceback (most recent call last)" not in result.stderr:
-        # 早期脚本的判据是独立命令行检查器，接收它们明确标出的失败行。
+    if result.returncode == 1 and "Traceback (most recent call last)" not in result.stderr:
+        # 独立命令行检查器的断言印在 stdout。匹配明确标记的失败行。
         for line in result.stdout.splitlines():
-            if re.match(r"^\s*(?:\[FAIL\]|✗)\s+", line):
+            if re.match(r"^\s*(?:\[FAIL\]|✗)\s+", line) and (not marker or marker in line):
                 return "KILLED", line.strip()[:190]
     detail = (result.stdout + result.stderr).strip().splitlines()
     return "INVALID", f"rc={result.returncode}，未匹配目标判据 {marker!r}\n" + "\n".join(detail[-16:])
@@ -182,7 +186,7 @@ def exercise(root: Path, case: Case, env, baselines) -> tuple[str, str]:
     count, before, after = anchor(raw, case)
     if count != 1 or before == after:
         return "INVALID", f"锚点已漂移，需更新（出现 {count} 次，要求唯一且替换内容不同）"
-    base = case.command[:5]
+    base = case.baseline or case.command[:5]
     if base not in baselines:
         try:
             result = run_test(root, base, env)
@@ -228,7 +232,7 @@ def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
                             verdict, detail = exercise(root, case, env, baselines)
                             counts[name][verdict] += 1
                             label = verdict
-                            if legacy and name in ("v0248", "v0249"):
+                            if legacy and name in ("v0247_round2", "v0248", "v0249"):
                                 label = "INFRA-ERR" if verdict == "INVALID" else verdict
                             elif legacy and verdict == "KILLED":
                                 label = "RED"
@@ -241,17 +245,23 @@ def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
     if legacy:
         name, tally = next(iter(counts.items()))
         total = len(suites[name])
-        print(f"KILLED {tally['KILLED']}/{total}" if name in ("v0248", "v0249")
+        print(f"KILLED {tally['KILLED']}/{total}" if name in ("v0247_round2", "v0248", "v0249")
               else f"定向变异 {tally['KILLED']}/{total} 变红，逐条字节级还原")
     else:
-        print("\n| 脚本 | 总数 | KILLED | SURVIVED | INVALID |")
-        print("| --- | ---: | ---: | ---: | ---: |")
-        for name, tally in counts.items():
-            print(f"| mutation_{name}.py | {len(suites[name])} | "
-                  + " | ".join(str(tally[v]) for v in VERDICTS) + " |")
-        totals = sum(counts.values(), Counter())
-        print(f"| 合计 | {sum(map(len, suites.values()))} | "
-              + " | ".join(str(totals[v]) for v in VERDICTS) + " |")
+        historical = {name: tally for name, tally in counts.items() if name != CURRENT_CHECKS}
+        if historical:
+            print("\n| 脚本 | 总数 | KILLED | SURVIVED | INVALID |")
+            print("| --- | ---: | ---: | ---: | ---: |")
+            for name, tally in historical.items():
+                print(f"| mutation_{name}.py | {len(suites[name])} | "
+                      + " | ".join(str(tally[v]) for v in VERDICTS) + " |")
+            totals = sum(historical.values(), Counter())
+            print(f"| 合计 | {sum(len(suites[name]) for name in historical)} | "
+                  + " | ".join(str(totals[v]) for v in VERDICTS) + " |")
+        if CURRENT_CHECKS in counts:
+            tally = counts[CURRENT_CHECKS]
+            print(f"\nv0.33.0 专项（独立于历史合计） {len(suites[CURRENT_CHECKS])} 条"
+                  + "：" + ", ".join(f"{tally[v]} {v}" for v in VERDICTS))
     return 0 if snapshot_clean and source_clean and all(
         counts[name]["KILLED"] == len(cases) for name, cases in suites.items()
     ) else 1
@@ -273,10 +283,18 @@ def entry(suites, *, legacy=False) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=SUITES, action="append", help="仅运行指定组，可重复")
+    selected = parser.add_mutually_exclusive_group()
+    selected.add_argument("--suite", choices=SUITES, action="append", help="仅运行指定历史组，可重复")
+    selected.add_argument("--v0330-checks", action="store_true", help="仅运行 v0.33.0 专项")
     args = parser.parse_args(argv)
-    return entry({name: registered_cases(importlib.import_module(f"mutation_{name}"))
-                  for name in SUITES if not args.suite or name in args.suite})
+    suites = {}
+    if not args.v0330_checks:
+        suites.update({name: registered_cases(importlib.import_module(f"mutation_{name}"))
+                       for name in SUITES if not args.suite or name in args.suite})
+    if not args.suite:
+        from mutation_v0310 import v0330_cases
+        suites[CURRENT_CHECKS] = v0330_cases()
+    return entry(suites)
 
 
 if __name__ == "__main__":

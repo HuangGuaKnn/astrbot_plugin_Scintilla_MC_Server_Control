@@ -26,11 +26,11 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from ui_theme_check import (  # noqa: E402  （复用同一套假后端 + 驱动补丁）
-    API_GLOB, PAGE_URL, SHOTS, overview, route, settings,
+    API_GLOB, PAGE_URL, overview, route, settings,
 )
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, check_ui_shots, ui_shot_dir  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 BLOCKS = ["sd_box", "cfg_ev_enabled", "cfg_bridge_en", "cfg_dict_en"]
 ROWS = ["cfg_tool_search", "cfg_tool_recipes", "cfg_tool_mods"]
@@ -264,14 +264,16 @@ def make_route(state: dict):
 
 
 def main() -> int:
-    SHOTS.mkdir(parents=True, exist_ok=True)
     ids = {"blocks": BLOCKS, "rows": ROWS}
     with sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
             print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
 
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="dark")
         page = ctx.new_page()
@@ -517,14 +519,14 @@ def main() -> int:
                   str(stt["sd"]["inputChain"]))
             page.evaluate("document.getElementById('card_policy')?.scrollIntoView()")
             page.wait_for_timeout(200)
-            page.screenshot(path=str(SHOTS / f"rmt_blur_{theme}.png"))
+            page.screenshot(path=str(shots / f"rmt_blur_{theme}.png"))
             page.locator("#cfg_dict_en").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot(
-                path=str(SHOTS / f"rmt_blur_{theme}_card.png"))
+                path=str(shots / f"rmt_blur_{theme}_card.png"))
             # 目录区特写（本次反馈的现场：文字必须看得清）
             page.locator("#sd_box").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot(
-                path=str(SHOTS / f"rmt_soft_{theme}.png"))
-            print(f"      {SHOTS / f'rmt_soft_{theme}.png'}")
-            print(f"      {SHOTS / f'rmt_blur_{theme}.png'}")
+                path=str(shots / f"rmt_soft_{theme}.png"))
+            print(f"      {shots / f'rmt_soft_{theme}.png'}")
+            print(f"      {shots / f'rmt_blur_{theme}.png'}")
             # v0.21.18：知识库整页封禁（整页磨砂 + 居中公告）
             page.click('button.tab[data-page="knowledge"]')
             page.wait_for_timeout(500)
@@ -532,10 +534,13 @@ def main() -> int:
             check(f"[{theme}] 知识库整页封禁生效且公告文字可读",
                   stk2.get("sealed") and (stk2.get("contrasts") or {}).get("why", 0) >= 4.5,
                   f"sealed={stk2.get('sealed')} why={((stk2.get('contrasts') or {}).get('why'))}")
-            page.screenshot(path=str(SHOTS / f"rmt_seal_{theme}.png"))
-            print(f"      {SHOTS / f'rmt_seal_{theme}.png'}")
+            page.screenshot(path=str(shots / f"rmt_seal_{theme}.png"))
+            print(f"      {shots / f'rmt_seal_{theme}.png'}")
         ctx.close()
         browser.close()
+        check_ui_shots(shots, {pattern.format(theme) for theme in ("dark", "light")
+                              for pattern in ("rmt_blur_{}.png", "rmt_blur_{}_card.png",
+                                              "rmt_soft_{}.png", "rmt_seal_{}.png")}, channel)
 
     print()
     if failed:

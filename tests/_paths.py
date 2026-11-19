@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
@@ -58,6 +60,29 @@ UI_CHANNEL = os.environ.get("SCINTILLA_UI_CHANNEL", "msedge")
 # 真正传给 playwright 的参数：特殊值 "bundled"（或空串）= 不指定 channel，
 # 直接用 playwright 自带的 Chromium —— CI 上最省事，不必赌 channel 名字对不对。
 UI_LAUNCH_KWARGS = {} if UI_CHANNEL.strip().lower() in ("", "bundled") else {"channel": UI_CHANNEL}
+
+
+def _ui_shot_channel(channel: str) -> str:
+    return re.sub(r"[^a-z0-9_-]", "_", channel.strip().lower()) or "bundled"
+
+
+def ui_shot_dir(channel: str = UI_CHANNEL) -> Path:
+    """为本进程的截图创建独立目录。随机后缀让 PID 重用时也能保留旧截图。"""
+    parent = PLUGIN_DIR / "tests" / "_shots" / _ui_shot_channel(channel)
+    parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(dir=parent, prefix=f"{os.getpid()}-"))
+
+
+def check_ui_shots(directory: Path, expected: set[str], channel: str = UI_CHANNEL) -> None:
+    root = PLUGIN_DIR / "tests" / "_shots"
+    relative = directory.relative_to(root).parts if directory.is_relative_to(root) else ()
+    if (len(relative) != 2 or relative[0] != _ui_shot_channel(channel)
+            or not relative[1].startswith(f"{os.getpid()}-")):
+        raise AssertionError(f"Q4 截图目录必须区分浏览器通道和进程：{directory}")
+    actual = {path.name for path in directory.glob("*.png") if path.is_file() and path.stat().st_size}
+    if actual != expected:
+        raise AssertionError(f"Q4 截图文件不全。缺少 {sorted(expected - actual)}，多出 {sorted(actual - expected)}")
+    print(f"[PASS] Q4 {len(actual)} 张截图：{directory}")
 
 
 # ── UI 用例的页面地址：走本地 HTTP，而不是 file:// ───────────────────────────

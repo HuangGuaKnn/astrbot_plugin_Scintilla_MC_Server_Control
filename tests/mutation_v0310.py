@@ -91,14 +91,102 @@ MUTATIONS = (
     ),
 )
 
+# v0.33.0 专项与历史 117 条分开计数，全部随统一入口默认执行。
+Q2_RULES = (
+    ("fillbiome", "fillbiome 0 64 0 15 80 15 minecraft:plains", "生物群系",
+     '    "fillbiome": "会改写整片区域的生物群系，恢复时需按原分布重新填充。",\n'),
+    ("place structure", "place structure minecraft:village_plains 0 64 0", "覆盖现有方块",
+     '    ("place", "structure"): "生成结构会覆盖现有方块，无法自动恢复原布局。",\n'),
+    ("damage", "damage Steve 100 minecraft:generic", "可能致死",
+     '    "damage": "会直接减少目标实体的生命值，可能致死。",\n'),
+    ("worldborder add", "worldborder add -100", "困在墙外",
+     '    ("worldborder", "add"): "会收放世界边界。收窄时边界墙可能越过玩家位置，把玩家困在墙外并造成伤害。",\n'),
+    ("scoreboard objectives remove", "scoreboard objectives remove Example", "所有分数",
+     '    ("scoreboard", "objectives", "remove"): "会删除整个计分板项目及其所有分数。",\n'),
+    ("scoreboard players reset", "scoreboard players reset Steve", "全部分数",
+     '    ("scoreboard", "players", "reset"): "会清除目标玩家的指定分数。省略计分板项目时会清除其全部分数。",\n'),
+    ("advancement revoke", "advancement revoke Steve everything", "重置全部进度",
+     '    ("advancement", "revoke"): "会撤销已有进度，使用 everything 会重置全部进度。",\n'),
+    ("item modify", "item modify entity Steve weapon.mainhand example:change", "NBT",
+     '    ("item", "modify"): "会修改背包或容器物品的 NBT 或组件，无法自动撤销。",\n'),
+    ("loot replace", "loot replace entity Steve weapon.mainhand loot example:chest", "覆盖容器或实体",
+     '    ("loot", "replace"): "会用战利品表生成的物品覆盖容器或实体的指定槽位。",\n'),
+    ("experience set 0", "experience set @s 0", "清零",
+     '        if (name in ("experience", "xp") and subcommand == "set" and len(words) > 3\n'
+     '                and re.fullmatch(r"-?0+", words[3])):\n'
+     '            world_change = "会将目标玩家指定的经验点数或等级清零，无法自动恢复。"\n'),
+)
+
+
+def verify_q2() -> int:
+    from types import SimpleNamespace
+
+    from _paths import add_sys_paths
+
+    add_sys_paths()
+    from astrbot_plugin_Scintilla_MC_Server_Control.core.web_console import preview
+
+    plugin = SimpleNamespace(_cfg=lambda key, default: default)
+
+    def warnings(command):
+        result, = preview(plugin, command)["results"]
+        assert result["accepted"], f"Q2 预览不应挡住完整模式中的 {command}"
+        return result["warnings"]
+
+    for label, command, wording, _ in Q2_RULES:
+        world = [hint for hint in warnings(command) if hint["code"] == "world"]
+        assert len(world) == 1 and world[0]["level"] == "high", f"Q2 {label} 必须命中 C 组 high"
+        assert wording in world[0]["text"], f"Q2 {label} 缺少风险说明：{wording}"
+    for command in (
+        "experience add @s 100", "experience add @s 0 levels",
+        "experience set @s 1", "experience query @s levels", "experience set @s",
+        "experience set @s 0.0", "xp add @s 100",
+        "scoreboard objectives list", "scoreboard players get Steve Example",
+        "worldborder get", "place feature minecraft:oak 0 64 0",
+        "advancement grant Steve everything", "loot give Steve loot example:chest",
+    ):
+        assert not warnings(command), f"Q2 该预览不应出现风险提示：{command}"
+    for command in ("xp set @s -0 levels", "/minecraft:experience set @s 00 points",
+                    "execute as @s run experience set @s 0 levels"):
+        assert any(h["code"] == "world" and h["level"] == "high" for h in warnings(command)), \
+            f"Q2 经验清零的别名、命名空间或嵌套未分类：{command}"
+    print("[PASS] Q2 十条新增规则、相近非目标命令和经验清零边界")
+    return 0
+
+
+def v0330_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    q1 = python + ("tests/test_permission_gate.py",)
+    q2 = python + ("tests/mutation_v0310.py", "--verify-q2")
+    q4 = python + ("tests/ui_plain_format_check.py",)
+    wording = "命令工具（执行指令 / 发物品 / 广播）默认仅管理员可用。"
+    return [
+        *(Case("Q1", f"拒绝文案遗漏{word}", "core/java_commands.py",
+               wording, wording.replace(word, "其他操作"), q1,
+               "Q1 拒绝文案应逐项说明被限制的能力")
+          for word in ("执行指令", "发物品", "广播")),
+        *(Case("Q2", f"删除 {label} 风险规则", CONSOLE, anchor, "", q2,
+               f"Q2 {label} 必须命中 C 组 high", baseline=q2)
+          for label, _, _, anchor in Q2_RULES),
+        Case("Q4", "截图恢复到固定目录", "tests/_paths.py",
+             '    return Path(tempfile.mkdtemp(dir=parent, prefix=f"{os.getpid()}-"))',
+             '    return PLUGIN_DIR / "tests" / "_shots"', q4,
+             "Q4 截图目录必须区分浏览器通道和进程"),
+    ]
+
 
 def main(argv: list[str]) -> int:
     from mutation_all import entry, registered_cases
 
     parser = argparse.ArgumentParser(description=__doc__)
     cases = registered_cases(sys.modules[__name__])
+    parser.add_argument("--verify-q2", action="store_true", help="验证终端新增风险提示")
     parser.add_argument("criteria", nargs="*", help="P/T criterion IDs")
     args = parser.parse_args(argv)
+    if args.verify_q2:
+        return verify_q2()
     criteria = set(args.criteria)
     if criteria - {c.criterion for c in cases}:
         parser.error("unknown criterion")

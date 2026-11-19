@@ -23,12 +23,9 @@ from _pw_compat import patch_pw_driver as _patch_pw_driver  # noqa: E402
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_LAUNCH_KWARGS, check_ui_shots, serve_plugin_root, ui_shot_dir  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
-PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 PAGE = serve_plugin_root() + "/pages/mc_control/index.html"
-SHOTS = PLUGIN / "tests" / "_shots"
-SHOTS.mkdir(exist_ok=True)
 
 TARGET = "cfg_perm_hint_mode"  # 用户报 bug 的那个下拉
 FAILS: list[str] = []
@@ -86,6 +83,7 @@ def probe(pg, theme: str) -> dict:
 
 with sync_playwright() as pw:
     b = pw.chromium.launch(**UI_LAUNCH_KWARGS, headless=True)
+    shots = ui_shot_dir()
     pg = b.new_page(viewport={"width": 900, "height": 420})
     for theme in ("dark", "light"):
         info = probe(pg, theme)
@@ -100,8 +98,9 @@ with sync_playwright() as pw:
         # 未修复时是「白底 + 浅色字」，对比度会掉到 1.2 左右
         check(ratio > 2.0, f"★ 未复现「白底白字」（> 2.0）", f"{ratio:.2f}")
         check(rgb(info["selBg"]) == ob, "选项底色与下拉框体一致", f"{info['selBg']} vs {info['optBg']}")
-        pg.screenshot(path=str(SHOTS / f"select_option_{theme}.png"))
+        pg.screenshot(path=str(shots / f"select_option_{theme}.png"))
     b.close()
+    check_ui_shots(shots, {"select_option_dark.png", "select_option_light.png"})
 
 print("\n" + ("=== 全部通过 ===" if not FAILS else f"=== {len(FAILS)} 项失败: {FAILS} ==="))
 sys.exit(1 if FAILS else 0)

@@ -32,10 +32,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import ui_theme_check as F  # noqa: E402
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_LAUNCH_KWARGS  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, check_ui_shots, ui_shot_dir  # noqa: E402
 
 HTML = F.PLUGIN / "pages" / "mc_control" / "index.html"
-SHOTS = F.SHOTS
 
 PROBE_JS = r"""
 () => {
@@ -84,11 +83,14 @@ def main() -> int:
 
     print("\n[2] 动态：真浏览器里展开「物品语法世代」")
     with sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001
             print(f"⚠ 通道起不来（{e}），退回自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
         ctx = browser.new_context(viewport={"width": 1360, "height": 900})
         pg = ctx.new_page()
         errs: list[str] = []
@@ -152,30 +154,27 @@ def main() -> int:
         pg.wait_for_timeout(200)
 
         print("\n[5] 截图留档（对比用）")
-        try:
-            SHOTS.mkdir(parents=True, exist_ok=True)
-            # 再开一次目标下拉，截「区域」——菜单是绝对定位，超出元素盒子
-            trg.click()
-            pg.wait_for_timeout(300)
-            box = pg.evaluate("""() => {
-                const sel = document.getElementById('cfg_item_syntax');
-                const pop = sel.closest('.select-pop');
-                const menu = pop.querySelector('.select-menu');
-                const a = pop.getBoundingClientRect(), b = menu.getBoundingClientRect();
-                return {x: Math.max(0, Math.min(a.left, b.left) - 12), y: Math.max(0, a.top - 56),
-                        w: Math.max(a.right, b.right) + 24, h: (b.bottom + 18) - Math.max(0, a.top - 56)};
-            }""")
-            pg.screenshot(path=str(SHOTS / "select_clip_fixed.png"),
-                          clip={"x": box["x"], "y": box["y"], "width": box["w"], "height": box["h"]})
-            print(f"      {SHOTS / 'select_clip_fixed.png'}")
-        except Exception as e:  # noqa: BLE001
-            print(f"      截图失败（不影响判据）：{e}")
+        # 再开一次目标下拉，截「区域」——菜单是绝对定位，超出元素盒子
+        trg.click()
+        pg.wait_for_timeout(300)
+        box = pg.evaluate("""() => {
+            const sel = document.getElementById('cfg_item_syntax');
+            const pop = sel.closest('.select-pop');
+            const menu = pop.querySelector('.select-menu');
+            const a = pop.getBoundingClientRect(), b = menu.getBoundingClientRect();
+            return {x: Math.max(0, Math.min(a.left, b.left) - 12), y: Math.max(0, a.top - 56),
+                    w: Math.max(a.right, b.right) + 24, h: (b.bottom + 18) - Math.max(0, a.top - 56)};
+        }""")
+        pg.screenshot(path=str(shots / "select_clip_fixed.png"),
+                      clip={"x": box["x"], "y": box["y"], "width": box["w"], "height": box["h"]})
+        print(f"      {shots / 'select_clip_fixed.png'}")
 
         print("\n[6] 页面无 JS 异常")
         check("pageerror 为空", not errs, str(errs[:2]))
 
         ctx.close()
         browser.close()
+        check_ui_shots(shots, {"select_clip_fixed.png"}, channel)
 
     print()
     if FAILED:

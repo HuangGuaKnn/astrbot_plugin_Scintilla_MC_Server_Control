@@ -33,11 +33,9 @@ from _ui_page import API_GLOB, PAGE_URL, make_router  # noqa: E402
 _patch_pw_driver()
 
 from playwright.sync_api import expect, sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, check_ui_shots, ui_shot_dir  # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-SHOTS = PLUGIN / "tests" / "_shots"
-SHOTS.mkdir(exist_ok=True)
 
 FAILS: list[str] = []
 
@@ -112,11 +110,14 @@ def opts(page, sel: str):
 
 def main() -> int:
     with sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001
             print(f"通道 {UI_CHANNEL!r} 起不来（{e}），退回自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
         page = browser.new_page(viewport={"width": 1280, "height": 1000})
         page.route(API_GLOB, route)
         page.goto(PAGE_URL)
@@ -242,7 +243,7 @@ def main() -> int:
         check("载荷 color_say == aqua", body2.get("color_say") == "aqua", str(body2.get("color_say")))
         check("载荷 color_title == red", body2.get("color_title") == "red", str(body2.get("color_title")))
         check("载荷 plain_color_format == named", body2.get("plain_color_format") == "named")
-        page.locator("#srv_color_card").screenshot(path=str(SHOTS / "plain_named_mode.png"))
+        page.locator("#srv_color_card").screenshot(path=str(shots / "plain_named_mode.png"))
         page.select_option("#clr_plain_fmt", "hex")
         page.wait_for_timeout(150)
         check("切回 hex → 取色器回来", page.is_visible("#clr_say"))
@@ -286,9 +287,10 @@ def main() -> int:
 
         page.eval_on_selector("#clr_plain_fmt", "el=>{el.size=3;}")
         page.locator("#srv_color_card").screenshot(
-            path=str(SHOTS / "plain_format_row.png"))
-        print(f"  截图：{SHOTS / 'plain_format_row.png'} / plain_named_mode.png")
+            path=str(shots / "plain_format_row.png"))
+        print(f"  截图：{shots / 'plain_format_row.png'} / plain_named_mode.png")
         browser.close()
+        check_ui_shots(shots, {"plain_named_mode.png", "plain_format_row.png"}, channel)
 
     print("\n" + "=" * 42)
     if FAILS:

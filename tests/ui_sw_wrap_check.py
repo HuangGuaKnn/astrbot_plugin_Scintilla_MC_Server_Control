@@ -19,11 +19,11 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from ui_theme_check import (  # noqa: E402  （复用同一套假后端 + 驱动补丁）
-    API_GLOB, PAGE_URL, SHOTS, overview, route,
+    API_GLOB, PAGE_URL, overview, route,
 )
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, check_ui_shots, ui_shot_dir  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
 
 ROW = '#cfg_perm_latch'
 
@@ -85,13 +85,15 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 
 def main() -> int:
-    SHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
             print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
 
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="dark")
         page = ctx.new_page()
@@ -130,9 +132,9 @@ def main() -> int:
 
         print("[4] 截图（深色）")
         row = page.locator(f'{ROW}').locator('xpath=ancestor::div[contains(@class,"sw-row")]')
-        row.screenshot(path=str(SHOTS / "sw_wrap_dark.png"))
-        page.screenshot(path=str(SHOTS / "settings_dark.png"))
-        print(f"      {SHOTS / 'sw_wrap_dark.png'}")
+        row.screenshot(path=str(shots / "sw_wrap_dark.png"))
+        page.screenshot(path=str(shots / "settings_dark.png"))
+        print(f"      {shots / 'sw_wrap_dark.png'}")
 
         print("[5] 切浅色再验一遍 + 截图")
         page.click("#themebtn")
@@ -142,8 +144,8 @@ def main() -> int:
               m2["inner"] and m2["inner"]["display"] == "inline" and abs(m2["inner"]["size"] - 11) < .01,
               str(m2["inner"]))
         check("浅色下说明行数仍正常", 1 <= m2["desc"]["lines"] <= 2, f"{m2['desc']['lines']} 行")
-        row.screenshot(path=str(SHOTS / "sw_wrap_light.png"))
-        print(f"      {SHOTS / 'sw_wrap_light.png'}")
+        row.screenshot(path=str(shots / "sw_wrap_light.png"))
+        print(f"      {shots / 'sw_wrap_light.png'}")
 
         print("[6] 复现：把旧 CSS（.sw-t b）注回去，必须重新裂成块（证明确实是它）")
         page.add_style_tag(content=".sw-t b{font-size:13px;display:block}")
@@ -186,6 +188,7 @@ def main() -> int:
 
         ctx.close()
         browser.close()
+        check_ui_shots(shots, {"sw_wrap_dark.png", "settings_dark.png", "sw_wrap_light.png"}, channel)
 
     print()
     if failed:

@@ -1,35 +1,9 @@
-"""v0.24.7 · 第二轮复核判据的**变异测试**（判据强度自检，内部用）。
-
-判据「写了」不等于判据「能拦」。这个脚本把
-``tests/test_v0247_review_round2_p2.py`` 里的 11 条关键断言逐条"翻掉"，
-看对应测试会不会红：
-
-  * KILLED   —— 变异让测试失败，且失败行落在**为该变异设计的那条判据**上；
-  * SURVIVED —— 变异后测试照样全绿（判据空转，等于没写）。
-
-覆盖：[1] 状态口径 / [2] 写接口硬化 / [3] 预设 ID 防穿越 / [4] daemon 线程 /
-[5] 回调取消 / [6] 发送预算 / [7] 纳秒缓存键 / [8] 三键同源（4 处）。
-
-安全约定：
-  * 每个变异都是**单点文本替换**，锚点必须唯一（``count == 1``），否则中止；
-  * 无论测试怎样结束，都在 ``finally`` 里按**原始字节**还原，并用 sha256 复核；
-  * 全程只动源码，不产生提交、不改版本号、不碰 CHANGELOG。
-
-用法（在仓库根目录）::
-
-    python tests/mutation_v0247_round2.py
-
-退出码 0 = 全部 KILLED；1 = 有 SURVIVED / 有还原失败。
-"""
+"""v0.24.7 second-round mutation catalog, run in the shared isolated runner."""
 
 from __future__ import annotations
 
-import hashlib
-import subprocess
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
 TEST = "tests/test_v0247_review_round2_p2.py"
 
 HTML = "pages/mc_control/index.html"
@@ -115,59 +89,34 @@ MUTATIONS = [
 ]
 
 
-def run_tests() -> tuple[int, list[str], str]:
-    r = subprocess.run(
-        [sys.executable, TEST], cwd=ROOT,
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    out = (r.stdout or "") + (r.stderr or "")
-    fails = [ln.strip()[2:] for ln in out.splitlines() if ln.strip().startswith("- ")]
-    return r.returncode, fails, out
+def mutation_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    command = (*python, TEST)
+    daemon_check = (*python, "tests/mutation_v0247_round2.py", "--check-daemon")
+    return [Case(m["group"], m["name"], m["rel"], m["old"], m["new"],
+                 daemon_check if m["group"] == "[4]" else command, m["expect"],
+                 baseline=daemon_check if m["group"] == "[4]" else None)
+            for m in MUTATIONS]
 
 
-def main() -> int:
-    print(f"变异测试目标：{TEST}（共 {len(MUTATIONS)} 处）\n")
-    rows: list[tuple] = []
-    for m in MUTATIONS:
-        path = ROOT / m["rel"]
-        raw = path.read_bytes()
-        digest = hashlib.sha256(raw).hexdigest()
-        text = raw.decode("utf-8")
-        # 工作区可能是 CRLF（.gitattributes 只管仓库内的入库形态）——
-        # 多行锚点必须按文件自身的换行风格归一化，否则 count 恒为 0。
-        nl = chr(13) + chr(10) if chr(13) + chr(10) in text else chr(10)
-        old = m["old"].replace(chr(10), nl)
-        new = m["new"].replace(chr(10), nl)
-        n = text.count(old)
-        if n != 1:
-            print(f"  !! {m['group']} 锚点不唯一/缺失（count={n}）：{m['name']} —— 跳过")
-            rows.append((m["group"], m["name"], "ANCHOR", 0, False))
-            continue
-        try:
-            path.write_bytes(text.replace(old, new, 1).encode("utf-8"))
-            rc, fails, out = run_tests()
-            hit = [f for f in fails if m["expect"] in f]
-            infra = "Traceback" in out and not fails
-            verdict = "KILLED" if (rc != 0 and hit and not infra) else "SURVIVED"
-            if infra:
-                verdict = "INFRA-ERR"
-        finally:
-            path.write_bytes(raw)
-        restored = hashlib.sha256(path.read_bytes()).hexdigest() == digest
-        rows.append((m["group"], m["name"], verdict, len(fails), restored))
-        print(f"  {m['group']:>6}  {verdict:<11} 失败{len(fails):>2} 还原{'✓' if restored else '✗'}  {m['name']}")
-        for f in hit[:2]:
-            print(f"           ↳ {f[:96]}")
+def check_daemon_mutation() -> int:
+    import test_v0247_review_round2_p2 as checks
 
-    print("\n================ 结论 ================")
-    bad = [r for r in rows if r[2] != "KILLED" or not r[4]]
-    for group, name, verdict, n, restored in rows:
-        mark = "✓" if (verdict == "KILLED" and restored) else "✗"
-        print(f"{mark} {group:>6}  {verdict:<11}  {name}")
-    print(f"\nKILLED {sum(1 for r in rows if r[2] == 'KILLED')}/{len(rows)}"
-          f"   异常 {len(bad)}")
-    return 0 if not bad else 1
+    try:
+        return checks.main()
+    finally:
+        # 非 daemon 变异会让解释器等待常驻 worker，必须在断言执行后关闭执行器。
+        executor = checks.lw._DAEMON_RUNNER
+        if executor is not None:
+            executor.shutdown()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["--check-daemon"]:
+        raise SystemExit(check_daemon_mutation())
+
+    from mutation_all import entry
+
+    raise SystemExit(entry({"v0247_round2": mutation_cases()}, legacy=True))

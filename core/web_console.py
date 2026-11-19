@@ -60,10 +60,12 @@ _WHITELIST = {
 }
 _WORLD = {
     "fill": "会批量覆盖方块，原有方块与内容可能丢失。",
+    "fillbiome": "会改写整片区域的生物群系，恢复时需按原分布重新填充。",
     "clone": "会覆盖目标区域；移动模式也会清除源区域。",
     "setblock": "会替换目标方块，容器内容可能丢失。",
     "forceload": "会改变常加载区块，可能持续增加负载。",
     "kill": "会杀死或清除匹配的目标，历史状态无法通过此命令恢复。",
+    "damage": "会直接减少目标实体的生命值，可能致死。",
     "clear": "会移除目标背包物品，历史状态无法通过此命令恢复。",
     "gamerule": "修改游戏规则会改变后续世界行为。",
     "difficulty": "会改变世界难度和游戏行为。",
@@ -71,13 +73,22 @@ _WORLD = {
     "weather": "会修改世界天气，影响相关游戏机制。",
     "spreadplayers": "会批量改变目标位置，可能把玩家或实体分散到不同地点。",
 }
-# C 组的多词命令按词法分析后的首词及第二词匹配，查询命令不在此表。
+# C 组按命令词匹配，只登记有风险的子命令。
 _WORLD_SUBCOMMANDS = {
     ("data", "remove"): "会删除目标的 NBT 数据，删除不可撤销。",
     ("data", "merge"): "会合并并覆盖目标的 NBT 数据，变更不可撤销。",
     ("data", "modify"): "会修改目标的 NBT 数据，变更不可撤销。",
     ("item", "replace"): "会替换目标物品栏中的物品，原物品的损失不可撤销。",
+    ("item", "modify"): "会修改背包或容器物品的 NBT 或组件，无法自动撤销。",
     ("worldborder", "set"): "会设置世界边界大小，因边界收缩造成的损失不可撤销。",
+    ("worldborder", "add"): "会收放世界边界。收窄时边界墙可能越过玩家位置，把玩家困在墙外并造成伤害。",
+    ("place", "structure"): "生成结构会覆盖现有方块，无法自动恢复原布局。",
+    ("advancement", "revoke"): "会撤销已有进度，使用 everything 会重置全部进度。",
+    ("loot", "replace"): "会用战利品表生成的物品覆盖容器或实体的指定槽位。",
+}
+_WORLD_NESTED_SUBCOMMANDS = {
+    ("scoreboard", "objectives", "remove"): "会删除整个计分板项目及其所有分数。",
+    ("scoreboard", "players", "reset"): "会清除目标玩家的指定分数。省略计分板项目时会清除其全部分数。",
 }
 _BROADCAST = frozenset({"say", "tellraw", "title", "actionbar", "me", "teammsg", "tm"})
 _BROADCAST_TEXT = {
@@ -196,7 +207,13 @@ def _warnings(text: str) -> tuple[list[dict], str, str]:
             or (name == "forceload" and subcommand == "query")
         ):
             warnings.append(_warning("world", _WORLD[name], "high"))
-        world_change = _WORLD_SUBCOMMANDS.get((name, subcommand))
+        third_word = words[2].lower() if len(words) > 2 else ""
+        world_change = (_WORLD_NESTED_SUBCOMMANDS.get((name, subcommand, third_word))
+                        or _WORLD_SUBCOMMANDS.get((name, subcommand)))
+        # experience/xp set 的第四词是数值。仅整数字面量零表示清零。
+        if (name in ("experience", "xp") and subcommand == "set" and len(words) > 3
+                and re.fullmatch(r"-?0+", words[3])):
+            world_change = "会将目标玩家指定的经验点数或等级清零，无法自动恢复。"
         if world_change:
             warnings.append(_warning("world", world_change, "high"))
         if name in _BROADCAST:

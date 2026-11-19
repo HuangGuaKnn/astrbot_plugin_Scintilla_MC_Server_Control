@@ -82,7 +82,8 @@ deny = jc.check_tool_access("whitelist", False)
 assert deny and "白名单" in deny and "命令工具" in deny
 assert jc.check_tool_access("whitelist", True) is None
 assert jc.check_tool_access("blacklist", False) is None
-assert all(t in deny for t in ("mc_execute_command", "mc_give_item", "mc_broadcast")) or True
+assert all(word in deny for word in ("执行指令", "发物品", "广播")), \
+    "Q1 拒绝文案应逐项说明被限制的能力"
 assert "喊话" in deny, "拒绝文案应说明插件自带功能不受影响"
 print("[PASS] check_tool_access：白名单拦非管理员、放行管理员；黑名单不拦")
 

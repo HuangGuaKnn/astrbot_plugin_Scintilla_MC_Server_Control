@@ -25,10 +25,9 @@ from _ui_page import PAGE_URL, API_GLOB, make_router  # noqa: E402
 _patch_pw_driver()
 
 from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, serve_plugin_root  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）, serve_plugin_root
+from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS, check_ui_shots, ui_shot_dir  # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-SHOTS = PLUGIN / "tests" / "_shots"
 
 FP = "e38d99c65853"
 TABS = ["overview", "server", "knowledge", "workflow", "prompts", "settings"]
@@ -231,13 +230,15 @@ def report(title: str, rows: list[dict]) -> None:
 
 
 def main() -> int:
-    SHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as pw:
+        channel = UI_CHANNEL
         try:
             browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
         except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
             print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
             browser = pw.chromium.launch()
+            channel = "bundled"
+        shots = ui_shot_dir(channel)
 
         # ---------- 1) 无存档：跟随系统 ----------
         print("[1] 首次打开（没有存档）跟随系统偏好")
@@ -253,7 +254,7 @@ def main() -> int:
         check("按钮文案告诉用户「点一下会变成什么」",
               page.inner_text("#theme_txt").strip() == "深色" and page.inner_text("#theme_ico").strip() == "☾",
               page.inner_text("#themebtn").strip())
-        page.screenshot(path=str(SHOTS / "theme_light_auto.png"), full_page=False)
+        page.screenshot(path=str(shots / "theme_light_auto.png"), full_page=False)
         ctx.close()
 
         ctx = browser.new_context(viewport={"width": 1360, "height": 950}, color_scheme="dark")
@@ -328,10 +329,13 @@ def main() -> int:
             for tab in TABS:
                 page.click(f'button.tab[data-page="{tab}"]')
                 page.wait_for_timeout(260)
-                page.screenshot(path=str(SHOTS / f"theme_{theme}_{tab}.png"))
-        print(f"    截图目录：{SHOTS}")
+                page.screenshot(path=str(shots / f"theme_{theme}_{tab}.png"))
+        print(f"    截图目录：{shots}")
         ctx.close()
         browser.close()
+        expected = {"theme_light_auto.png"}
+        expected.update(f"theme_{theme}_{tab}.png" for theme in ("light", "dark") for tab in TABS)
+        check_ui_shots(shots, expected, channel)
 
     print()
     if failed:
