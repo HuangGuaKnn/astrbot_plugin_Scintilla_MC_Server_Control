@@ -9,10 +9,10 @@
   [1] 设置页的可视化颜色卡：下拉 2 项（hex / named），标签带版本号，值与后端键一致；
   [2] 打开时按 GET /colors 的 plain.format 回显；
   [3] 显隐关系：单色格式行常驻可见（渐变关闭也在）；渐变格式行随开关显隐，开启后两者并存；
-  [4] 设置页镜像：#cfg_plain_fmt 同款 2 项 + 按 settings 载荷回显；
+  [4] 设置页仅一张可视化颜色卡，旧手动表单完全移除；
   [5] 保存颜色带 plain_color_format，随后保存全部设置沿用已保存的颜色和其他草稿；
   [6] 重置 → 回默认 hex。
-  [7] 单色格式行在渐变输出格式行**之前**（两套控件同序）；
+  [7] 单色格式行在渐变输出格式行**之前**（唯一可视化卡）；
   [8] 单色格式＝固定格式化色 → 取色器换成 16 色名选项框（§0-§f 顺序、标签带符号与中文），
       hex 值按下后端的最近色名回显（#FFD700 → gold），且**不静默改写**原始值；
   [9] 选色名 → 保存载荷直接写色名（gold / red）；切回 hex → 取色器与文本框回来；
@@ -151,16 +151,11 @@ def main() -> int:
                              "el=>{el.checked=false; el.dispatchEvent(new Event('change'));}")
         check("关回渐变 → 单色行仍在", page.is_visible("#plain_fmt_row"))
 
-        print("[4] 设置页镜像下拉")
-        expect(page.locator("#cfg_plain_fmt")).to_have_value("named")
-        o2 = opts(page, "#cfg_plain_fmt")
-        check("恰好 2 项", len(o2) == 2, str(len(o2)))
-        check("选项值与颜色卡一致",
-              [v for v, _ in o2] == ["hex", "named"], str([v for v, _ in o2]))
-        check("标签带版本号", "1.16+" in o2[0][1] and "全世代" in o2[1][1])
-        check("按 settings 载荷回显 named（不是硬编码默认）",
-              page.input_value("#cfg_plain_fmt") == "named",
-              page.input_value("#cfg_plain_fmt"))
+        print("[4] 设置页只有一套可视化颜色控件")
+        check("旧手动表单与跳转按钮已删除",
+              page.locator("#cfg_plain_fmt, #cfg_grad_fmt, #jump_text_color").count() == 0)
+        check("唯一颜色卡位于设置页",
+              page.locator("#page_settings #srv_color_card").count() == 1)
 
         print("[5] 保存载荷带 plain_color_format，保存全部设置沿用已保存颜色")
         feedback_draft = "署名草稿"
@@ -179,8 +174,6 @@ def main() -> int:
         check("保存后与后端回显一致（hex）",
               page.input_value("#clr_plain_fmt") == "hex")
 
-        check("颜色保存后同步到手动设置",
-              page.input_value("#cfg_plain_fmt") == "hex")
         check("颜色保存后反馈署名草稿仍保留",
               page.input_value("#cfg_feedback_name") == feedback_draft)
         with page.expect_response("**/colors"):
@@ -201,12 +194,6 @@ def main() -> int:
               page.evaluate("""()=>{
                 const a=document.querySelector('#plain_fmt_row'),
                       b=document.querySelector('#grad_fmt_row');
-                return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-              }"""))
-        check("设置页镜像同序（单色在前）",
-              page.evaluate("""()=>{
-                const a=document.querySelector('#cfg_plain_fmt'),
-                      b=document.querySelector('#cfg_grad_fmt');
                 return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
               }"""))
 
@@ -309,7 +296,7 @@ def main() -> int:
         for f in FAILS:
             print("  FAIL", f)
         return 1
-    print("全部通过 ✅（单色格式下拉：默认 hex / 旧版回退 / 版本号标注 / 两套控件同步）")
+    print("全部通过 ✅（单色格式下拉：默认 hex / 旧版回退 / 版本号标注 / 两种保存共用草稿）")
     return 0
 
 

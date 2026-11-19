@@ -216,10 +216,12 @@ def part_six() -> None:
           .count("§6 或 &6") >= 1)
     check("前端颜色卡有单色格式下拉 + 版本提示",
           'id="clr_plain_fmt"' in page and "hex 需客户端 1.16+ · 旧版自动回退" in page)
-    check("前端设置页镜像下拉 + CFG_FIELDS/S_DEFAULTS 登记",
-          'id="cfg_plain_fmt"' in page
-          and '["cfg_plain_fmt","plain_color_format","s"]' in page
-          and '"cfg_plain_fmt": "hex",' in page)
+    check("前端设置页仅一套颜色控件，两种保存共用可视化草稿",
+          'id="cfg_plain_fmt"' not in page
+          and page.count('id="clr_plain_fmt"') == 1
+          and 'function collectColors(){' in page
+          and 'Object.assign(settings, collectColors());' in page
+          and 'const payload = collectColors();' in page)
     check("前端 PLAIN_LABELS 带版本号 + 载荷/回显/重置齐全",
           "const PLAIN_LABELS" in page and "1.16+" in page
           and "payload.plain_color_format = $(\"clr_plain_fmt\").value;" in page

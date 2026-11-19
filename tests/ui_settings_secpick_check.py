@@ -1,167 +1,97 @@
-"""v0.23.7 回归：设置页三项单色的「格式化符号」下拉（真浏览器实跑）。
+"""唯一可视化颜色卡的格式化色回归（真浏览器）。
 
-用户 2026-10-05 点名：设置页的手动配置也要能单独选择格式化符号。
-
-于是设置页三项单色各配一个 `§0`-`§f` 下拉：
-  · 三个下拉**各自独立**（改一项绝不动另外两项）；
-  · 选中即把「§+码」写进左边单色框（`§6` 与色名 `gold` 在后端 _parse_color 里等价）；
-  · 反方向也同步：手打 hex / 色名 / §码 时下拉跟着对位（hex 走与后端同源的最近色名）；
-  · 认不出的值（RGB() / 十进制 / 空）→ 下拉回到「（原样保留）」，**绝不改值、绝不清空**；
-  · 取色器集中在可视化配色卡。
-
-覆盖：
-  1) 静态：三对 id 齐全（txt + sec）／选项文案带 §码 + 中文 + 色名；
-  2) 动态：三个下拉真渲染、可见、在 #page_settings 内、各 17 个选项（原样保留 + 16 符号），取色器集中在可视化配色卡；
-  3) 动态：初值对位（white → §f／gold → §6）；
-  4) 动态：选中 §c 后文本框 == "§c"（点保存就会存这个值）；
-  5) 动态：反向同步（#FFAA00 → §6；RGB(255,0,0) → 原样保留且值不变）；
-  6) 动态：三项互不干扰（改第一项，后两项的值与下拉都不变）；
-  7) 动态：端到端 —— 点「保存全部设置」，POST 载荷里的 color_say 真的是 §9；
-  8) 动态：页面无 JS 异常（pageerror）。
+v0.30.0 移除旧手动卡后，用现存的 16 色名选择器和文本框验证同一能力：
+三项独立、§码/hex 反向对位、未知值不被改写，以及保存全部设置的实际载荷。
 """
 from __future__ import annotations
 
-import pathlib
-import re
-import sys
+from playwright.sync_api import expect, sync_playwright
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import ui_theme_check as F  # noqa: E402  复用同一套假后端夹具与驱动补丁
+from _paths import UI_LAUNCH_KWARGS
+from _ui_page import PAGE_URL, VIEWPORT
+from ui_player_admin_check import Scenario
 
-from playwright.sync_api import sync_playwright  # noqa: E402
-from _paths import UI_CHANNEL, UI_LAUNCH_KWARGS  # noqa: E402  # 浏览器通道见 _paths（本机 Edge / CI bundled）
-
-HTML = F.PLUGIN / "pages" / "mc_control" / "index.html"
-PAIRS = [("cfg_color_say_t", "cfg_color_say_sec"),
-         ("cfg_color_title_t", "cfg_color_title_sec"),
-         ("cfg_color_fb_t", "cfg_color_fb_sec")]
-
-FAILED: list[str] = []
-
-
-def check(desc: str, cond: bool, extra: str = "") -> None:
-    print(f"  {'✓' if cond else '✗'} {desc}{('  ← ' + str(extra)) if (extra and not cond) else ''}")
-    if not cond:
-        FAILED.append(desc)
+PAIRS = [("clr_say_txt", "clr_say_sel"),
+         ("clr_title_txt", "clr_title_sel"),
+         ("clr_fb_txt", "clr_fb_sel")]
 
 
 def main() -> int:
-    src = HTML.read_text(encoding="utf-8")
-
-    print("[1] 静态：三对 id 齐全、选项文案带 §码")
-    for tid, sid in PAIRS:
-        check(f"#{tid} 存在（单色文本框）", f'id="{tid}"' in src)
-        check(f"#{sid} 存在（格式化符号下拉）", f'id="{sid}"' in src)
-    check("选项文案 = §码 + 中文 + 色名（与可视化配色同款）",
-          '§${i.toString(16)} ${MC_NAME_CN[n]} ${n}' in src)
-    check("三项配对表 SEC_PICKER_PAIRS 覆盖三对 id",
-          all(f'"{tid}"' in src and f'"{sid}"' in src for tid, sid in PAIRS)
-          and "SEC_PICKER_PAIRS" in src)
-
-    print("\n[2] 动态：三个下拉真渲染、可见、在设置页内、各 17 个选项")
     with sync_playwright() as pw:
-        try:
-            browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
-        except Exception as e:  # noqa: BLE001 —— 兜底必须说出原因，否则真错误会被静默吞掉
-            print(f"⚠ 通道 {UI_CHANNEL!r} 起不来（{e}），退回 playwright 自带 Chromium")
-            browser = pw.chromium.launch()
-        ctx = browser.new_context(viewport={"width": 1360, "height": 950})
-        pg = ctx.new_page()
-        errs: list[str] = []
-        pg.on("pageerror", lambda e: errs.append(str(e)))
-        # 端到端用：抓「保存全部设置」真正发出去的载荷（[7] 里那串 §9 就是从这儿来的）
-        sent: list[str] = []
-        pg.on("request", lambda r: sent.append(r.post_data or "")
-              if (r.method == "POST" and "settings/save" in r.url) else None)
-        pg.route(F.API_GLOB, F.route)
-        pg.goto(F.PAGE_URL)
-        pg.wait_for_timeout(1000)
-        pg.click('button.tab[data-page="settings"]')
-        pg.wait_for_timeout(600)
+        browser = pw.chromium.launch(**UI_LAUNCH_KWARGS)
+        page = browser.new_page(viewport=VIEWPORT)
+        scenario = Scenario(page)
+        scenario.color_config = {
+            "color_say": "white", "color_title": "gold", "color_feedback": "gold",
+            "gradient_enabled": False, "gradient_format": "json", "plain_color_format": "hex",
+            "gradient_colors_say": "#FFFFFF,#55FFFF", "gradient_colors_title": "#FFAA00,#FF00FF",
+            "gradient_colors_feedback": "#FFAA00,#55FF55",
+        }
+        page.goto(PAGE_URL)
+        page.locator('button.tab[data-page="settings"]').click()
+        expect(page.locator("#clr_say_txt")).to_have_value("white")
+        expect(page.locator("#clr_title_txt")).to_have_value("gold")
+        expect(page.locator("#clr_fb_txt")).to_have_value("gold")
 
-        visual_pickers = pg.locator("#page_settings #srv_color_card input[type=color]")
-        all_pickers = pg.locator("#page_settings input[type=color]")
-        check("设置页的三个取色器集中在可视化配色卡",
-              visual_pickers.count() == all_pickers.count() == 3)
+        print("[1] 单卡、三对控件齐全、初值按接口回显")
+        assert page.locator("#page_settings #srv_color_card").count() == 1
+        assert page.locator('[id^="cfg_color_"], #cfg_plain_fmt, #cfg_grad_fmt').count() == 0
+        assert page.locator("#page_settings input[type=color]:visible").count() == 3
+        assert page.locator("#page_settings input[type=color]").count() \
+            == page.locator("#srv_color_card input[type=color]").count()
+        for text_id, select_id in PAIRS:
+            assert page.locator(f"#srv_color_card #{text_id}, #srv_color_card #{select_id}").count() == 2
 
-        info = pg.evaluate(
-            """(pairs) => pairs.map(([tid, sid]) => {
-                const s = document.getElementById(sid), t = document.getElementById(tid);
-                if(!s || !t) return null;
-                return {sid, txt: t.value, val: s.value, n: s.options.length,
-                        first: s.options[0] ? s.options[0].textContent : "",
-                        visible: !!(s.offsetWidth || s.offsetHeight),
-                        inSettings: !!s.closest('#page_settings'),
-                        label15: [...s.options].find(o => o.value === 'f') ? 
-                                 [...s.options].find(o => o.value === 'f').textContent : ""};
-            })""", PAIRS)
-        check("三个下拉全部拿到", all(info), str(info))
-        for it in (info or []):
-            if not it:
-                continue
-            check(f"#{it['sid']} 可见", it["visible"], str(it))
-            check(f"#{it['sid']} 挂在设置页容器内", it["inSettings"], str(it))
-            check(f"#{it['sid']} 选项 17 个（原样保留 + 16 符号，实际 {it['n']}）", it["n"] == 17)
-            check(f"#{it['sid']} 首项是「（原样保留）」", it["first"] == "（原样保留）", it["first"])
-            check(f"#{it['sid']} §f 文案带色名 white", "white" in it["label15"], it["label15"])
+        print("[2] 固定格式化色模式：三项可见，16 色按 §0-§f 排列，标签含符号/中文/色名")
+        page.select_option("#clr_plain_fmt", "named")
+        names = ["black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple", "gold",
+                 "gray", "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white"]
+        for text_id, select_id in PAIRS:
+            selector = page.locator(f"#{select_id}")
+            expect(selector).to_be_visible()
+            expect(page.locator(f"#{text_id}")).to_be_hidden()
+            assert selector.locator("option").evaluate_all("els => els.map(el => el.value)") == names
+            labels = selector.locator("option").all_text_contents()
+            assert "§6" in labels[6] and "金" in labels[6] and "gold" in labels[6]
+            assert "§f" in labels[-1] and "white" in labels[-1]
+        expect(page.locator("#clr_say_sel")).to_have_value("white")
+        expect(page.locator("#clr_title_sel")).to_have_value("gold")
+        expect(page.locator("#clr_fb_sel")).to_have_value("gold")
 
-        print("\n[3] 初值对位：white → §f，gold → §6")
-        want = [("cfg_color_say_sec", "f"), ("cfg_color_title_sec", "6"), ("cfg_color_fb_sec", "6")]
-        for sid, code in want:
-            got = pg.evaluate(f"() => document.getElementById('{sid}').value")
-            check(f"#{sid} 默认选中 §{code}（实际 {got!r}）", got == code)
+        print("[3] 选择格式化色更新文本值与预览，三项互不影响")
+        page.select_option("#clr_say_sel", "red")
+        expect(page.locator("#clr_say_txt")).to_have_value("red")
+        expect(page.locator("#clr_say")).to_have_value("#ff5555")
+        expect(page.locator("#clr_title_txt")).to_have_value("gold")
+        expect(page.locator("#clr_fb_txt")).to_have_value("gold")
 
-        print("\n[4] 选中即写入：§c → 文本框值 '§c'")
-        pg.select_option("#cfg_color_say_sec", "c")
-        pg.wait_for_timeout(120)
-        got = pg.evaluate("() => document.getElementById('cfg_color_say_t').value")
-        check("文本框被写成 §c（保存即存此值）", got == "§c", repr(got))
+        print("[4] 手输 hex / §码与色名对位，未知 RGB 文本不被改写")
+        page.select_option("#clr_plain_fmt", "hex")
+        page.fill("#clr_title_txt", "#FFAA00")
+        expect(page.locator("#clr_title_sel")).to_have_value("gold")
+        page.fill("#clr_title_txt", "&c")
+        expect(page.locator("#clr_title_sel")).to_have_value("red")
+        page.fill("#clr_fb_txt", "RGB(255,0,0)")
+        expect(page.locator("#clr_fb_txt")).to_have_value("RGB(255,0,0)")
+        page.fill("#clr_say_txt", "§9")
+        expect(page.locator("#clr_say_sel")).to_have_value("blue")
+        expect(page.locator("#clr_title_txt")).to_have_value("&c")
+        expect(page.locator("#clr_fb_txt")).to_have_value("RGB(255,0,0)")
+        page.select_option("#clr_plain_fmt", "named")
+        page.select_option("#clr_plain_fmt", "hex")
+        expect(page.locator("#clr_fb_txt")).to_have_value("RGB(255,0,0)")
 
-        print("\n[5] 反向同步：#FFAA00 → §6；RGB(255,0,0) → 原样保留且值不变")
-        pg.fill("#cfg_color_title_t", "#FFAA00")
-        pg.wait_for_timeout(120)
-        got = pg.evaluate("() => document.getElementById('cfg_color_title_sec').value")
-        check("hex 归到 §6（与后端同源的最近色名）", got == "6", repr(got))
-
-        pg.fill("#cfg_color_fb_t", "RGB(255,0,0)")
-        pg.wait_for_timeout(120)
-        got = pg.evaluate("""() => [document.getElementById('cfg_color_fb_sec').value,
-                                    document.getElementById('cfg_color_fb_t').value]""")
-        check("认不出 → 回到「原样保留」", got[0] == "", repr(got))
-        check("值没有被改写（还是 RGB(255,0,0)）", got[1] == "RGB(255,0,0)", repr(got))
-
-        print("\n[6] 独立：改第一项，后两项的值与下拉都不动")
-        before = pg.evaluate("""() => ['cfg_color_title_t','cfg_color_title_sec',
-                                       'cfg_color_fb_t','cfg_color_fb_sec']
-                                   .map(id => document.getElementById(id).value)""")
-        pg.select_option("#cfg_color_say_sec", "9")
-        pg.wait_for_timeout(120)
-        after = pg.evaluate("""() => ['cfg_color_title_t','cfg_color_title_sec',
-                                      'cfg_color_fb_t','cfg_color_fb_sec']
-                                  .map(id => document.getElementById(id).value)""")
-        said = pg.evaluate("() => document.getElementById('cfg_color_say_t').value")
-        check("第一项写成 §9", said == "§9", repr(said))
-        check("后两项一字未动", before == after, f"{before} → {after}")
-
-        print("\n[7] 端到端：点「保存全部设置」→ 载荷里真的是 §9")
-        pg.click("#btn_save_cfg_top")
-        pg.wait_for_timeout(600)
-        check("保存请求发出", bool(sent), str(len(sent)))
-        check("载荷 color_say = §9（设置页读的就是这个框，不是副本）",
-              any('"color_say":"§9"' in b or '"color_say": "§9"' in b for b in sent),
-              str(sent[:1])[:200])
-
-        print("\n[8] 页面无 JS 异常")
-        check("pageerror 为空", not errs, str(errs[:2]))
-
-        ctx.close()
+        print("[5] 保存全部设置提交唯一草稿，§码原值和另两格都不丢")
+        with page.expect_response("**/settings/save"):
+            page.locator("#btn_save_cfg_top").click()
+        assert scenario.settings_saves, "未发出保存全部设置请求"
+        saved = scenario.settings_saves[-1]
+        assert saved["color_say"] == "§9" and saved["color_title"] == "&c" \
+            and saved["color_feedback"] == "RGB(255,0,0)", saved
+        assert saved["plain_color_format"] == "hex"
+        assert not scenario.errors, f"页面 JS 异常：{scenario.errors}"
         browser.close()
-
-    print()
-    if FAILED:
-        print(f"❌ {len(FAILED)} 项未通过：" + "、".join(FAILED))
-        return 1
-    print("✅ 全部通过")
+    print("[PASS] 唯一颜色卡：格式化色、双向对位、独立编辑、未知值保留、真实保存载荷")
     return 0
 
 

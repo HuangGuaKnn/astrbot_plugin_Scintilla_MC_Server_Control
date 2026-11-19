@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import jwt
 from starlette.requests import Request
@@ -210,6 +210,144 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         bare = FakePlugin({"list": "There are 1 of a max of 20 players online: Steve"})
         result2 = await player_admin.get_online(bare)
         self.assertNotIn("ips", result2)
+
+    async def test_p17_first_poll_backfills_two_ips_without_replaying_events(self):
+        """P17 从真实 start → _poll 路径回扫；UTF-8 / GBK 均只填索引。"""
+        from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as LW
+
+        for encoding in ("utf-8", "gbk"):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as td:
+                log = Path(td) / "logs" / "latest.log"
+                log.parent.mkdir()
+                history = (
+                    "[16:30:00] [Server thread/INFO]: 服务器日志：已有玩家在线\n"
+                    "[16:30:01] [Server thread/INFO]: Steve[/192.0.2.9:52031] "
+                    "logged in with entity id 42 at (0, 64, 0)\n"
+                    "[16:30:02] [Server thread/INFO]: Steve joined the game\n"
+                    "[16:30:03] [Server thread/INFO]: <Steve> 历史聊天不能重播\n"
+                    "[16:30:04] [Server thread/INFO]: Alex[/2001:db8::42:52031] "
+                    "logged in with entity id 7 at (0, 64, 0)\n"
+                ).encode(encoding)
+                log.write_bytes(history)
+                on_event = AsyncMock()
+                watcher = LW.LogWatcher(td, on_event)
+                self.assertEqual(watcher.recent_ips(), {}, "P17 构造后即可安全读取空索引")
+                try:
+                    with patch.object(watcher, "_loop", new=AsyncMock()):
+                        await watcher.start()
+                    with (patch.object(watcher, "_parse_line_multi",
+                                       side_effect=AssertionError("P17 不得解析历史事件")),
+                          patch.object(watcher, "_decode_chunk", wraps=watcher._decode_chunk) as decode):
+                        await watcher._poll(watcher._task_gen)
+                        self.assertEqual(watcher.recent_ips(), {
+                            "steve": "192.0.2.9", "alex": "2001:db8::42",
+                        }, "P17 首轮必须回填两个玩家的正确地址")
+                        self.assertEqual(watcher._pos, len(history), "P17 事件游标仍在文件尾")
+                        self.assertEqual(watcher._enc, encoding, "P17 沿用现有 UTF-8 / GBK 解码")
+                        decode.assert_called_once_with(history)
+                        on_event.assert_not_awaited()
+                        await watcher._poll(watcher._task_gen)
+                        decode.assert_called_once_with(history)
+                        on_event.assert_not_called()
+                    # 普通新增日志不会把回扫的索引清空；新登录仍能更新单个玩家。
+                    with log.open("ab") as out:
+                        out.write("[16:31:00] [Server thread/INFO]: <Steve> 新聊天\n".encode(encoding))
+                    await watcher._poll(watcher._task_gen)
+                    on_event.assert_awaited_once_with("chat", "Steve", "新聊天")
+                    self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9",
+                                     "P17 跨轮询保留历史 IP，不能每批清空")
+                    with log.open("ab") as out:
+                        out.write(("[16:32:00] [Server thread/INFO]: Steve[/192.0.2.10:52032] "
+                                   "logged in with entity id 43 at (0, 64, 0)\n").encode(encoding))
+                    await watcher._poll(watcher._task_gen)
+                    self.assertEqual(watcher.recent_ips(), {
+                        "steve": "192.0.2.10", "alex": "2001:db8::42",
+                    }, "P17 新登录只更新对应玩家，其他地址保留")
+                finally:
+                    await watcher.stop()
+
+    async def test_p17_backfill_is_bounded_and_discards_partial_lines(self):
+        from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as LW
+
+        def login(name, address):
+            return (f"[16:30:01] [Server thread/INFO]: {name}[/{address}:52031] "
+                    "logged in with entity id 42 at (0, 64, 0)").encode("ascii")
+
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "logs" / "latest.log"
+            log.parent.mkdir()
+            history = (login("Old", "192.0.2.1") + b"\n"
+                       + b"x" * (256 * 1024) + login("Fragment", "192.0.2.2") + b"\n"
+                       + login("Steve", "192.0.2.9") + b"\n"
+                       + login("Alex", "192.0.2.10") + b"\n"
+                       + login("Unfinished", "192.0.2.3"))
+            log.write_bytes(history)
+            on_event = AsyncMock()
+            watcher = LW.LogWatcher(td, on_event)
+            try:
+                with patch.object(watcher, "_loop", new=AsyncMock()):
+                    await watcher.start()
+                with patch.object(watcher, "_read_at", wraps=watcher._read_at) as read:
+                    await watcher._poll(watcher._task_gen)
+                self.assertEqual(watcher.recent_ips(), {
+                    "steve": "192.0.2.9", "alex": "192.0.2.10",
+                }, "P17 不读取窗口外旧行，也不采信首尾残行")
+                read.assert_called_once_with(len(history) - 256 * 1024, 256 * 1024)
+                on_event.assert_not_called()
+            finally:
+                await watcher.stop()
+
+    async def test_p17_unknown_position_waits_for_readable_log_then_backfills_once(self):
+        from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as LW
+
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "logs" / "latest.log"
+            log.parent.mkdir()
+            on_event = AsyncMock()
+            watcher = LW.LogWatcher(td, on_event)
+            try:
+                with (patch.object(watcher, "_loop", new=AsyncMock()),
+                      patch.object(watcher, "_prime_state", return_value=None)):
+                    await watcher.start()
+                await watcher._poll(watcher._task_gen)
+                self.assertEqual(watcher._pos, -1)
+                self.assertEqual(watcher.recent_ips(), {})
+                log.write_text(
+                    "[16:30:01] [Server thread/INFO]: Steve[/192.0.2.9:52031] "
+                    "logged in with entity id 42 at (0, 64, 0)\n"
+                    "[16:30:02] [Server thread/INFO]: Steve joined the game\n",
+                    encoding="utf-8",
+                )
+                # 读失败不得把「待回填」永久消费；下轮文件恢复可读再补。
+                with patch.object(watcher, "_read_at", side_effect=PermissionError("busy")):
+                    await watcher._poll(watcher._task_gen)
+                self.assertEqual(watcher._pos, -1)
+                self.assertEqual(watcher.recent_ips(), {})
+                await watcher._poll(watcher._task_gen)
+                self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9")
+                self.assertEqual(watcher._pos, log.stat().st_size)
+                self.assertFalse(watcher._ip_backfill_pending)
+                on_event.assert_not_called()
+            finally:
+                await watcher.stop()
+
+    async def test_p17_stale_backfill_cannot_write_new_generation_index(self):
+        from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as LW
+
+        watcher = LW.LogWatcher(str(self.path), AsyncMock())
+        history = (b"[16:30:01] [Server thread/INFO]: Steve[/192.0.2.9:52031] "
+                   b"logged in with entity id 42 at (0, 64, 0)\n")
+        watcher._task_gen = 1
+
+        async def changed_generation(*args, **kwargs):
+            watcher._task_gen = 2
+            return history
+
+        with patch.object(watcher, "_io_wait", new=changed_generation):
+            self.assertFalse(await watcher._backfill_recent_ips(len(history), 1))
+        self.assertEqual(watcher.recent_ips(), {}, "P17 旧代迟到结果不能写新代索引")
+        self.assertTrue(watcher._ip_backfill_pending)
+        watcher.on_event.assert_not_called()
 
     def test_p14_ip_ban_actions(self):
         """v0.29.0：IP 封禁 —— 命令按世代带原因、地址严格校验、回读查 IP 名单。

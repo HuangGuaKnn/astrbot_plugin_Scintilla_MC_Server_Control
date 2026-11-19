@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = "core/player_admin.py"
+LWCORE = os.path.join(REPO, "core", "log_watcher.py")
+
 API = "core/web_api.py"
 HTML = "pages/mc_control/index.html"
 BACKEND_TEST = "tests/test_v0260_player_admin.py"

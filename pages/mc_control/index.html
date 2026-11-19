@@ -1142,7 +1142,7 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 
 <!-- ================= 终端 ================= -->
 <div class="page" id="page_console">
-  <p class="console-notice" id="console_notice">这不是实时终端（RCON 一问一答）。<strong>命令会立即在服务端执行。</strong>日志通过轮询更新。</p>
+  <p class="console-notice" id="console_notice">这不是实时终端（RCON 一问一答）。<strong>命令会立即在服务端执行。</strong>日志通过轮询更新。分级表只覆盖常见命令；<strong>插件命令不在表内，同样会立即执行。</strong></p>
   <div class="grid g2">
     <section class="card" aria-labelledby="console_results_title">
       <h3 id="console_results_title"><span class="dot" style="background:var(--cyan)"></span>命令回执 <span class="badge amb right" id="console_mode" hidden>白名单模式</span></h3>
@@ -1756,42 +1756,6 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <label class="sw"><input type="checkbox" id="cfg_feedback_tellraw"><span class="sl"></span></label>
       </div>
     </div>
-    <div class="card">
-      <h3><span class="dot" style="background:var(--amber)"></span>文本颜色 · 手动设置 <span class="right"><button type="button" class="jump" id="jump_text_color">可视化调色 →</button></span></h3>
-      <div class="sw-row" style="border-top:none">
-        <div class="sw-t"><b>启用渐变色（MC 1.16+）</b><span>按锚点逐字符渐变 · 空格不参与</span></div>
-        <label class="sw"><input type="checkbox" id="cfg_grad_en"><span class="sl"></span></label>
-      </div>
-      <label class="f">单色格式（不开渐变时生效）</label>
-      <select id="cfg_plain_fmt"></select>
-      <label class="f">渐变输出格式</label>
-      <select id="cfg_grad_fmt"></select>
-      <label class="f">聊天栏 · 单色 / 渐变锚点</label>
-      <div class="frow">
-        <div class="fcell">
-          <input type="text" id="cfg_color_say_t" placeholder="white 或 #FFFFFF">
-          <select id="cfg_color_say_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
-        </div>
-        <input type="text" id="cfg_grad_say_t" placeholder="#FFFFFF,#55FFFF">
-      </div>
-      <label class="f">全屏标题 · 单色 / 渐变锚点</label>
-      <div class="frow">
-        <div class="fcell">
-          <input type="text" id="cfg_color_title_t" placeholder="gold 或 #FFAA00">
-          <select id="cfg_color_title_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
-        </div>
-        <input type="text" id="cfg_grad_title_t" placeholder="#FFAA00,#FF00FF">
-      </div>
-      <label class="f">模拟任务输出 · 单色 / 渐变锚点</label>
-      <div class="frow">
-        <div class="fcell">
-          <input type="text" id="cfg_color_fb_t" placeholder="gold 或 #FFAA00">
-          <select id="cfg_color_fb_sec" title="格式化符号（§0-§f）· 选中即把「§+码」写进左边单色框 · 全世代通用"></select>
-        </div>
-        <input type="text" id="cfg_grad_fb_t" placeholder="#FFAA00,#55FF55">
-      </div>
-      <div class="hint" style="margin-top:8px">支持色名 / #RRGGBB / RGB(255,0,0) / 格式化符号（<code>§0</code>-<code>§f</code> 或 <code>&amp;0</code>-<code>&amp;f</code>）；每项单色右侧的「§」下拉可直接挑一个符号色（全世代通用，选中即写入左边框）。渐变锚点 ≥2 个、逗号分隔。手动修改后，点击「保存全部设置」生效。</div>
-    </div>
   </div>
 
   <div class="card" id="srv_color_card" tabindex="-1">
@@ -2159,7 +2123,6 @@ function jumpToTextColor(){
 }
 window.jumpToTextColor = jumpToTextColor;
 $("bc_text_color").onclick = jumpToTextColor;
-$("jump_text_color").onclick = jumpToTextColor;
 
 // ============ RCON 结束边界 · 运行态（v0.22.4 / v0.22.5） ============
 // 三个**互不替代**的状态各自独立显示，绝不能把「没有自动降级」当成「响应可靠」：
@@ -2600,10 +2563,9 @@ const PLAYER_ACTIONS = {
   kick:"踢出", ban:"封禁", unban:"解封", ban_ip:"封禁 IP", unban_ip:"解封 IP",
   whitelist_add:"加入白名单", whitelist_remove:"移出白名单",
 };
-// `unban_ip` 只出现在封禁名单的 IP 行；在线玩家行不该有它 ——
-// 否则「解封 IP」会挂在一个玩家身上，语义完全对不上。
+// 在线行只提供玩家名操作；解封和 IP 封禁留在封禁名单区。
 const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS)
-  .filter(action => action !== "unban_ip" && action !== "ban_ip");
+  .filter(action => action !== "unban" && action !== "unban_ip" && action !== "ban_ip");
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
 // v0.28.0：WebUI 是管理员专属页面，**不再脱敏** —— 服主要靠真实 IP 判断封哪个地址。
 // 聊天工具（进群）走的是另一条链路，那边仍按原口径处理；审计文件那一份继续脱敏。
@@ -2657,13 +2619,11 @@ function renderOnlinePlayers(status, guardedOnline, admin){
     host.innerHTML = names.map(name => {
       if(!admin) return `<span class="ply">${escServer(name)}</span>`;
       // v0.29.0：IP 来自 log_watcher 的旁路索引（进服行顺手记的）。
-      // 拿不到时明写「IP 未知」并把按钮藏起来 —— 猜一个地址比不给更糟。
+      // 拿不到时明写「IP 未知」；封禁 IP 使用封禁名单区的独立入口。
       const ip = (online.ips || {})[name] || "";
       const ipCell = ip
-        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>
-           <button class="btn sm" type="button" data-action="ban_ip" data-player="${escServer(ip)}"
-                   title="封禁这个 IP（原版 ban-ip）">封禁 IP</button>`
-        : `<span class="player-ip muted" title="监听开始前就在线 / 代理服 / 非 ASCII 名时会没有记录">IP 未知</span>`;
+        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>`
+        : `<span class="player-ip muted" title="可读取的日志中没有该玩家的进服 IP 记录">IP 未知</span>`;
       return `<div class="player-row"><span class="ply">${escServer(name)}</span>${ipCell}
         ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
     }).join("");
@@ -3765,15 +3725,6 @@ const CFG_FIELDS = [
   // 外观 · 反馈与颜色
   ["cfg_feedback_name","feedback_name","s"],
   ["cfg_feedback_tellraw","feedback_tellraw","b",true],
-  ["cfg_grad_en","gradient_enabled","b",false],
-  ["cfg_grad_fmt","gradient_format","s"],
-  ["cfg_plain_fmt","plain_color_format","s"],
-  ["cfg_color_title_t","color_title","s"],
-  ["cfg_grad_title_t","gradient_colors_title","s"],
-  ["cfg_color_say_t","color_say","s"],
-  ["cfg_grad_say_t","gradient_colors_say","s"],
-  ["cfg_color_fb_t","color_feedback","s"],
-  ["cfg_grad_fb_t","gradient_colors_feedback","s"],
   // 自动化 · 多Agent 工作流
   ["cfg_wf_enabled","agent_workflow_enabled","b",true],
   ["cfg_wf_tool","enable_mc_workflow","b",true],
@@ -3802,10 +3753,6 @@ const S_DEFAULTS = {
   "cfg_perm_hint_mode": "on_demand",
   "cfg_kb_engine": "bm25",
   "cfg_item_syntax": "auto",
-  "cfg_color_title_t": "gold", "cfg_color_say_t": "white", "cfg_color_fb_t": "gold",
-  "cfg_grad_title_t": "#FFAA00,#FF00FF", "cfg_grad_say_t": "#FFFFFF,#55FFFF", "cfg_grad_fb_t": "#FFAA00,#55FF55",
-  "cfg_grad_fmt": "json",
-  "cfg_plain_fmt": "hex",
 };
 
 // ============ 配置布尔值的严格解析（v0.24.8 · GPT 第四轮复核 P4 / 第六轮复核 B6） ============
@@ -5065,17 +5012,6 @@ async function loadSettings(){
       : "AstrBot 聊天平台指令（不是在游戏里输入）；群聊里需先按 AstrBot 的唤醒词唤醒，私聊可直接发送 "
         + "<code>mcs 帮助</code>";
   }
-  // 渐变输出格式下拉（与可视化调色卡片共享选项）
-  const fmtSel = $("cfg_grad_fmt");
-  if(fmtSel && !fmtSel.options.length){
-    fmtSel.innerHTML = Object.entries(FORMAT_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
-  }
-  const plainSel = $("cfg_plain_fmt");
-  if(plainSel && !plainSel.options.length){
-    plainSel.innerHTML = Object.entries(PLAIN_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
-  }
-  // 设置页三项单色的「格式化符号」下拉（v0.23.7）：先把选项与联动备好，等值写完再对位
-  bindSecPickers();
   for(const [id,key,ty,dft] of CFG_FIELDS){
     const el = $(id);
     if(!el) continue;
@@ -5095,8 +5031,6 @@ async function loadSettings(){
       el.value = val;
     }
   }
-  // 三项单色的值已经落进文本框，现在让「格式化符号」下拉对上（认不出就「原样保留」）
-  syncSecPickers();
   // v0.21.15：异地 RCON 模式 → 目录框置灰 + 明确告知哪些能力被禁用
   // v0.21.19：此刻开关里的值就是**后端已保存**的值 —— 把它钉成基准（RMT.saved），
   // 之后用户随手拨开关都不会再改写封禁，只有真正点保存（回到这里）才会变。
@@ -5287,6 +5221,8 @@ function collectSettings(){
 }
 async function saveSettings(){
   const settings = collectSettings();
+  // 颜色只从唯一的可视化草稿收集；加载失败时不以默认值覆盖服务端配置。
+  if(colorDraftReady) Object.assign(settings, collectColors());
   setSaveNotice("保存中…");
   clearSaveWarn();                    // v0.23.9：新一轮保存开始，旧的软提醒先撤
   const r = await callPost("settings/save", { settings }).catch(()=>({ok:false,error:"请求失败"}));
@@ -5718,6 +5654,7 @@ const PLAIN_LABELS = {
   hex:"精确 hex（#RRGGBB）· 客户端 1.16+｜已知旧版自动回退固定格式化色",
   named:"固定格式化色 · 16 色名（§0-§f 同款）· 全世代通用"
 };
+let colorDraftReady = false;
 let gradState = {title:["#FFAA00","#FF00FF"],say:["#FFFFFF","#55FFFF"],fb:["#FFAA00","#55FF55"]};
 
 // ===== v0.23.7（B2④ 追加·用户点名）：单色格式=「固定格式化色」时，颜色格弹 16 色名选项框 =====
@@ -5776,51 +5713,6 @@ function nearestNamedColor(v){
     }
   }
   return best;
-}
-// ── 设置页：三项单色各配一个「格式化符号」下拉（v0.23.7）──────────────────────
-// 手动设置支持 `§6` 等格式化符号色码，按固定色解析，适用于所有版本。
-const SEC_PICKER_PAIRS = [["cfg_color_say_t",   "cfg_color_say_sec"],
-                          ["cfg_color_title_t", "cfg_color_title_sec"],
-                          ["cfg_color_fb_t",    "cfg_color_fb_sec"]];
-const SEC_KEEP_LABEL = "（原样保留）";
-const SEC_BY_NAME = {};                 // 色名 → §码；顺序即 MC_NAME_ORDER（0-15）
-MC_NAME_ORDER.forEach((n,i)=>{ SEC_BY_NAME[n] = i.toString(16); });
-
-function fillSecPickers(){
-  for(const [,sid] of SEC_PICKER_PAIRS){
-    const sel = $(sid);
-    if(!sel || sel.options.length) continue;
-    sel.innerHTML = `<option value="">${SEC_KEEP_LABEL}</option>`
-      + MC_NAME_ORDER.map((n,i)=>
-          `<option value="${i.toString(16)}">§${i.toString(16)} ${MC_NAME_CN[n]} ${n}</option>`).join("");
-  }
-}
-// 文本框 → 下拉（只同步显示，绝不改值）：
-//   认得出固定色就选中（hex 走与后端 nearest_vanilla_color 同源的最近色名）；
-//   认不出（RGB() / 十进制 / 空）就回到「原样保留」，不假装自己是某个符号色。
-function syncSecPickers(){
-  for(const [tid,sid] of SEC_PICKER_PAIRS){
-    const t = $(tid), sel = $(sid);
-    if(!t || !sel) continue;
-    const n = nearestNamedColor(t.value);
-    sel.value = n ? (SEC_BY_NAME[n] || "") : "";
-  }
-}
-function bindSecPickers(){
-  fillSecPickers();
-  for(const [tid,sid] of SEC_PICKER_PAIRS){
-    const t = $(tid), sel = $(sid);
-    if(!t || !sel || sel.dataset.secBound === "1") continue;
-    sel.dataset.secBound = "1";
-    sel.addEventListener("change", ()=>{
-      if(!sel.value){ syncSecPickers(); return; }        // 「原样保留」＝什么都不动
-      const code = sel.value, name = MC_NAME_ORDER[parseInt(code,16)];
-      t.value = "§" + code;
-      setSaveNotice(`已填入 §${code}（${MC_NAME_CN[name] || name}）——格式化符号全世代通用，`
-        + "点上方「保存全部设置」后生效", false);
-    });
-    t.addEventListener("input", syncSecPickers);          // 手打 hex / 色名 / §码 也跟着走
-  }
 }
 function fillNameSelects(){
   for(const [pick] of CLR_ITEMS){
@@ -5930,6 +5822,7 @@ function bindColors(){
 async function loadColors(){
   const r = await callGet("colors").catch(()=>({ok:false}));
   if(!r.ok || !r.colors) return;
+  colorDraftReady = true;
   for(const [pick,txt,key] of CLR_ITEMS){
     const v = r.colors[key] || CLR_DEF[key];
     $(pick).value = clrHex(v); $(txt).value = v;
@@ -5950,13 +5843,17 @@ async function loadColors(){
   refreshGradVisibility();
   syncAnimatedSelects();
 }
-async function saveColors(){
+function collectColors(){
   const payload = {};
   for(const [pick,txt,key] of CLR_ITEMS) payload[key] = $(txt).value.trim() || $(pick).value;
   payload.gradient_enabled = $("clr_grad_en").checked;
   payload.gradient_format = $("clr_grad_fmt").value;
   payload.plain_color_format = $("clr_plain_fmt").value;
   for(const key of Object.keys(GRAD_KEYS)) payload[GRAD_KEYS[key]] = gradState[key].join(",");
+  return payload;
+}
+async function saveColors(){
+  const payload = collectColors();
   setNotice($("clr_notice"), "保存中…");
   const r = await callPost("colors/save", payload).catch(()=>({ok:false,error:"请求失败"}));
   if(r.ok){
@@ -5972,19 +5869,7 @@ async function saveColors(){
       gradState[key] = stopsToArr((g.stops||{})[GRAD_KEYS[key]] || GRAD_DEFAULTS[key]);
       renderStops(key);
     }
-    // 同步手动表单里的颜色字段，避免稍后保存全部设置时写回旧颜色。
-    const saved = {
-      ...payload, ...r.colors, ...g.stops,
-      gradient_enabled: g.enabled ?? payload.gradient_enabled,
-      gradient_format: g.format || payload.gradient_format,
-      plain_color_format: r.plain?.format || payload.plain_color_format,
-    };
-    for(const [id, key, type] of CFG_FIELDS){
-      if(!Object.prototype.hasOwnProperty.call(saved, key)) continue;
-      if(type === "b") $(id).checked = parseCfgBool(saved[key], false);
-      else $(id).value = saved[key];
-    }
-    syncSecPickers();
+    colorDraftReady = true;
     syncAnimatedSelects();
   } else {
     setNotice($("clr_notice"), "✗ " + (r.error||"保存失败"), true);

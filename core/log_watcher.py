@@ -373,6 +373,8 @@ _LOGIN_IP_PATTERN = re.compile(
 )
 #: 索引上限：只在内存里留最近若干玩家，防止长期运行无限增长
 _RECENT_IP_LIMIT = 256
+# 冷启动只回扫有界尾部，历史内容仅用于 IP 索引，不派发事件。
+RECENT_IP_BACKFILL_BYTES = 256 * 1024
 _LEAVE_PATTERN = re.compile(r"^(?P<player>[A-Za-z0-9_]{1,16}) left the game$")
 _ADVANCEMENT_PATTERN = re.compile(
     r"^(?P<player>[A-Za-z0-9_]{1,16})\s+has (?:made the advancement|"
@@ -459,6 +461,9 @@ class LogWatcher:
         self.on_event = on_event
         self.poll_interval = poll_interval
         self._pos = 0
+        # 索引必须随实例保留，不能在每批新增日志之前清空。
+        self._recent_ips: dict[str, tuple[str, float]] = {}
+        self._ip_backfill_pending = True
         self._task: asyncio.Task | None = None
         self._running = False
         # 已识别的日志编码（中文 Windows 下 Forge 常用 GBK 写日志）
@@ -642,7 +647,7 @@ class LogWatcher:
         )
 
     async def start(self) -> None:
-        """从日志文件末尾开始监听（不回溯历史日志）。
+        """从日志文件末尾开始监听（历史日志只回填 IP 索引，不重播事件）。
 
         v0.23.5 第五轮（GPT 第四轮复核遗留）：
         - **幂等**：重复调用 `start()` 不再覆盖旧任务句柄（旧任务那时就再也 `stop()`
@@ -713,6 +718,7 @@ class LogWatcher:
             # v0.23.5 第七轮：短文件快照同理 —— 留着旧内容会在重启后的第一轮
             # 误判一次轮转，把已经播报过的历史整段重播。
             self._short_sig, self._short_len = "", 0
+            self._ip_backfill_pending = True
             self.missing_polls = 0
             self._running = True
             # v0.23.5 第八轮（GPT 第七轮 P2）：登记新代，并把代号交给 `_loop`。
@@ -1064,8 +1070,8 @@ class LogWatcher:
     def recent_ip(self, player: str) -> str:
         """某玩家最近一次进服时的出口 IP；没有记录返回空串。
 
-        只会返回**监听期间**见过进服的玩家 —— 插件启动前就在线的人没有记录，
-        这时界面应当如实显示「未知」，不要猜。
+        来自监听期间的进服行，或启动时 latest.log 尾部的有界回扫。
+        日志里找不到的玩家如实返回空串，不猜地址。
         """
         item = self._recent_ips.get(str(player or "").casefold())
         return item[0] if item else ""
@@ -1073,6 +1079,34 @@ class LogWatcher:
     def recent_ips(self) -> dict:
         """索引快照：``{玩家名(小写): ip}``。给需要批量展示的调用方用。"""
         return {key: value[0] for key, value in self._recent_ips.items()}
+
+    async def _backfill_recent_ips(self, size: int, gen: "int | None" = None) -> bool:
+        """首个可读轮询仅回填一次 IP；IO 结果先验代，绝不解析或派发历史事件。"""
+        if not self._ip_backfill_pending:
+            return True
+        offset = max(0, size - RECENT_IP_BACKFILL_BYTES)
+        try:
+            data = await self._io_wait(self._read_at, offset, size - offset,
+                                       what="回扫最近进服 IP", gen=gen)
+        except OSError as e:
+            if self._stale(gen):
+                return False
+            self.error_count += 1
+            self.last_error = f"{type(e).__name__}: {e}"
+            return False
+        if self._stale(gen):
+            return False
+        if data is None:
+            return False
+        # 从行中间切入时丢弃首片段；未落换行的尾片段也不拿来猜 IP。
+        # 先按字节找换行，避免边界截断 UTF-8 / GBK 字符影响整块编码选择。
+        if offset:
+            data = data[data.find(b"\n") + 1:] if b"\n" in data else b""
+        data = data[:data.rfind(b"\n") + 1]
+        for line in self._decode_chunk(data).splitlines():
+            self._note_login_ip(line)
+        self._ip_backfill_pending = False
+        return True
 
     def _file_sig(self) -> tuple[int, int] | None:
         """(st_ino, st_size) —— 文件被换掉时 st_ino 会变（Windows 上为文件索引）。"""
@@ -1220,6 +1254,10 @@ class LogWatcher:
         self._last_size = size
         sig = (int(getattr(st, "st_ino", 0) or 0), size)
         if self._pos < 0:
+            if not await self._backfill_recent_ips(size, gen):
+                return
+            if self._stale(gen):
+                return
             # v0.23.5 第五轮：位置未知（start() 的初始化 IO 超时/被拒）→ **直接落到
             # 文件尾**。位置未知时从 0 读 = 把整份历史日志当新事件重播一遍，
             # 比漏几条严重得多；「不回溯历史日志」是 start() 的既有承诺。
@@ -1342,6 +1380,10 @@ class LogWatcher:
                 return
         # 超时（None）时保留上一次的头指纹：清空等于把判据③关掉一轮，没必要
         self._head = head if head is not None else self._head
+        if not await self._backfill_recent_ips(size, gen):
+            return
+        if self._stale(gen):
+            return
         if size == self._pos:
             return
         # v0.23.5：滞后保护。上面的读取上限让每次最多前进 1 MiB —— 若消费速度
@@ -1448,8 +1490,6 @@ class LogWatcher:
         self._anchor = data[-ANCHOR_BYTES:]
         self._anchor_at = self._pos - len(self._anchor)
         self.last_read_at = time.monotonic()
-        # v0.29.0：玩家 → (最近进服 IP, 记录时刻)。只读索引，不参与事件判定。
-        self._recent_ips: dict[str, tuple[str, float]] = {}
         for line in self._decode_chunk(data).splitlines():
             # v0.23.5 第八轮（GPT 第七轮 P2）：逐行消费也验代（旧任务恢复后不得再往下走）
             if self._stale(gen):

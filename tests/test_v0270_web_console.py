@@ -390,6 +390,38 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
                 _, payload = await call(plugin, "execute", "list")
                 self.assertTrue(payload["results"][0]["accepted"], "合法探测形态仍可正常诊断")
 
+    async def test_p18_service_aliases_warn_without_changing_dispatch(self):
+        commands = ("reset", "rl", "shutdown", "reboot", "/reset", "bukkit:rl",
+                    "execute as @a run example:reset")
+        plugin = ConsolePlugin({command: "test reply" for command in commands})
+        for command in commands:
+            with self.subTest(command=command):
+                status, payload = await call(plugin, "preview", command)
+                self.assertEqual(status, 200)
+                result, = payload["results"]
+                service = [row for row in result["warnings"] if row["code"] == "service"]
+                self.assertEqual(len(service), 1, "P18 服务中断别称须命中 A 组提示")
+                self.assertEqual(service[0]["level"], "high", "P18 A 组提示强度须为 high")
+                self.assertIn("插件", service[0]["text"], "P18 提示须说明插件语义")
+                if "reset" in command:
+                    self.assertIn("依插件而定", service[0]["text"], "P18 reset 语义依插件而定")
+                self.assertIs(result["accepted"], True, "P18 提示不能拒绝命令")
+        self.assertEqual(plugin.events, [], "P18 预览不得提前发命令")
+        self.assertFalse(self.audit.exists(), "P18 预览不写执行审计")
+        _, executed = await call(plugin, "execute", "\n".join(commands))
+        self.assertEqual([event[1] for event in plugin.events if event[0] == "send"],
+                         list(commands), "P18 新别称仍按原文逐条执行")
+        for result in executed["results"]:
+            self.assertIs(result["accepted"], True)
+        rows = [json.loads(line) for line in self.audit.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([row["command"] for row in rows], list(commands),
+                         "P18 新别称执行须逐条审计")
+        for row in rows:
+            self.assertIn("service", row["warnings"], "P18 审计保留 A 组提示码")
+        _, unknown = await call(plugin, "preview", "custom_plugin_command")
+        self.assertIs(unknown["results"][0]["accepted"], True,
+                      "P18 表外插件命令仍可执行")
+
     async def test_t14_soft_hints_never_block_dispatch(self):
         command = "execute as @a at @e[type=item] run stop"
         plugin = ConsolePlugin({command: STOP, "list": ONLINE})

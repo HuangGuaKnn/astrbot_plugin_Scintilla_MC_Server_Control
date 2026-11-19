@@ -36,13 +36,33 @@ class Scenario:
         self.reject_write = None
         self.event_detail = "加入游戏"
         self.status_note = "在线人数暂不可用"
+        self.color_config = None
+        self.color_load_ok = True
+        self.color_saves = []
+        self.settings_saves = []
         self.errors = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route(API_GLOB, self.route)
 
     def route(self, route_obj):
         endpoint = split_url(route_obj)
-        if endpoint == "server/status":
+        if endpoint == "colors" and self.color_config is not None:
+            fulfill(route_obj, self.colors_payload() if self.color_load_ok else {"ok": False, "error": "颜色配置暂不可用"})
+        elif endpoint == "settings" and self.color_config is not None:
+            payload = F.settings()
+            payload["settings"].update(self.color_config)
+            fulfill(route_obj, payload)
+        elif endpoint == "colors/save" and self.color_config is not None:
+            body = route_obj.request.post_data_json
+            self.color_saves.append(body)
+            self.color_config.update(body)
+            fulfill(route_obj, self.colors_payload())
+        elif endpoint == "settings/save" and self.color_config is not None:
+            body = route_obj.request.post_data_json["settings"]
+            self.settings_saves.append(body)
+            self.color_config.update(body)
+            fulfill(route_obj, {"ok": True, "applied": body, "ignored": []})
+        elif endpoint == "server/status":
             # 伪造一份旧快照。管理按钮必须以来自已授权路由的名单为准。
             fulfill(route_obj, {
                 "ok": True,
@@ -98,6 +118,15 @@ class Scenario:
         else:
             F.route(route_obj)
 
+    def colors_payload(self):
+        cfg = self.color_config
+        return {"ok": True,
+                "colors": {key: cfg[key] for key in ("color_say", "color_title", "color_feedback")},
+                "gradient": {"enabled": cfg["gradient_enabled"], "format": cfg["gradient_format"],
+                             "stops": {key: cfg[key] for key in (
+                                 "gradient_colors_say", "gradient_colors_title", "gradient_colors_feedback")}},
+                "plain": {"format": cfg["plain_color_format"]}}
+
     def open(self):
         self.page.goto(PAGE_URL)
         self.page.locator('button.tab[data-page="server"]').click()
@@ -138,7 +167,7 @@ def check_four_states(scenario):
 def check_permission(scenario):
     scenario.open()
     page = scenario.page
-    assert page.locator("#sv_players button[data-action]").count() == 5, "权限用例前置条件：管理员可用五项操作"
+    assert page.locator("#sv_players button[data-action]").count() == 4, "权限用例前置条件：管理员可用四项操作"
     scenario.authorized = False
     scenario.refresh()
     assert page.locator("#sv_players button[data-action], #sv_bans button[data-action]").count() == 0, \
@@ -166,7 +195,7 @@ def check_disabled(scenario):
         scenario.online = {"state": state, **extra}
         scenario.refresh()
         buttons = page.locator("#sv_players button[data-action]").all()
-        assert len(buttons) == 5 and all(button.is_disabled() for button in buttons), \
+        assert len(buttons) == 4 and all(button.is_disabled() for button in buttons), \
             f"P8 名单不可用时在线玩家操作没有全部 disabled：{state}"
     for state in ("unrecognized", "unreachable"):
         scenario.bans = {"state": state, "note": "封禁名单拿不到", "raw": "unfamiliar ban reply", "items": []}
@@ -309,7 +338,7 @@ def check_ban_ip_entry(scenario):
 
 
 def check_player_ip(scenario):
-    """P15（v0.29.0）：玩家行显示「最近进服 IP」，并给一键封禁按钮。
+    """P15：玩家行显示「最近进服 IP」，封禁操作使用封禁名单区的入口。
 
     没有记录的玩家必须明写「IP 未知」且**不给按钮** —— 监听开始前就在线、代理服、
     非 ASCII 名都会走到这条路。猜一个地址比不给更糟。
@@ -324,17 +353,158 @@ def check_player_ip(scenario):
     rows = page.locator("#sv_players .player-row")
     assert rows.count() == 2, f"P15 应渲染两行，实际 {rows.count()}"
     assert "192.0.2.9" in rows.first.inner_text(), "P15 有记录的玩家应显示真实 IP"
-    assert rows.first.locator('button[data-action="ban_ip"]').count() == 1, \
-        "P15 有 IP 时应给「封禁 IP」按钮"
+    assert rows.first.locator('button[data-action="ban_ip"]').count() == 0, \
+        "P15 已知 IP 在线行也不应重复提供 IP 封禁入口"
     assert "IP 未知" in rows.nth(1).inner_text(), "P15 无记录必须明写「IP 未知」"
     assert rows.nth(1).locator('button[data-action="ban_ip"]').count() == 0, \
         "P15 无 IP 时不该出现封禁按钮"
-    print("[PASS] P15 玩家行显示最近进服 IP（无记录时明写未知且不给按钮）")
+    print("[PASS] P15 玩家行显示最近进服 IP（无记录时明写未知，封禁入口独立）")
+
+
+def check_online_actions(scenario):
+    """P16：所有在线行的动作集合准确，解封和 IP 封禁留在封禁名单区。"""
+    scenario.online = {"state": "ok", "players": ["Alex", "Steve"], "online": 2, "max": 20,
+                       "ips": {"Steve": IPV4}}
+    scenario.open()
+    page = scenario.page
+    wanted = {"kick", "ban", "whitelist_add", "whitelist_remove"}
+    rows = page.locator("#sv_players .player-row")
+    assert rows.count() == 2, "P16 前置条件：应有两个在线玩家"
+    for row, name in zip(rows.all(), ("Alex", "Steve")):
+        buttons = row.locator('button[data-action]')
+        actions = buttons.evaluate_all("els => els.map(el => el.dataset.action)")
+        assert len(actions) == len(wanted) and set(actions) == wanted, \
+            f"P16 在线玩家名动作应恰为四项：{name} 实际 {actions}"
+        assert all(button.is_enabled() for button in buttons.all()), "P16 有效在线名单操作应可用"
+        assert all(button.get_attribute("data-player") == name for button in buttons.all()), \
+            "P16 在线行操作必须指向该行玩家"
+    assert rows.first.locator("button[data-action]").count() == 4, \
+        "P16 未知 IP 在线行的 data-action 集合应恰为四项"
+    assert rows.locator('button[data-action="unban"], button[data-action="unban_ip"]').count() == 0, \
+        "P16 在线行不应出现解封操作"
+    expect(rows.nth(1).locator(".player-ip")).to_have_text(IPV4)
+    expect(page.locator("#sv_ban_ip_btn")).to_be_enabled()
+    expect(page.locator('#sv_bans button[data-action="unban"][data-player="Steve"]')).to_be_enabled()
+    print("[PASS] P16 已知与未知 IP 在线行动作均恰为四项，解封与 IP 封禁入口独立")
+
+
+def check_console_notice(scenario):
+    """P18：常驻说明明确分类表边界，不让用户把未提示误解为安全。"""
+    scenario.open()
+    page = scenario.page
+    page.locator('button.tab[data-page="console"]').click()
+    notice = page.locator("#console_notice")
+    expect(notice).to_be_visible()
+    text = notice.inner_text()
+    assert "分级表只覆盖常见命令" in text, "P18 常驻说明缺少分级表覆盖范围"
+    assert "插件命令不在表内，同样会立即执行" in text, "P18 常驻说明缺少插件命令立即执行提醒"
+    print("[PASS] P18 终端常驻说明展示常见命令分级边界与插件命令立即执行提醒")
+
+
+def check_single_color_card(scenario):
+    """P20：唯一可视化卡从真实回包形状初始化，三类控件与两种保存共用草稿。"""
+    scenario.color_config = {
+        "color_say": "#123456", "color_title": "#ABCDEF", "color_feedback": "#778899",
+        "gradient_enabled": False, "gradient_format": "compat_section", "plain_color_format": "hex",
+        "gradient_colors_say": "#112233,#445566", "gradient_colors_title": "#123123,#456456",
+        "gradient_colors_feedback": "#ABC123,#DEF456",
+    }
+    initial = dict(scenario.color_config)
+    scenario.open()
+    page = scenario.page
+    page.locator('button.tab[data-page="settings"]').click()
+    card = page.locator("#page_settings #srv_color_card")
+    expect(card).to_be_visible()
+    color_cards = page.locator("#page_settings .card").filter(
+        has=page.locator("h3").filter(has_text=re.compile(r"^文本颜色")))
+    assert color_cards.count() == 1, f"P20 文本颜色卡片应恰为 1，实际 {color_cards.count()}"
+    assert page.locator("#jump_text_color").count() == 0, "P20 旧颜色卡跳转入口未删除"
+    duplicate_ids = page.evaluate("""() => {
+        const ids = [...document.querySelectorAll('[id]')].map(el => el.id);
+        return [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+    }""")
+    assert not duplicate_ids, f"P20 页面存在重复 id：{duplicate_ids}"
+    expect(page.locator("#clr_plain_fmt")).to_have_value("hex")
+    expect(page.locator("#clr_grad_fmt")).to_have_value("compat_section")
+    expect(page.locator("#clr_grad_en")).not_to_be_checked()
+    for index, (short, key) in enumerate((
+        ("say", "color_say"), ("title", "color_title"), ("fb", "color_feedback")
+    )):
+        text = card.locator(f"#clr_{short}_txt")
+        picker = card.locator(f"#clr_{short}")
+        expect(text, "P20 三个颜色控件须使用接口初值").to_have_value(initial[key])
+        expect(picker).to_have_value(initial[key].lower())
+        changed = ("#334455", "#556677", "#8899AA")[index]
+        text.fill(changed)
+        expect(picker, "P20 文本编辑须同步取色器").to_have_value(changed.lower())
+        picked = ("#aabbcc", "#bbccdd", "#ccddee")[index]
+        picker.evaluate("(el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles:true})); }", picked)
+        expect(text).to_have_value(picked.upper())
+        # 后两格必须仍是各自的接口初值，不能因修改第一格而串台。
+        for other in ("say", "title", "fb")[index + 1:]:
+            other_key = "color_feedback" if other == "fb" else f"color_{other}"
+            expect(card.locator(f"#clr_{other}_txt")).to_have_value(initial[other_key])
+    page.locator("label.sw").filter(has=page.locator("#clr_grad_en")).click()
+    expect(page.locator("#clr_grad_en")).to_be_checked()
+    for short, key in (("say", "say"), ("title", "title"), ("fb", "feedback")):
+        stops = card.locator(f"#stops_{short} input[type=text]")
+        assert stops.count() == 2, f"P20 {short} 渐变锚点缺失"
+        for field, expected in zip(stops.all(), initial[f"gradient_colors_{key}"].split(",")):
+            expect(field).to_have_value(expected)
+        stops.first.fill("#FEDCBA")
+    page.select_option("#clr_plain_fmt", "named")
+    for short, name in (("say", "aqua"), ("title", "red"), ("fb", "blue")):
+        selector = card.locator(f"#clr_{short}_sel")
+        expect(selector).to_be_visible()
+        assert selector.locator("option").count() == 16, f"P20 {short} 应有16种格式化色"
+        selector.select_option(name)
+        expect(card.locator(f"#clr_{short}_txt")).to_have_value(name)
+    page.locator("#cfg_feedback_name").fill("颜色测试署名草稿")
+    page.locator("#clr_save").click()
+    expect(page.locator("#clr_notice")).to_contain_text("✓")
+    assert scenario.color_saves, "P20 保存颜色未发请求"
+    saved = scenario.color_saves[-1]
+    assert all(saved[key] == value for key, value in {
+        "color_say": "aqua", "color_title": "red", "color_feedback": "blue",
+        "plain_color_format": "named", "gradient_format": "compat_section", "gradient_enabled": True,
+    }.items()), f"P20 保存颜色载荷不符：{saved}"
+    assert all(saved[f"gradient_colors_{key}"].startswith("#FEDCBA,")
+               for key in ("say", "title", "feedback")), "P20 保存颜色遗漏手改渐变"
+    expect(page.locator("#cfg_feedback_name")).to_have_value("颜色测试署名草稿")
+    page.select_option("#clr_plain_fmt", "hex")
+    page.locator("#clr_say_txt").fill("#010203")
+    page.locator("label.sw").filter(has=page.locator("#clr_grad_en")).click()
+    expect(page.locator("#clr_grad_en")).not_to_be_checked()
+    with page.expect_response("**/settings/save"):
+        page.locator("#btn_save_cfg_top").click()
+    saved_all = scenario.settings_saves[-1]
+    assert saved_all.get("color_say") == "#010203" and saved_all.get("plain_color_format") == "hex" \
+        and saved_all.get("gradient_enabled") is False \
+        and saved_all.get("feedback_name") == "颜色测试署名草稿", \
+        f"P20 保存全部设置未提交唯一可视化草稿：{saved_all}"
+    expect(page.locator("#clr_say_txt")).to_have_value("#010203")
+    page.locator('button.tab[data-page="server"]').click()
+    scenario.select("tools")
+    page.locator("#bc_text_color").click()
+    expect(card).to_be_visible()
+    expect(card).to_have_class(re.compile(r"jump-highlight"))
+    # 冷启动读取失败时，保存其他设置不能把未加载的颜色默认值写回服务端。
+    scenario.color_load_ok = False
+    scenario.open()
+    page.locator('button.tab[data-page="settings"]').click()
+    with page.expect_response("**/settings/save"):
+        page.locator("#btn_save_cfg_top").click()
+    saved_unloaded = scenario.settings_saves[-1]
+    assert not (set(initial) & set(saved_unloaded)), \
+        "P20 颜色加载失败时保存全部设置不得提交颜色默认值"
+    assert not scenario.errors, f"P20 页面初始化/交互异常：{scenario.errors}"
+    print("[PASS] P20 唯一颜色卡、三个非默认初值、独立双向交互、渐变/色名、两种保存与广播跳转")
 
 
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
-         "P14": check_ban_ip_entry, "P15": check_player_ip}
+         "P14": check_ban_ip_entry, "P15": check_player_ip, "P16": check_online_actions,
+         "P18": check_console_notice, "P20": check_single_color_card}
 
 
 def main(args):
