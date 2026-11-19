@@ -183,7 +183,7 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         watcher._note_login_ip(
             "[16:30:01] [Server thread/INFO]: Steve[/192.0.2.9:52031] "
             "logged in with entity id 42 at (0.5, 64.0, -12.5)")
-        self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9")
+        self.assertEqual(watcher.recent_ip("Steve"), "192.0.2.9", "P15 进服行必须写入 IP 索引")
         self.assertEqual(watcher.recent_ip("steve"), "192.0.2.9", "键应大小写不敏感")
         self.assertEqual(watcher.recent_ip("Alex"), "", "没有记录的玩家必须返回空串")
         # 不带 IP 的进服行（离线服 / 老格式）不该覆盖已有记录，也不该抛错
@@ -693,6 +693,21 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(sentinel, audit, "审计文件必须继续脱敏")
         self.assertNotIn(address_v6, audit, "审计文件必须继续脱敏")
         self.assertIn("[IP 已隐藏]", audit)
+
+    async def test_t_audit_player_redacts_target_and_command_on_disk(self):
+        target = "192.0.2.9"
+        address_v6 = "2001:db8::42"
+        command = f"ban-ip {target} source {address_v6}"
+        raw = f"Banned IP address {target}"
+        plugin = FakePlugin({command: raw, "banlist ips": f"There are 1 bans: {target} was banned by Server"})
+        result = await player_admin.run_action(plugin, "ban_ip", target, f"source {address_v6}", actor=ADMIN)
+        self.assertEqual((result["player"], result["command"], result["raw"]), (target, command, raw))
+        disk = self.audit.read_text(encoding="utf-8")
+        row, = map(json.loads, disk.splitlines())
+        for address in (target, address_v6):
+            self.assertNotIn(address, disk, "T-audit 玩家 JSONL 禁止在目标或命令写入明文地址")
+        self.assertEqual(row["player"], "[IP 已隐藏]")
+        self.assertEqual(row["command"], "ban-ip [IP 已隐藏] source [IP 已隐藏]")
 
     async def test_write_and_readback_respect_version_guard_denial(self):
         plugin = FakePlugin({"pardon Steve": "Unbanned Steve", "banlist players": NO_BANS})

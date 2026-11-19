@@ -501,8 +501,8 @@ def _write_audit(stream, actor: str, result: dict) -> None:
             "ts": ts,
             "actor": actor,
             "action": result["action"],
-            "player": result["player"],
-            "command": result["command"],
+            "player": _redact(result["player"]),
+            "command": _redact(result["command"]),
             "state": result["state"],
             "confirmed": result["confirmed"],
             # 审计是长期留档、可能被导出分享的文件 —— 它这一份**继续脱敏**，

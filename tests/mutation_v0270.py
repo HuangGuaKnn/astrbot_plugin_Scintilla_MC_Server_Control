@@ -2,17 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import os
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 
-from _paths import PLUGIN_DIR
 
 
 CORE = "core/web_console.py"
@@ -136,7 +128,7 @@ MUTATIONS = (
         # 裸锚点会变成两处（v0.31.0 复跑时 INVALID 过一次）。
         '"warnings": [warning["code"] for warning in result["warnings"]],\n            "raw_excerpt": _redact(result["raw"])[:200],',
         '"warnings": [warning["code"] for warning in result["warnings"]],\n            "raw_excerpt": result["raw"][:200],',
-        "test_t07_every_line_is_audited_even_when_rejected", "T7 审计摘要里地址必须被隐藏",
+        "test_t_audit_terminal_redacts_addresses_before_writing_jsonl", "T-audit 终端 JSONL 禁止写入明文地址",
     ),
     Mutation(
         "T11", "删除非实时终端告知", HTML,
@@ -180,67 +172,18 @@ MUTATIONS = (
 )
 
 
-def run_test(root: Path, command: list[str]):
-    return subprocess.run(
-        command, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=180, env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-    )
-
-
-def exercise(root: Path, mutation: Mutation) -> bool:
-    path = root / mutation.path
-    original = path.read_bytes()
-    sha = hashlib.sha256(original).hexdigest()
-    newline = "\r\n" if b"\r\n" in original else "\n"
-    before = mutation.before.replace("\n", newline).encode("utf-8")
-    after = mutation.after.replace("\n", newline).encode("utf-8")
-    if original.count(before) != 1 or before == after:
-        print(f"[INVALID] {mutation.criterion} {mutation.description} 锚点必须恰好一处", flush=True)
-        return False
-
-    try:
-        path.write_bytes(original.replace(before, after, 1))
-        result = run_test(root, mutation.command)
-        failures = re.findall(
-            r"(?ms)^AssertionError: (.*?)(?=^={8,}|^-{8,}|\Z)", result.stderr,
-        )
-        if result.returncode == 1 and any(mutation.failure in block for block in failures):
-            print(f"[RED] {mutation.criterion} {mutation.description} → AssertionError: {mutation.failure}",
-                  flush=True)
-            return True
-        print(f"[INVALID] {mutation.criterion} {mutation.description} rc={result.returncode}", flush=True)
-        print((result.stdout + result.stderr)[-2400:], flush=True)
-        return False
-    finally:
-        path.write_bytes(original)
-        restored = path.read_bytes()
-        if restored != original or hashlib.sha256(restored).hexdigest() != sha:
-            raise RuntimeError(f"{mutation.path} 原字节未恢复")
-        print(f"[SHA-256] {mutation.path} {sha} 已恢复", flush=True)
-
-
 def main(argv: list[str]) -> int:
+    from mutation_all import entry, registered_cases
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("criteria", nargs="*", help="只运行指定判据，如 T2 T10")
+    cases = registered_cases(sys.modules[__name__])
+    parser.add_argument("criteria", nargs="*", help="P/T criterion IDs")
     args = parser.parse_args(argv)
-    selected = [mutation for mutation in MUTATIONS if not args.criteria or mutation.criterion in args.criteria]
-    if not selected or set(args.criteria) - {mutation.criterion for mutation in selected}:
-        parser.error("请输入有效的判据号")
-    with tempfile.TemporaryDirectory(prefix="scintilla-console-mutation-") as temporary:
-        root = Path(temporary) / PLUGIN_DIR.name
-        shutil.copytree(
-            PLUGIN_DIR, root,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", "_shots", "*.pyc", "*.log"),
-        )
-        for test in sorted({mutation.test for mutation in selected}):
-            baseline = run_test(root, [sys.executable, "-B", "-X", "utf8", test])
-            if baseline.returncode:
-                print(f"[BASELINE FAIL] {test}\n{baseline.stdout}{baseline.stderr}", flush=True)
-                return 1
-            print(f"[BASELINE PASS] {test}", flush=True)
-        results = [exercise(root, mutation) for mutation in selected]
-    print(f"定向变异 {sum(results)}/{len(results)} 变红，逐条字节级还原", flush=True)
-    return 0 if all(results) else 1
+    criteria = set(args.criteria)
+    if criteria - {c.criterion for c in cases}:
+        parser.error("unknown criterion")
+    selected = [c for c in cases if not criteria or c.criterion in criteria]
+    return entry({"v0270": selected}, legacy=True)
 
 
 if __name__ == "__main__":

@@ -2,15 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import os
-import shutil
 import sys
-import tempfile
-from pathlib import Path
 
-from _paths import PLUGIN_DIR
-from mutation_v0270 import exercise, run_test
 from mutation_v0300 import CONSOLE, CONSOLE_TEST, HTML, PLAYER_TEST, UI_TEST, Mutation
 
 
@@ -100,39 +93,17 @@ MUTATIONS = (
 
 
 def main(argv: list[str]) -> int:
+    from mutation_all import entry, registered_cases
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("criteria", nargs="*", help="仅运行指定判据，如 P21 P22")
+    cases = registered_cases(sys.modules[__name__])
+    parser.add_argument("criteria", nargs="*", help="P/T criterion IDs")
     args = parser.parse_args(argv)
     criteria = set(args.criteria)
-    if criteria - {m.criterion for m in MUTATIONS}:
-        parser.error("请输入有效的判据编号")
-    tests = [m for m in MUTATIONS if not criteria or m.criterion in criteria]
-    originals = {m.path: (PLUGIN_DIR / m.path).read_bytes() for m in tests}
-    with tempfile.TemporaryDirectory(prefix="scintilla-v0310-mutation-") as temporary:
-        root = Path(temporary) / PLUGIN_DIR.name
-        # StarTools 会创建插件数据目录。子进程只使用这轮的临时目录。
-        os.environ["ASTRBOT_ROOT"] = str(Path(temporary) / "astrbot")
-        shutil.copytree(PLUGIN_DIR, root,
-                        ignore=shutil.ignore_patterns(".git", "__pycache__", "_shots", "*.pyc", "*.log"))
-        for command in sorted({tuple(m.command) for m in tests}):
-            baseline = run_test(root, list(command))
-            if baseline.returncode:
-                print(f"[BASELINE FAIL] {command[-1]}\n{baseline.stdout}{baseline.stderr}", flush=True)
-                return 1
-            print(f"[BASELINE PASS] {command[-1]}", flush=True)
-        results = []
-        for mutation in tests:
-            source = (root / mutation.path).read_text(encoding="utf-8")
-            offset = source.find(mutation.before)
-            line = source.count("\n", 0, offset) + 1 if offset >= 0 else "?"
-            print(f"[TARGET] {mutation.criterion} {mutation.path}:{line} → {mutation.case}", flush=True)
-            results.append(exercise(root, mutation))
-    for path, original in originals.items():
-        if (PLUGIN_DIR / path).read_bytes() != original:
-            raise RuntimeError(f"源工作区发生变化：{path}")
-        print(f"[SOURCE UNCHANGED] {path} {hashlib.sha256(original).hexdigest()}", flush=True)
-    print(f"定向变异 {sum(results)}/{len(results)} 变红，隔离副本逐条字节级还原", flush=True)
-    return 0 if all(results) else 1
+    if criteria - {c.criterion for c in cases}:
+        parser.error("unknown criterion")
+    selected = [c for c in cases if not criteria or c.criterion in criteria]
+    return entry({"v0310": selected}, legacy=True)
 
 
 if __name__ == "__main__":

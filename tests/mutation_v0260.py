@@ -1,15 +1,10 @@
 """定向改坏玩家管理实现，只有对应断言明确变红才算检出。"""
 from __future__ import annotations
 
-import hashlib
-import io
-import os
-import subprocess
+import argparse
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
 CORE = "core/player_admin.py"
 LWCORE = "core/log_watcher.py"      # 与上面 CORE 同一风格：相对仓库根的路径
 
@@ -36,7 +31,8 @@ class Mutation:
     def command(self):
         args = [sys.executable, "-B", "-X", "utf8", self.test]
         if self.case:
-            args.append(f"PlayerAdminCheck.{self.case}" if self.test == BACKEND_TEST else self.case)
+            test_class = {BACKEND_TEST: "PlayerAdminCheck", TERMINAL_TEST: "WebConsoleCheck"}.get(self.test)
+            args.append(f"{test_class}.{self.case}" if test_class else self.case)
         return args
 
 
@@ -94,9 +90,10 @@ MUTATIONS = (
         "P7 一次写操作严格一行", BACKEND_TEST, "test_p07_all_dispatched_writes_are_audited",
     ),
     Mutation(
-        "P7", "审计原文不截断", CORE,
+        "P7", "终端审计回执写入时不脱敏", CORE,
         '"raw_excerpt": _redact(result["raw"])[:200],\n        }\n    else:', '"raw_excerpt": result["raw"][:200],\n        }\n    else:',
-        "[IP 已隐藏]", TERMINAL_TEST, "test_t07_every_line_is_audited_even_when_rejected",
+        "T7 审计摘要须先脱敏、再截取 200 字符", TERMINAL_TEST,
+        "test_t07_every_line_is_audited_even_when_rejected",
     ),
     Mutation(
         "P8", "名单失效时按钮仍可点", HTML,
@@ -109,7 +106,7 @@ MUTATIONS = (
         "P15", "进服 IP 不被记进索引", LWCORE,
         '        self._recent_ips[match.group("player").casefold()] = (ip, time.monotonic())',
         '        pass',
-        "P15", BACKEND_TEST, "test_p15_login_ip_index_is_read_only_and_case_insensitive",
+        "P15 进服行必须写入 IP 索引", BACKEND_TEST, "test_p15_login_ip_index_is_read_only_and_case_insensitive",
     ),
     # v0.29.0：IP 封禁。守两件事 —— 网段不许放过（原版 ban-ip 只吃单地址）、
     # 回读必须查 IP 名单而不是玩家名单。
@@ -120,13 +117,13 @@ MUTATIONS = (
         "P14", "地址不校验也不规范化（非法串与 IPv6 写法直接透传）", CORE,
         '        return str(ipaddress.ip_address(value))',
         '        return value',
-        "P14", BACKEND_TEST, "test_p14_ip_ban_actions",
+        "ban-ip 2001:db8::1", BACKEND_TEST, "test_p14_ip_ban_actions",
     ),
     Mutation(
         "P14", "IP 封禁回读查了玩家名单", CORE,
         '    "ban_ip": "banlist ips",',
         '    "ban_ip": "banlist players",',
-        "P14", BACKEND_TEST, "test_p14_ip_ban_actions",
+        "'banlist players' != 'banlist ips'", BACKEND_TEST, "test_p14_ip_ban_actions",
     ),
     # v0.28.0 口径反转：WebUI 现在**必须**显示真实地址（服主要靠它封 IP）。
     # 原来那两条「注入地址 / 跳过脱敏」已经失去意义 —— 守的方向改成「别又把手遮回去」。
@@ -203,76 +200,19 @@ MUTATIONS = (
 )
 
 
-def run_test(command):
-    return subprocess.run(
-        command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=180, env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-    )
+def main(argv: list[str]) -> int:
+    from mutation_all import entry, registered_cases
 
-
-def exercise(mutation):
-    path = ROOT / mutation.path
-    original = path.read_bytes()
-    original_sha = hashlib.sha256(original).hexdigest()
-    source = original.decode("utf-8")
-    before, after = mutation.before, mutation.after
-    if "\r\n" in source:
-        before, after = (text.replace("\n", "\r\n") for text in (before, after))
-    if before == after or source.count(before) != 1:
-        print(f"[INVALID] {mutation.criterion} {mutation.description} 锚点必须恰好一处")
-        return False
-
-    try:
-        with io.open(path, "w", encoding="utf-8", newline="\n") as out:
-            out.write(source.replace(before, after, 1))
-        result = run_test(mutation.command)
-        matching = ""
-        for block in result.stderr.split("\n======================================================================\n"):
-            _, separator, assertion = block.partition("AssertionError:")
-            if separator and mutation.failure in assertion:
-                first_line = assertion.splitlines()[0].strip()
-                matching = f"AssertionError: {first_line}"
-                if mutation.failure not in first_line:
-                    matching += f" ｜ {mutation.failure}"
-                break
-        red = result.returncode == 1 and bool(matching)
-        if red:
-            print(f"[RED] {mutation.criterion} {mutation.description} → {matching}")
-        else:
-            print(f"[INVALID] {mutation.criterion} {mutation.description} rc={result.returncode}")
-            print((result.stdout + result.stderr)[-2300:])
-        return red
-    finally:
-        with io.open(path, "w", encoding="utf-8", newline="\n") as out:
-            out.write(source)
-        restored = path.read_bytes()
-        if restored != original or hashlib.sha256(restored).hexdigest() != original_sha:
-            raise RuntimeError(f"{mutation.path} 原字节未恢复")
-        print(f"[SHA-256] {mutation.path} {original_sha} 已恢复")
-
-
-def main():
-    # -B prevents writing mutated bytecode. Fresh modules in the subprocess also
-    # need to avoid the original checkout's existing timestamp-based cache.
-    os.environ["PYTHONPYCACHEPREFIX"] = str(
-        Path(os.environ.get("TEMP", os.environ.get("TMPDIR", ".")))
-        / f"scintilla-mutation-pycache-{os.getpid()}"
-    )
-    if not MUTATIONS:
-        print("[INVALID] 没有配置变异")
-        return 1
-    commands = {tuple(mutation.command[:5]) for mutation in MUTATIONS}
-    for command in sorted(commands):
-        baseline = run_test(command)
-        if baseline.returncode:
-            print(f"[BASELINE FAIL] {command[-1]}\n{baseline.stdout}{baseline.stderr}")
-            return 1
-        print(f"[BASELINE PASS] {command[-1]}")
-    results = [exercise(mutation) for mutation in MUTATIONS]
-    total = len(results)
-    print(f"定向变异 {sum(results)}/{total} 变红，逐条字节级还原")
-    return 0 if all(results) else 1
+    parser = argparse.ArgumentParser(description=__doc__)
+    cases = registered_cases(sys.modules[__name__])
+    parser.add_argument("criteria", nargs="*", help="P/T criterion IDs")
+    args = parser.parse_args(argv)
+    criteria = set(args.criteria)
+    if criteria - {c.criterion for c in cases}:
+        parser.error("unknown criterion")
+    selected = [c for c in cases if not criteria or c.criterion in criteria]
+    return entry({"v0260": selected}, legacy=True)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

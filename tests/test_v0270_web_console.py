@@ -227,6 +227,22 @@ class WebConsoleCheck(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(IPV4, rows[0]["raw_excerpt"], "T7 审计摘要里地址必须被隐藏")
         self.assertEqual(len(rows[0]["raw_excerpt"]), 200, "T7 审计原文上限 200 字符")
 
+    async def test_t_audit_terminal_redacts_addresses_before_writing_jsonl(self):
+        raw = f"fixture {IPV4} [{IPV6}]:52000 {IPV6_PLAIN_PORT} end"
+        self.assertFalse(self.audit.exists())
+        status, payload = await call(ConsolePlugin({"list": raw}), "execute", "list")
+        self.assertEqual(status, 200)
+        result, = payload["results"]
+        self.assertEqual(result["raw"], raw, "T-audit 测试前提：实时回执必须含原始地址")
+        # 故意绕过任何读回处理，比较磁盘原文和独立写死的期望值。
+        disk = self.audit.read_text(encoding="utf-8")
+        row, = map(json.loads, disk.splitlines())
+        for address in (IPV4, IPV6, IPV6_PLAIN_PORT):
+            self.assertNotIn(address, disk, "T-audit 终端 JSONL 禁止写入明文地址")
+        self.assertEqual(row["raw_excerpt"],
+                         "fixture [IP 已隐藏] [[IP 已隐藏]]:52000 [IP 已隐藏] end",
+                         "T-audit 终端 JSONL 须保留回执正文并遮蔽地址")
+
     async def test_t08_log_missing_empty_local_remote_and_rotated(self):
         _, remote = await call(ConsolePlugin(), "log")
         self.assertEqual(remote["state"], "unsupported", "T8 远程 RCON 没有本地日志来源")
