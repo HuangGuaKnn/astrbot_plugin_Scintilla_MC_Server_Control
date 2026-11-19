@@ -2730,7 +2730,7 @@ function renderPlayerAudit(audit, admin, bans){
 }
 
 function renderPlayerActionResult(host, result){
-  const confirmed = result?.ok === true && result?.confirmed === true;
+  const confirmed = result?.ok === true;
   const state = confirmed ? "ok" : result?.state && result.state !== "ok" ? result.state : "unrecognized";
   host.innerHTML = `${playerBadge(state, confirmed ? "已确认" : result?.state_label && state === result.state ? result.state_label : "未确认")}
     <span class="muted">${escServer(result?.note || result?.error || "未取得操作结果")}</span>

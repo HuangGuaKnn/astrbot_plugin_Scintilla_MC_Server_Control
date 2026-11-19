@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = "core/player_admin.py"
-LWCORE = os.path.join(REPO, "core", "log_watcher.py")
+LWCORE = "core/log_watcher.py"      # 与上面 CORE 同一风格：相对仓库根的路径
 
 API = "core/web_api.py"
 HTML = "pages/mc_control/index.html"
@@ -96,7 +96,7 @@ MUTATIONS = (
     Mutation(
         "P7", "审计原文不截断", CORE,
         '"raw_excerpt": _redact(result["raw"])[:200],\n        }\n    else:', '"raw_excerpt": result["raw"][:200],\n        }\n    else:',
-        "192.0.2.9", TERMINAL_TEST, "test_t07_every_line_is_audited_even_when_rejected",
+        "[IP 已隐藏]", TERMINAL_TEST, "test_t07_every_line_is_audited_even_when_rejected",
     ),
     Mutation(
         "P8", "名单失效时按钮仍可点", HTML,

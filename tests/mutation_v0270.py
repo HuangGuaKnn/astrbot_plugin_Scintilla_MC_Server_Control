@@ -132,7 +132,10 @@ MUTATIONS = (
     ),
     Mutation(
         "T10", "审计不再脱敏（留档里出现明文地址）", PLAYER_ADMIN,
-        '"raw_excerpt": _redact(result["raw"])[:200],', '"raw_excerpt": result["raw"][:200],',
+        # 锚点带上前一行：v0.28 之后玩家分支也用了同一个 `_redact(...)[:200]`，
+        # 裸锚点会变成两处（v0.31.0 复跑时 INVALID 过一次）。
+        '"warnings": [warning["code"] for warning in result["warnings"]],\n            "raw_excerpt": _redact(result["raw"])[:200],',
+        '"warnings": [warning["code"] for warning in result["warnings"]],\n            "raw_excerpt": result["raw"][:200],',
         "test_t07_every_line_is_audited_even_when_rejected", "T7 审计摘要里地址必须被隐藏",
     ),
     Mutation(
