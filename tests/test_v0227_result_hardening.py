@@ -421,7 +421,11 @@ def webui_version_settings() -> None:
 
     check("★服务器页消费 version_hint（此前只生成、没人显示）",
           "r.version_hint" in HTML and 'id="sv_ver_caps"' in HTML)
-    check("服务器页也渲染版本能力", 'renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps")' in HTML)
+    # 判据盯「有没有把 version_caps 交给 renderVersionCaps 渲染」，不盯写法：
+    # v0.34.0 把 `r && r.version_caps ? r.version_caps : null` 简化成 `r.version_caps || null`，
+    # 两者语义等价，但字面量不同 —— 旧断言因此误报。判据绑的是意图，不是某一种等价写法。
+    check("服务器页也渲染版本能力",
+          re.search(r'renderVersionCaps\(\s*r\.version_caps[^)]*"sv_ver_caps"', HTML) is not None)
 
     # 后端：version_caps 必须在 _get_rcon 之前算 —— 否则 RCON 一掉线就什么都看不到
     seg = WEB_SRC[WEB_SRC.find("async def get_server_status"):]

@@ -177,9 +177,12 @@ def check_polling(scenario):
     expect(log_lines, "T8 终端可见时须自动轮询更新").to_have_text("轮询更新")
     assert scenario.log_requests[:2] == ["", "first"], "T8 下一次请求带上上次的轮转游标"
 
-    calls = page.evaluate("window.consoleLogRequestCount")
     toggle.click()
     expect(toggle, "T8 暂停状态须明确可见").to_have_attribute("aria-pressed", "true")
+    # 基线必须在「暂停已生效」之后取：』点击前恰好触发的那一次轮询属于暂停前，
+    # 若算进「暂停期间」就会在慢机器上偶发失败（门禁里复现过一次）。
+    page.wait_for_timeout(120)
+    calls = page.evaluate("window.consoleLogRequestCount")
     scenario.log["lines"] = ["继续后的更新"]
     page.clock.fast_forward(9500)
     assert page.evaluate("window.consoleLogRequestCount") == calls, "T8 暂停期间不得轮询"

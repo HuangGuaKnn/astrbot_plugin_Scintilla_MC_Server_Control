@@ -79,6 +79,20 @@ class RcContracts(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(re.search(rf'id=["\']{element}["\']', html) for element in dynamic))
         self.assertEqual(refs - parser.ids.keys() - dynamic, set(), "R3 新增了悬空的字面 DOM 引用")
 
+    def test_monitor_poll_schema_matches_settings_validation(self):
+        key = "server_monitor_poll_seconds"
+        schema = json.loads((PLUGIN_DIR / "_conf_schema.json").read_text(encoding="utf-8"))
+        config = schema["connection"]["items"][key]
+        api = McControlWebApi(SettingsPlugin())
+        self.assertEqual(config["default"], "10")
+        self.assertEqual(config["options"], ["5", "10", "30", "60"])
+        for interval in config["options"]:
+            self.assertEqual(api._validate_settings({key: interval}), ({key: interval}, None))
+        for interval in ("0", "2", "1.5", None):
+            parsed, error = api._validate_settings({key: interval})
+            self.assertIsNone(parsed)
+            self.assertIn(key, error)
+
     async def test_r4_schema_and_persistence_routes(self):
         path = "settings/console-log"
         key = web_console.LOG_POLL_KEY
@@ -87,7 +101,7 @@ class RcContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["options"], list(web_console.LOG_POLL_OPTIONS))
         self.assertEqual(item["default"], "1000")
         self.assertEqual(len(schema), 10)
-        self.assertEqual(sum(len(group["items"]) for group in schema.values()), 102)
+        self.assertEqual(sum(len(group["items"]) for group in schema.values()), 103)
         plugin = SettingsPlugin()
         status, _, payload = await request(plugin, "GET", path)
         self.assertEqual((status, payload["interval"]), (200, "1000"))

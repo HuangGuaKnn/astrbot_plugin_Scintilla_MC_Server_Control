@@ -939,9 +939,10 @@ details>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;b
 .savebar{top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 8px)}
 html{scroll-behavior:smooth}
 #page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card,#card_console_poll{scroll-margin-top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 12px)}
-#card_console_poll{margin-bottom:14px}
-#card_console_poll select{max-width:190px}
-#cfg_console_poll_save{flex:0 0 auto}
+.page-refresh-row{display:flex;align-items:center;flex-wrap:wrap;gap:7px 10px;margin:8px 0}
+.page-refresh-row label{flex:1 0 112px;color:var(--dim)}
+.page-refresh-row select{width:auto;min-width:92px}
+.page-refresh-row button{flex:none}
 
 /* 最新版 RCON 进阶区：保留原 details/id/字段，只提升折叠入口和状态层级。 */
 details.adv-fold{margin-top:18px;padding:13px 0 0;border-top:1px solid var(--border)}
@@ -1130,7 +1131,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   <section id="server_panel_monitor" role="tabpanel" aria-labelledby="server_tab_monitor" tabindex="0">
     <div class="grid server-monitor">
       <div class="card server-status-card">
-        <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
+        <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right">
+          <button class="jump" id="sv_poll_jump" type="button" title="到设置页修改监控刷新间隔">每 10 秒刷新</button>
+          <button id="sv_refresh" type="button">刷新</button>
+        </span></h3>
         <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
         <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
         <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
@@ -1595,19 +1599,6 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     </div>
   </div>
 
-  <section class="card" id="card_console_poll" aria-labelledby="cfg_console_poll_title">
-    <h3 id="cfg_console_poll_title">终端日志刷新</h3>
-    <label class="f" for="cfg_console_poll">刷新间隔</label>
-    <div class="frow">
-      <select id="cfg_console_poll" data-native-select>
-        <option value="1000">1 秒（默认）</option>
-        <option value="1500">1.5 秒</option>
-        <option value="3000">3 秒</option>
-      </select>
-      <button class="btn" id="cfg_console_poll_save" type="button">保存刷新间隔</button>
-    </div>
-    <p class="hint" id="cfg_console_poll_notice" role="status"></p>
-  </section>
   <div class="set-sec">消息互通 · 播报与桥接</div>
   <div class="grid g2">
     <div class="card">
@@ -1838,6 +1829,30 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <label class="sw"><input type="checkbox" id="cfg_feedback_tellraw"><span class="sl"></span></label>
       </div>
     </div>
+    <section class="card" id="card_console_poll" aria-labelledby="cfg_console_poll_title">
+      <h3 id="cfg_console_poll_title"><span class="dot" style="background:var(--cyan)" aria-hidden="true"></span>页面刷新</h3>
+      <div class="page-refresh-row">
+        <label for="cfg_monitor_poll">服务器监控</label>
+        <select id="cfg_monitor_poll" data-native-select aria-describedby="cfg_monitor_poll_hint">
+          <option value="5">5 秒</option>
+          <option value="10" selected>10 秒</option>
+          <option value="30">30 秒</option>
+          <option value="60">60 秒</option>
+        </select>
+      </div>
+      <p class="hint" id="cfg_monitor_poll_hint">监控间隔随「保存全部设置」生效。</p>
+      <div class="page-refresh-row">
+        <label for="cfg_console_poll">终端日志</label>
+        <select id="cfg_console_poll" data-native-select aria-describedby="cfg_console_poll_hint">
+          <option value="1000">1 秒</option>
+          <option value="1500">1.5 秒</option>
+          <option value="3000">3 秒</option>
+        </select>
+        <button class="btn sm" id="cfg_console_poll_save" type="button">保存日志间隔</button>
+      </div>
+      <p class="hint" id="cfg_console_poll_hint">设置「终端」页读取服务端日志的频率，保存后立即生效。</p>
+      <p class="hint" id="cfg_console_poll_notice" role="status"></p>
+    </section>
   </div>
 
   <div class="card" id="srv_color_card" tabindex="-1">
@@ -2168,6 +2183,7 @@ function switchTab(name, serverSection){
   if(name==="settings") loadSettings();
   if(name==="console" || name==="settings") loadConsolePollSetting();
   if(name!=="console") syncConsolePolling();
+  syncServerMonitor();
   syncServerChat();
   // v0.21.8：指纹不匹配检测随页签切换跑一次 —— 同一轮只弹一次，不会反复骚扰
   if(name==="overview" || name==="knowledge" || name==="settings") checkFingerprintNotice();
@@ -2182,6 +2198,7 @@ function switchServerTab(selectedTab){
     tab.tabIndex = selected ? 0 : -1;
     $(tab.getAttribute("aria-controls")).hidden = !selected;
   }
+  syncServerMonitor();
   syncServerChat();
 }
 serverTabs.forEach((tab, index) => {
@@ -3066,6 +3083,63 @@ function bindPlayerAdmin(){
 }
 
 // ============ 服务器页 ============
+const MONITOR_POLL_DEFAULT_SECONDS = 10;
+let monitorPollSeconds = MONITOR_POLL_DEFAULT_SECONDS;
+let monitorTimer;
+let monitorPolling = false;
+let serverStatusRequest;
+let serverEventsRequest;
+let serverEventsMarkup;
+
+function applyMonitorInterval(value){
+  const saved = String(value ?? "");
+  const known = Array.from($("cfg_monitor_poll").options).some(option => option.value === saved);
+  const interval = known ? Number(saved) : MONITOR_POLL_DEFAULT_SECONDS;
+  if(interval !== monitorPollSeconds){
+    monitorPollSeconds = interval;
+    $("sv_poll_jump").textContent = `每 ${interval} 秒刷新`;
+    syncServerMonitor();
+  }
+  return String(interval);
+}
+
+function monitorIsVisible(){
+  return mode !== "unknown" && !document.hidden
+    && $("page_server").classList.contains("active") && !$("server_panel_monitor").hidden;
+}
+
+function syncServerMonitor(){
+  clearTimeout(monitorTimer);
+  if(monitorIsVisible() && !monitorPolling){
+    monitorTimer = setTimeout(refreshServerMonitor, monitorPollSeconds * 1000);
+  }
+}
+
+async function refreshServerMonitor(){
+  if(!monitorIsVisible()) return;
+  monitorPolling = true;
+  try{
+    await Promise.all([loadServerStatus(), loadServerEvents()]);
+  }finally{
+    monitorPolling = false;
+    syncServerMonitor();
+  }
+}
+
+function loadServerStatus(){
+  if(!serverStatusRequest){
+    serverStatusRequest = callGet("server/status")
+      .catch(() => ({ok:false,error:"请求失败"}))
+      .then(response => {
+        const result = response || {ok:false,error:"响应缺失"};
+        renderServerStatus(result);
+        return result;
+      })
+      .finally(() => { serverStatusRequest = null; });
+  }
+  return serverStatusRequest;
+}
+
 const serverRefreshButtons = ["sv_refresh", "sv_players_refresh", "sv_audit_refresh"].map($);
 async function loadServer(){
   if(loadServer._pending || playerActionBusy) return;
@@ -3080,53 +3154,15 @@ async function loadServer(){
   try{
     // 保留上一份内容，查询期间只降低明度，避免成功 / 失败两种高度切换造成页面跳动。
     loadServerEvents();
-    const [statusReply, bans] = await Promise.all([
-      callGet("server/status").catch(() => ({ok:false,error:"请求失败"})),
+    const [r, bans] = await Promise.all([
+      loadServerStatus(),
       callGet("player/bans").catch(() => null),
     ]);
-    const r = statusReply || {ok:false,error:"响应缺失"};
     const admin = bans?.authorized === true;
     const audit = admin ? await callGet("player/audit", {limit:20}).catch(() => null) : null;
     renderOnlinePlayers(r, bans?.online, admin);
     renderPlayerBans(bans, admin);
     renderPlayerAudit(audit, admin, bans);
-    // v0.22.7：版本能力不依赖 RCON —— 连不上服务器时也要照常显示，
-    // 否则 RCON 一掉线，用户就看不见 Agent 到底按哪个版本构造命令了。
-    renderVersionCaps(r && r.version_caps ? r.version_caps : null, "sv_ver_caps");
-    if(!r.ok){
-      // v0.25.0：连不上也要把卡画出来 —— 「连不上」是这张卡的第一种状态，
-      // 四个字段各自为什么拿不到（版本字段甚至与 RCON 无关）都在卡里说清；
-      // 只弹一句错误会把「版本能力还能看」这条信息一起吞掉。
-      if(r.card){
-        renderServerCard(r.card);
-        status.insertAdjacentHTML("beforeend",
-          `<div class="hint" style="color:var(--warn);margin-top:6px">${escServer(r.error||"未知错误")}</div>`);
-      }else{
-        status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${escServer(r.error||"未知错误")}</div>`;
-      }
-      return;
-    }
-    const list = r.list||{};
-    if(r.card){
-      renderServerCard(r.card);
-    }else{
-      // 兼容兜底：接口没给 card（旧后端 / 假后端）时退回原来那三行，
-      // 页面不会因为少一个字段就白屏。
-      status.innerHTML = `
-      <div class="kv"><span class="k">服务器版本</span><span class="v">${escServer(r.version||"-")}</span></div>
-      <div class="kv"><span class="k">游戏时间</span><span class="v">${escServer(r.daytime_clock||r.daytime||"-")}</span></div>
-      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${escServer(list.online??"-")} / ${escServer(list.max??"-")}</span></div>`;
-    }
-    // v0.22.7：后端算出的 version_hint 必须被消费 —— 之前它只生成、没人显示，
-    // 等于「版本未知」这条最重要的提示根本没到用户眼前。
-    if(r.version_hint){
-      $("sv_ver_caps").insertAdjacentHTML("beforeend",
-        `<div style="color:var(--warn);margin-top:4px">${escServer(r.version_hint)}</div>`);
-    }
-    // v0.21.16：异地 RCON 模式下版本探测读不到服务端文件，据实说明（不是用户没配好）
-    if(RMT.on) status.insertAdjacentHTML("beforeend",
-      `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
-      + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
   }finally{
     loadServer._pending = false;
     status.classList.remove("is-loading");
@@ -3136,10 +3172,54 @@ async function loadServer(){
     for(const button of serverRefreshButtons) button.disabled = false;
   }
 }
-async function loadServerEvents(){
-  const r = await callGet("events").catch(()=>({ok:false}));
-  const evs = (r.ok&&r.events)||[];
-  $("sv_events").innerHTML = evs.length ? evs.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
+
+function renderServerStatus(r){
+  const status = $("sv_status");
+  // 版本能力不依赖 RCON，连接失败时仍可显示。
+  renderVersionCaps(r.version_caps || null, "sv_ver_caps");
+  if(!r.ok){
+    if(r.card){
+      renderServerCard(r.card);
+      status.insertAdjacentHTML("beforeend",
+        `<div class="hint" style="color:var(--warn);margin-top:6px">${escServer(r.error||"未知错误")}</div>`);
+    }else{
+      status.innerHTML = `<span class="badge bad status-error-badge">✗ 无法连接服务器</span><div class="bc-out" style="margin-top:8px">${escServer(r.error||"未知错误")}</div>`;
+    }
+    return;
+  }
+  if(r.card){
+    renderServerCard(r.card);
+  }else{
+    const list = r.list||{};
+    // 兼容未提供 card 的旧后端。
+    status.innerHTML = `
+      <div class="kv"><span class="k">服务器版本</span><span class="v">${escServer(r.version||"-")}</span></div>
+      <div class="kv"><span class="k">游戏时间</span><span class="v">${escServer(r.daytime_clock||r.daytime||"-")}</span></div>
+      <div class="kv" style="border-bottom:none"><span class="k">在线人数</span><span class="v" style="color:var(--ok)">${escServer(list.online??"-")} / ${escServer(list.max??"-")}</span></div>`;
+  }
+  if(r.version_hint){
+    $("sv_ver_caps").insertAdjacentHTML("beforeend",
+      `<div style="color:var(--warn);margin-top:4px">${escServer(r.version_hint)}</div>`);
+  }
+  if(RMT.on) status.insertAdjacentHTML("beforeend",
+    `<div class="hint" style="margin-top:6px">异地 RCON 模式：<b>版本探测</b>要读服务端本地文件，`
+    + `这里会一直显示 <code>-</code>；在线人数 / 游戏时间等 RCON 能力不受影响。</div>`);
+}
+
+function loadServerEvents(){
+  if(!serverEventsRequest){
+    serverEventsRequest = callGet("events").catch(() => null).then(response => {
+      const events = response?.ok && Array.isArray(response.events) ? response.events : [];
+      const markup = events.length ? events.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
+      if(markup !== serverEventsMarkup){
+        const host = $("sv_events"), scrollTop = host.scrollTop;
+        host.innerHTML = markup;
+        host.scrollTop = scrollTop;
+        serverEventsMarkup = markup;
+      }
+    }).finally(() => { serverEventsRequest = null; });
+  }
+  return serverEventsRequest;
 }
 
 const CHAT_TYPES = new Set(["chat", "whisper", "me"]);
@@ -4003,6 +4083,7 @@ const CFG_FIELDS = [
   ["cfg_tool_kb_correct","enable_mc_correct_knowledge","b",true],
   // 外观 · 反馈与颜色
   ["cfg_feedback_name","feedback_name","s"],
+  ["cfg_monitor_poll","server_monitor_poll_seconds","s"],
   ["cfg_feedback_tellraw","feedback_tellraw","b",true],
   // 自动化 · 多Agent 工作流
   ["cfg_wf_provider","llm_provider_id","s"],
@@ -5280,6 +5361,8 @@ async function loadSettings(){
   let cfg = (OV&&OV.config)||{};
   const r = await callGet("settings").catch(()=>({ok:false}));
   if(r.ok && r.settings) cfg = { ...cfg, ...r.settings };
+  const interval = applyMonitorInterval(r.ok ? cfg.server_monitor_poll_seconds : monitorPollSeconds);
+  cfg = {...cfg, server_monitor_poll_seconds:interval};
   if(r.ok && typeof r.rcon_password_configured === "boolean") PWD_CONFIGURED = r.rcon_password_configured;
   // mcs 指令组前缀跟随 AstrBot 唤醒词设置（不写死反斜杠；纯反斜杠唤醒词后端会按「无前缀」返回）
   const wpEl = $("cmd_prefix_tip");
@@ -5507,6 +5590,9 @@ async function saveSettings(){
     syncPwdPlaceholder(true);
     // v0.17.1：插件未热重载时后端会静默忽略新键（保存看着成功、实际不生效）→ 明确提示
     const applied = r.applied || {};
+    if(r.config_saved !== false && "server_monitor_poll_seconds" in applied){
+      applyMonitorInterval(applied.server_monitor_poll_seconds);
+    }
     const ignored = Array.isArray(r.ignored) ? r.ignored : [];
     const lost = ignored.length ? ignored
               : (("notify_target_events" in applied) ? [] : ["notify_target_events"]);
@@ -6172,6 +6258,11 @@ async function resetColors(){
 function bind(){
   bindPlayerAdmin();
   bindServerChat();
+  document.addEventListener("visibilitychange", syncServerMonitor);
+  $("sv_poll_jump").onclick = () => {
+    switchTab("settings");
+    jumpToCard("cfg_monitor_poll", {focus:true});
+  };
   for(const button of serverRefreshButtons) button.onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
   const wfRefresh = $("wf_refresh");

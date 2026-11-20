@@ -11,6 +11,13 @@
         "options": ["1000", "1500", "3000"],
         "default": "1000"
       },
+      "server_monitor_poll_seconds": {
+        "description": "WebUI 服务器监控刷新间隔",
+        "hint": "单位秒。只在服务器的监控子页签可见时刷新实时状态与事件流。",
+        "type": "string",
+        "options": ["5", "10", "30", "60"],
+        "default": "10"
+      },
       "remote_rcon_mode": {
         "description": "异地 RCON 模式（AstrBot 与服务端不同机、只映射 RCON 端口）",
         "hint": "开启后只走 RCON，可以不填「服务端目录」；但依赖本地文件的整块能力会按设计禁用：物品词典、知识库、服务器事件播报、版本探测、进程指标。终端与 WebUI 都会明确告知。",

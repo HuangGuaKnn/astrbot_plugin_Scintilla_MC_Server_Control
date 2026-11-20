@@ -18,10 +18,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import ui_theme_check as F
 from _paths import UI_LAUNCH_KWARGS
-from _ui_page import VIEWPORT
+from _ui_page import VIEWPORT, fulfill, split_url
 from playwright.sync_api import expect, sync_playwright
 
 CAPS = {"known": True, "version": "1.20.6", "raw": "MC 1.20.6 · Forge 50.1.0",
@@ -161,6 +162,124 @@ def check_server_tabs(page) -> None:
     print("[PASS] 服务器分类默认打开监控，支持键盘切换，概览的最近事件入口返回监控")
 
 
+def check_monitor_polling(page):
+    interval = "10"
+    hold_status = False
+    held_status = []
+    events = [{"type": "join", "player": "Alex", "ts": "08:30:00", "detail": "加入游戏"}]
+    payload = payload_for(CARD_OK)
+
+    def route(request):
+        nonlocal interval
+        endpoint = split_url(request)
+        if endpoint == "server/status":
+            if hold_status:
+                held_status.append(request)
+                return
+            return fulfill(request, payload)
+        if endpoint == "events":
+            return fulfill(request, {"ok": True, "events": events})
+        if endpoint == "settings":
+            settings = F.settings()
+            settings["settings"]["server_monitor_poll_seconds"] = interval
+            return fulfill(request, settings)
+        if endpoint == "settings/save":
+            applied = request.request.post_data_json["settings"]
+            interval = applied["server_monitor_poll_seconds"]
+            return fulfill(request, {"ok": True, "applied": applied})
+        return F.route(request)
+
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(F.API_GLOB, route)
+    start = datetime(2026, 11, 21, tzinfo=timezone.utc)
+    page.clock.install(time=start)
+    page.clock.pause_at(start + timedelta(seconds=1))
+    page.add_init_script("""(() => {
+        window.monitorRequests = [];
+        const original = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            const endpoint = String(url).split("/page/")[1]?.split("?")[0];
+            if (["server/status", "events", "player/bans", "player/audit"].includes(endpoint)) {
+                window.monitorRequests.push([endpoint, Date.now()]);
+            }
+            return original(url, options);
+        };
+    })()""")
+    page.goto(F.PAGE_URL)
+    server = page.locator('button.tab[data-page="server"]')
+    server.click()
+    expect(page.locator("#sv_status .sc-head")).to_contain_text("正常")
+    expect(page.locator("#sv_events")).to_contain_text("加入游戏")
+    expect(page.locator("#sv_refresh")).to_be_enabled()
+
+    def requests():
+        return page.evaluate("window.monitorRequests.map(([name]) => name)")
+
+    page.evaluate("window.monitorRequests = []")
+    page.clock.run_for(9999)
+    assert requests() == [], "默认档位应等待完整 10 秒"
+    events[0]["detail"] = "自动刷新后的事件"
+    payload = payload_for(CARD_EMPTY)
+    page.clock.run_for(1)
+    expect(page.locator("#sv_status .sc-head")).to_contain_text("空服")
+    expect(page.locator("#sv_events")).to_contain_text("自动刷新后的事件")
+    assert sorted(requests()) == ["events", "server/status"], "自动刷新只读监控数据"
+
+    page.locator("#server_tab_players").click()
+    page.evaluate("window.monitorRequests = []")
+    page.clock.run_for(30000)
+    assert requests() == [], "切出监控应停止轮询"
+    page.locator("#server_tab_monitor").click()
+    with page.expect_response("**/page/settings"):
+        page.locator("#sv_poll_jump").press("Enter")
+    page.clock.run_for(40)
+    select = page.locator("#cfg_monitor_poll")
+    expect(select).to_be_focused()
+    assert page.locator("#card_console_poll").evaluate(
+        'card => !!card.previousElementSibling?.querySelector("#cfg_feedback_name")'
+    ), "页面刷新应与反馈署名并排"
+    select.select_option("5")
+    save = page.locator("#btn_save_cfg_top")
+    save.click()
+    expect(save).to_be_enabled()
+    assert interval == "5"
+
+    server.click()
+    expect(page.locator("#sv_poll_jump")).to_have_text("每 5 秒刷新")
+    expect(page.locator("#sv_refresh")).to_be_enabled()
+    page.evaluate("window.monitorRequests = []")
+    hold_status = True
+    page.clock.run_for(4999)
+    assert requests() == [], "应按新保存的间隔刷新"
+    page.clock.run_for(1)
+    page.wait_for_function('window.monitorRequests.some(([name]) => name === "server/status")')
+    page.clock.run_for(20000)
+    assert requests().count("server/status") == 1, "慢请求尚未返回时不应堆叠自动刷新"
+    page.locator("#sv_refresh").click()
+    assert requests().count("server/status") == 1, "手动刷新应复用进行中的状态请求"
+
+    page.evaluate("""() => {
+        Object.defineProperty(document, "hidden", {configurable:true, value:true});
+        document.dispatchEvent(new Event("visibilitychange"));
+    }""")
+    assert len(held_status) == 1
+    fulfill(held_status[0], payload)
+    expect(page.locator("#sv_refresh")).to_be_enabled()
+    page.evaluate("window.monitorRequests = []")
+    page.clock.run_for(30000)
+    assert requests() == [], "浏览器页签进入后台后应停止轮询"
+    hold_status = False
+    page.evaluate("""() => {
+        Object.defineProperty(document, "hidden", {configurable:true, value:false});
+        document.dispatchEvent(new Event("visibilitychange"));
+    }""")
+    page.clock.run_for(5000)
+    assert sorted(requests()) == ["events", "server/status"], "回到前台后应恢复监控刷新"
+    assert not errors, errors
+    print("[PASS] 监控按保存间隔刷新状态与事件，切页与后台暂停，慢请求不堆叠")
+
+
 def main() -> None:
     state = {"payload": {**LEGACY, "version_caps": CAPS}}
 
@@ -259,6 +378,7 @@ def main() -> None:
         assert page.locator("#sv_status .sc-row").count() == 0, "旧形状不该冒出卡片行"
 
         assert not errors, f"页面抛错：{errors}"
+        check_monitor_polling(browser.new_page(viewport=VIEWPORT, reduced_motion="reduce"))
         browser.close()
 
     print("[PASS] 实时服务器卡：四字段齐全、五态分开说、认不出带原文、连不上仍出卡、旧形状可兜底")

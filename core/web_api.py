@@ -554,6 +554,7 @@ class McControlWebApi:
         "knowledge_embed_provider_id", "knowledge_rerank_provider_id",
     )
     ENUM_SETTING_KEYS = {
+        "server_monitor_poll_seconds": ("5", "10", "30", "60"),
         # 与 _conf_schema.json / main.py 的闸门实现保持一致
         "danger_command_policy": ("whitelist", "blacklist"),
         # v0.23.7（B2④）：单色颜色格式（hex=客户端 1.16+ 精确 / named=固定格式化色·全世代）
