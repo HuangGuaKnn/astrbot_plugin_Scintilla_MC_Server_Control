@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import ui_theme_check as F
@@ -51,6 +52,10 @@ class Scenario:
         self.previews = []
         self.writes = []
         self.log_requests = []
+        self.poll_interval = "1000"
+        self.poll_saves = []
+        self.hold_preview_for = None
+        self.held_preview = None
         self.errors = []
         self.log = {
             "state": "ok", "state_label": LABELS["ok"], "note": "",
@@ -70,6 +75,12 @@ class Scenario:
 
     def route(self, route):
         endpoint = split_url(route)
+        if endpoint == "settings/console-log":
+            return fulfill(route, {"ok": True, "interval": self.poll_interval})
+        if endpoint == "settings/console-log/save":
+            self.poll_interval = route.request.post_data_json["interval"]
+            self.poll_saves.append(self.poll_interval)
+            return fulfill(route, {"ok": True, "interval": self.poll_interval})
         if not endpoint.startswith("console/"):
             return F.route(route)
         if endpoint == "console/log":
@@ -82,6 +93,9 @@ class Scenario:
         if endpoint == "console/preview":
             command = route.request.post_data_json["command"]
             self.previews.append(command)
+            if command == self.hold_preview_for:
+                self.held_preview = route
+                return
             return fulfill(route, preview(command))
         if endpoint == "console/execute":
             command = route.request.post_data_json["command"]
@@ -193,6 +207,84 @@ def check_polling(scenario):
     print("[PASS] T8 自动轮询、游标、暂停恢复、缺失和轮转、切页停轮询")
 
 
+def check_debounced_preview(scenario):
+    scenario.open()
+    page = scenario.page
+    input_box = page.locator("#console_command")
+    input_box.evaluate("""input => {
+        for (const char of "0123456789") {
+            input.value += char;
+            input.dispatchEvent(new Event("input", {bubbles:true}));
+        }
+    }""")
+    page.wait_for_timeout(500)
+    assert scenario.previews == ["0123456789"], \
+        f"R2 连续输入十字符只发一次预览，实际为 {scenario.previews!r}"
+
+    scenario.hold_preview_for = INDIRECT
+    input_box.evaluate("""(input, command) => {
+        input.value = command;
+        input.dispatchEvent(new Event("input", {bubbles:true}));
+        input.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true}));
+    }""", INDIRECT)
+    expect(page.locator("#console_results")).to_contain_text(STOP)
+    assert scenario.writes == [INDIRECT], "R2 预览未返回时回车也只提交一次"
+    assert scenario.previews == ["0123456789", INDIRECT] and scenario.held_preview is not None, \
+        "R2 回车应立即请求当前文本的预览"
+    expect(page.locator("#console_warnings")).to_contain_text("stop 会关闭服务器")
+    fulfill(scenario.held_preview, preview(INDIRECT))
+    print("[PASS] R2 十次输入触发一次预览，回车立即预览且不等待预览回执")
+
+
+def check_configured_polling(scenario):
+    page = scenario.page
+    warnings = []
+    page.on("console", lambda message: warnings.append(message.text) if message.type == "warning" else None)
+    start = datetime(2026, 11, 21, tzinfo=timezone.utc)
+    page.clock.install(time=start)
+    page.clock.pause_at(start + timedelta(seconds=1))
+    page.add_init_script("""(() => {
+        window.logFetchTimes = [];
+        const fetchOriginal = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            if (String(url).includes("/console/log")) window.logFetchTimes.push(Date.now());
+            return fetchOriginal(url, options);
+        };
+    })()""")
+    scenario.open()
+    page.locator("#console_poll_jump").press("Enter")
+    page.clock.run_for(32)
+    select = page.locator("#cfg_console_poll")
+    expect(select, "R4 终端跳转应聚焦设置页刷新间隔").to_be_focused()
+
+    def check_interval(interval, assertion):
+        scenario.log["lines"] = [f"测试间隔 {interval}"]
+        page.evaluate("window.logFetchTimes = []")
+        page.locator('button.tab[data-page="console"]').click()
+        expect(page.locator("#console_log_lines")).to_have_text(f"测试间隔 {interval}")
+        page.clock.run_for(interval - 1)
+        assert page.evaluate("window.logFetchTimes.length") == 1, assertion
+        page.clock.run_for(1)
+        page.wait_for_function("window.logFetchTimes.length === 2")
+        first, second = page.evaluate("window.logFetchTimes")
+        assert second - first == interval, assertion
+        expect(page.locator("#console_poll_label")).to_have_text(f"刷新间隔 {interval / 1000:g} 秒")
+        print(f"[PASS] R4 实际发出两次日志请求，间隔 {second - first} ms")
+
+    for interval in (1000, 1500, 3000):
+        expect(page.locator("#page_settings")).to_be_visible()
+        select.select_option(str(interval))
+        page.locator("#cfg_console_poll_save").click()
+        expect(page.locator("#cfg_console_poll_notice")).to_have_text("刷新间隔已保存")
+        check_interval(interval, f"R4 日志轮询应使用已保存的 {interval} ms 档位")
+        page.locator("#console_poll_jump").click()
+    assert scenario.poll_saves == ["1000", "1500", "3000"]
+    scenario.poll_interval = "300"
+    check_interval(1000, "R4 非法的刷新间隔须回退到 1000 ms")
+    assert sum("已回退到 1000 ms" in message for message in warnings) == 1, "R4 回退须记录一次警告"
+    print("[PASS] R4 300 ms 回退到 1000 ms，记录一次警告")
+
+
 def check_permission(scenario):
     scenario.open()
     scenario.submit("list")
@@ -267,7 +359,7 @@ def check_beta_tag(scenario):
 CASES = {
     "T3": check_multiline, "T6": check_response_states, "T8": check_polling,
     "T9": check_permission, "T10": check_private_literal_text, "T11": check_notices,
-    "T14": check_warnings_are_soft,
+    "T14": check_warnings_are_soft, "R2": check_debounced_preview, "R4": check_configured_polling,
 "BETA": check_beta_tag}
 
 

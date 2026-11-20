@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310")
-CURRENT_CHECKS = "v0330-checks"
+SPECIAL_CHECKS = {"v0330-checks": "v0.33.0", "v0340-checks": "v0.34.0"}
 VERDICTS = ("KILLED", "SURVIVED", "INVALID")
 
 
@@ -248,7 +248,7 @@ def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
         print(f"KILLED {tally['KILLED']}/{total}" if name in ("v0247_round2", "v0248", "v0249")
               else f"定向变异 {tally['KILLED']}/{total} 变红，逐条字节级还原")
     else:
-        historical = {name: tally for name, tally in counts.items() if name != CURRENT_CHECKS}
+        historical = {name: tally for name, tally in counts.items() if name not in SPECIAL_CHECKS}
         if historical:
             print("\n| 脚本 | 总数 | KILLED | SURVIVED | INVALID |")
             print("| --- | ---: | ---: | ---: | ---: |")
@@ -258,10 +258,11 @@ def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
             totals = sum(historical.values(), Counter())
             print(f"| 合计 | {sum(len(suites[name]) for name in historical)} | "
                   + " | ".join(str(totals[v]) for v in VERDICTS) + " |")
-        if CURRENT_CHECKS in counts:
-            tally = counts[CURRENT_CHECKS]
-            print(f"\nv0.33.0 专项（独立于历史合计） {len(suites[CURRENT_CHECKS])} 条"
-                  + "：" + ", ".join(f"{tally[v]} {v}" for v in VERDICTS))
+        for name, label in SPECIAL_CHECKS.items():
+            if name in counts:
+                tally = counts[name]
+                print(f"\n{label} 专项（独立于历史合计） {len(suites[name])} 条"
+                      + "：" + ", ".join(f"{tally[v]} {v}" for v in VERDICTS))
     return 0 if snapshot_clean and source_clean and all(
         counts[name]["KILLED"] == len(cases) for name, cases in suites.items()
     ) else 1
@@ -286,14 +287,18 @@ def main(argv=None) -> int:
     selected = parser.add_mutually_exclusive_group()
     selected.add_argument("--suite", choices=SUITES, action="append", help="仅运行指定历史组，可重复")
     selected.add_argument("--v0330-checks", action="store_true", help="仅运行 v0.33.0 专项")
+    selected.add_argument("--v0340-checks", action="store_true", help="仅运行 v0.34.0 专项")
     args = parser.parse_args(argv)
     suites = {}
-    if not args.v0330_checks:
+    if not (args.v0330_checks or args.v0340_checks):
         suites.update({name: registered_cases(importlib.import_module(f"mutation_{name}"))
                        for name in SUITES if not args.suite or name in args.suite})
     if not args.suite:
-        from mutation_v0310 import v0330_cases
-        suites[CURRENT_CHECKS] = v0330_cases()
+        from mutation_v0310 import v0330_cases, v0340_cases
+        if not args.v0340_checks:
+            suites["v0330-checks"] = v0330_cases()
+        if not args.v0330_checks:
+            suites["v0340-checks"] = v0340_cases()
     return entry(suites)
 
 

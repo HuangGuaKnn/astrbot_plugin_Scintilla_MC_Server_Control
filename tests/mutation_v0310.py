@@ -154,6 +154,29 @@ def verify_q2() -> int:
     return 0
 
 
+def v0340_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    chat = (*python, "tests/ui_chat_view_check.py")
+    debounce = (*python, "tests/ui_web_console_check.py", "R2")
+    polling = (*python, "tests/ui_web_console_check.py", "R4")
+    return [
+        Case("R1", "对话混入非聊天事件", HTML,
+             "const messages = events.filter(event => CHAT_TYPES.has(event.type));",
+             "const messages = events;",
+             chat, "R1 对话只显示玩家发言"),
+        Case("R2", "每次输入都直接预览", HTML,
+             "consolePreviewTimer = setTimeout(() => previewConsole(command, revision), CONSOLE_PREVIEW_MS);",
+             "previewConsole(command, revision);",
+             debounce, "R2 连续输入十字符只发一次预览", baseline=debounce),
+        Case("R4", "去掉刷新档位校验，允许低于下限的时间", HTML,
+             "if(!CONSOLE_POLL_OPTIONS.includes(candidate)){",
+             "if(!Number.isFinite(candidate)){",
+             polling, "R4 非法的刷新间隔须回退到 1000 ms", baseline=polling),
+    ]
+
+
 def v0330_cases():
     from mutation_all import Case
 

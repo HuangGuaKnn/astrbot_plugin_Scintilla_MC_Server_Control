@@ -558,6 +558,59 @@ def check_invalid_ip_bans(scenario):
     print("[PASS] P21 合法 IP 可解封，异常 IP 保留原文、灰色说明、无按钮并转义显示")
 
 
+def check_long_ban_list(scenario):
+    scenario.online = {**ONLINE_OK, "ips": {"Alex": IPV4}}
+    address, malformed = "198.51.100.42", "198.51.100.0/24"
+    scenario.bans = {"state": "ok", "items": [
+        *[{**BAN, "name": f"Player_{n:02d}", "reason": f"违规记录 {n:02d}"} for n in range(28)],
+        {**BAN, "kind": "ip", "name": address},
+        {**BAN, "kind": "ip", "name": malformed, "removable": False, "note": "格式异常，需查看原记录"},
+    ]}
+    scenario.open()
+    page = scenario.page
+    page.evaluate("""() => {
+        Object.defineProperty(navigator, "clipboard", {
+            configurable:true, value:{writeText: async value => { window.copiedIp = value; }},
+        });
+    }""")
+    rows = page.locator("#sv_bans .player-row")
+    expect(rows).to_have_count(30)
+    expect(page.locator("#sv_ban_count")).to_have_text("显示 30 / 30 条")
+    search = page.locator("#sv_ban_search")
+    search.fill("违规记录 27")
+    expect(page.locator("#sv_ban_count")).to_have_text("显示 1 / 30 条")
+    visible = page.locator("#sv_bans .player-row:visible")
+    expect(visible.locator('button[data-action="unban"]')).to_have_attribute("data-player", "Player_27")
+    search.fill(malformed)
+    expect(visible).to_contain_text("格式异常")
+    expect(visible.locator("button")).to_have_count(0)
+    search.fill(address)
+    expect(visible.locator('button[data-action="unban_ip"]')).to_have_attribute("data-player", address)
+    visible.get_by_role("button", name="复制 IP").press("Enter")
+    assert page.evaluate("window.copiedIp") == address, "R5 复制必须指向当前行 IP"
+    search.fill("匹配不到的记录")
+    expect(page.locator("#sv_ban_no_matches")).to_be_visible()
+
+    page.locator("#sv_players").get_by_role("button", name="在封禁区使用此 IP").press("Enter")
+    expect(page.locator("#sv_ban_ip")).to_have_value(IPV4)
+    expect(page.locator("#sv_ban_ip")).to_be_focused()
+    assert scenario.posts == [], "R5 填入地址之前或之后均不得自动发送命令"
+    page.locator("#sv_ban_ip").press("Enter")
+    expect(page.locator("#player_target")).to_have_text(IPV4)
+    expect(page.locator("#player_dialog")).to_be_visible()
+    assert scenario.posts[0]["preview"] and scenario.posts[0]["player"] == IPV4
+    page.locator("#player_cancel").press("Enter")
+
+    scenario.bans = {"state": "empty", "items": []}
+    scenario.refresh()
+    expect(page.locator("#sv_bans")).to_contain_text("当前没有封禁记录")
+    expect(page.locator("#sv_ban_no_matches")).to_be_hidden()
+    scenario.bans = {"state": "unreachable", "items": [], "note": "读取失败，请刷新重试"}
+    scenario.refresh()
+    expect(page.locator("#sv_bans")).to_contain_text("读取失败，请刷新重试")
+    print("[PASS] R5 30 条封禁、搜索和目标、异常只读、复制、选用最近进服 IP、空名单和读失败")
+
+
 def check_workflow_single_writer(scenario):
     """P23：设置只读并指路，唯一写入口即时保存且不覆盖其他设置草稿。"""
     scenario.workflow_config = {"agent_workflow_enabled": True, "enable_mc_workflow": False,
@@ -661,7 +714,8 @@ CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
          "P14": check_ban_ip_entry, "P15": check_player_ip, "P16": check_online_actions,
          "P18": check_console_notice, "P20": check_single_color_card,
-         "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history}
+         "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,
+         "R5": check_long_ban_list}
 
 
 def main(args):

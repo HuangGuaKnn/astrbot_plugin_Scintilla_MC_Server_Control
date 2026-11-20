@@ -4,6 +4,13 @@
     "hint": "RCON 连接参数与服务端目录。服务器事件转发、物品词典、知识库都依赖「服务端目录」。",
     "type": "object",
     "items": {
+      "console_log_poll_ms": {
+        "description": "WebUI 终端日志刷新间隔",
+        "hint": "单位毫秒。1000 = 1 秒（默认），1500 = 1.5 秒，3000 = 3 秒。",
+        "type": "string",
+        "options": ["1000", "1500", "3000"],
+        "default": "1000"
+      },
       "remote_rcon_mode": {
         "description": "异地 RCON 模式（AstrBot 与服务端不同机、只映射 RCON 端口）",
         "hint": "开启后只走 RCON，可以不填「服务端目录」；但依赖本地文件的整块能力会按设计禁用：物品词典、知识库、服务器事件播报、版本探测、进程指标。终端与 WebUI 都会明确告知。",

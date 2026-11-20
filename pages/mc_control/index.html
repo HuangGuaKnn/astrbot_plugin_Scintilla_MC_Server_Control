@@ -152,20 +152,32 @@ main{padding:20px;max-width:1280px;margin:0 auto}
    必须把这条挡在网格外，否则同排第二张会多吃 14px 上边距 → 顶边错位、看起来不等高 */
 .card+.card{margin-top:14px}
 :is(.grid,.pr-wrap)>.card+.card{margin-top:0}
-.server-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;width:min(100%,440px);padding:4px;margin-bottom:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel2)}
+.server-nav{display:flex;align-items:center;justify-content:space-between;gap:10px 20px;flex-wrap:wrap;margin-bottom:18px}
+.server-nav .beta-tag{margin:0}
+.server-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;width:min(100%,440px);padding:4px;border:1px solid var(--border);border-radius:12px;background:var(--panel2)}
 .server-tabs button{min-height:40px;border:1px solid transparent;border-radius:8px;color:var(--dim);font-size:13px;font-weight:700}
 .server-tabs button:hover{color:var(--text);background:var(--panel3)}
-.server-tabs [aria-selected="true"]{color:var(--amber);background:var(--panel3);border-color:var(--border2)}
-.server-monitor{grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:start}
+.server-tabs [aria-selected="true"]{color:var(--text);background:var(--panel3);border-color:var(--border2);box-shadow:inset 0 -2px var(--amber)}
+#page_server :is(button,input,[tabindex]):focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+#page_server .card{padding:18px 20px}
+#page_server .card h3{font-size:14px;letter-spacing:0}
+.server-monitor{grid-template-columns:minmax(0,1fr);gap:18px}
+.server-status-card{border-top:2px solid var(--border2)}
+.server-events-card{background:var(--panel2)}
+#sv_events{max-height:320px;overflow:auto}
+.server-tools{grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:18px;align-items:start}
+.server-chat{height:276px;overflow:auto;overflow-anchor:none;background:var(--sub);border:1px solid var(--border);border-radius:9px}
+.server-chat-empty{display:block;padding:12px}
+.server-chat-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;padding:8px 12px;border-bottom:1px solid var(--border)}
+.server-chat-row time{grid-row:span 2;color:var(--dim);font:11px var(--mono);padding-top:2px}
+.server-chat-row strong,.server-chat-row p{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
+.server-chat-row p{color:var(--text);font-size:13px}
+#sv_chat_latest:disabled{color:var(--faint);cursor:default;text-decoration:none}
 #bc_send{flex:0 0 auto;justify-content:center}
 #sv_online_tag:empty{display:none}
 #sv_online_tag:not(:empty){margin-right:6px}
 #srv_color_card{margin-top:14px}
-@media(max-width:780px){.server-monitor{grid-template-columns:minmax(0,1fr)}}
-@media(max-width:420px){
-  .server-monitor .sc-row[data-key="version"]{grid-template-columns:minmax(0,1fr)}
-  .server-monitor .sc-row[data-key="version"] .sc-v{justify-content:space-between}
-}
+@media(max-width:780px){.server-tools{grid-template-columns:minmax(0,1fr)}}
 .card h3{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .card h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber)}
 .card h3 .right{margin-left:auto;font-weight:600;text-transform:none;letter-spacing:0;font-size:11px}
@@ -434,6 +446,18 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 .sc-v{display:flex;align-items:center;gap:8px;justify-content:flex-end}
 .sc-val{font-family:var(--mono);font-size:13px;font-weight:600;text-align:right}
 .sc-note{grid-column:1/-1;font-size:10.5px;line-height:1.55;color:var(--faint)}
+.sc-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.sc-metrics .sc-row{display:flex;flex-direction:column;gap:7px;min-width:0;padding:12px;
+  border:1px solid var(--border);border-radius:9px;background:var(--panel2)}
+.sc-metrics .sc-row[data-key="online"]{border-color:var(--border2);background:var(--panel3)}
+.sc-metrics .sc-k{flex-direction:column;align-items:flex-start;gap:2px}
+.sc-metrics .sc-src{white-space:normal;overflow-wrap:anywhere}
+.sc-metrics .sc-v{justify-content:space-between;flex-wrap:wrap;align-items:baseline}
+.sc-metrics .sc-val{font-size:15px;text-align:left;overflow-wrap:anywhere}
+.sc-metrics .sc-row[data-key="online"] .sc-val{font-size:21px}
+.sc-metrics .sc-note{color:var(--dim)}
+@media(max-width:900px){.sc-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.sc-metrics{grid-template-columns:minmax(0,1fr)}}
 .sc-raw{grid-column:1/-1;margin-top:3px;padding:6px 9px;border-radius:6px;border:1px solid var(--border);
   border-left:2px solid var(--warn);background:var(--panel2);font-family:var(--mono);font-size:11px;
   color:var(--dim);white-space:pre-wrap;word-break:break-all}
@@ -463,6 +487,16 @@ summary:hover{text-decoration:underline}
 .player-row .player-actions{margin-left:auto}
 .player-ban-info{display:flex;flex:1 0 210px;flex-wrap:wrap;gap:4px 14px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
 .player-ban-info .muted{margin-right:5px}
+.ban-search-row{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--border)}
+.ban-search-row input{width:min(100%,320px);padding:8px 11px;border:1px solid var(--border);
+  border-radius:8px;background:var(--panel2);color:var(--text);font-size:12.5px}
+#sv_bans .player-row{padding:10px 8px;border-radius:6px}
+#sv_bans .player-row:hover{background:var(--panel2)}
+#sv_bans .player-row[hidden]{display:none}
+.player-ban-target{display:flex;align-items:center;gap:8px;min-width:min(100%,172px);overflow-wrap:anywhere}
+.player-ban-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto}
+.player-ban-actions .player-actions{margin-left:0}
+.console-log-settings{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:8px}
 .player-warning{color:var(--warn);margin-bottom:8px;font-size:12px;overflow-wrap:anywhere}
 .player-state .player-actions{margin-top:8px}
 .player-result:not(:empty){margin-top:10px}
@@ -904,7 +938,10 @@ details>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;b
 /* 吸顶保存条给页签留出一条明确的安全边界，避免实际顶栏高度略有变化时被页签盖住。 */
 .savebar{top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 8px)}
 html{scroll-behavior:smooth}
-#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card{scroll-margin-top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 12px)}
+#page_settings .set-sec,#adv_rcon,#card_policy,#card_terminal,#srv_color_card,#card_console_poll{scroll-margin-top:calc(var(--topbar-h,67px) + var(--tabs-h,53px) + 12px)}
+#card_console_poll{margin-bottom:14px}
+#card_console_poll select{max-width:190px}
+#cfg_console_poll_save{flex:0 0 auto}
 
 /* 最新版 RCON 进阶区：保留原 details/id/字段，只提升折叠入口和状态层级。 */
 details.adv-fold{margin-top:18px;padding:13px 0 0;border-top:1px solid var(--border)}
@@ -1078,27 +1115,29 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 
 <!-- ================= 服务器 ================= -->
 <div class="page" id="page_server">
-  <div class="beta-tag" role="note" id="server_beta_tag">
-    <span class="beta-dot" aria-hidden="true"></span>Beta 实验性页面 · 部分页面可能出现意料中的问题
-  </div>
-  <div class="server-tabs" role="tablist" aria-label="服务器功能">
+  <div class="server-nav">
+    <div class="server-tabs" role="tablist" aria-label="服务器功能">
     <button type="button" id="server_tab_monitor" role="tab" data-server-tab="monitor" aria-controls="server_panel_monitor" aria-selected="true">监控</button>
     <button type="button" id="server_tab_players" role="tab" data-server-tab="players" aria-controls="server_panel_players" aria-selected="false" tabindex="-1">玩家</button>
     <button type="button" id="server_tab_tools" role="tab" data-server-tab="tools" aria-controls="server_panel_tools" aria-selected="false" tabindex="-1">工具</button>
     <button type="button" id="server_tab_audit" role="tab" data-server-tab="audit" aria-controls="server_panel_audit" aria-selected="false" tabindex="-1">审计</button>
+    </div>
+    <div class="beta-tag" role="note" id="server_beta_tag">
+      <span class="beta-dot" aria-hidden="true"></span>Beta 实验性页面 · 部分页面可能出现意料中的问题
+    </div>
   </div>
 
   <section id="server_panel_monitor" role="tabpanel" aria-labelledby="server_tab_monitor" tabindex="0">
     <div class="grid server-monitor">
-      <div class="card">
+      <div class="card server-status-card">
         <h3><span class="dot" style="background:var(--ok)"></span>实时状态 <span class="right"><button id="sv_refresh">刷新</button></span></h3>
         <div id="sv_status" role="status" aria-live="polite" aria-atomic="true"><span class="muted">加载中…</span></div>
         <div class="hint" id="sv_ver_caps" style="margin-top:6px"></div>
         <div class="progress" id="sv_prog_wrap" style="display:none"><i id="sv_prog"></i></div>
       </div>
-      <div class="card">
+      <div class="card server-events-card">
         <h3><span class="dot" style="background:var(--faint)"></span>服务器事件流 <span class="right"><button id="sv_ev_refresh">刷新</button></span></h3>
-        <div id="sv_events"><span class="muted">加载中…</span></div>
+        <div id="sv_events" tabindex="0" aria-label="服务器事件流"><span class="muted">加载中…</span></div>
       </div>
     </div>
   </section>
@@ -1119,13 +1158,19 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <button class="btn sm" id="sv_ban_ip_btn" type="button">封禁 IP</button>
         <span class="muted" id="sv_ban_ip_hint" role="status" aria-live="polite"></span>
       </div>
+      <div class="ban-search-row" id="sv_ban_search_row" hidden>
+        <input id="sv_ban_search" type="search" placeholder="搜索玩家、IP 或原因" aria-label="搜索封禁记录">
+        <span class="muted" id="sv_ban_count" role="status"></span>
+      </div>
       <div id="sv_bans"></div>
+      <p id="sv_ban_no_matches" class="muted" hidden>没有符合搜索条件的封禁记录。</p>
       <div class="player-result" id="sv_ban_result" role="status" aria-live="polite"></div>
     </section>
   </section>
 
   <section id="server_panel_tools" role="tabpanel" aria-labelledby="server_tab_tools" tabindex="0" hidden>
-    <div class="card">
+    <div class="grid server-tools">
+      <div class="card">
       <h3><span class="dot" style="background:var(--cyan)"></span>广播控制台 <span class="right"><button type="button" class="jump" id="bc_text_color">文本颜色 →</button></span></h3>
       <div class="bc-modes" id="bc_modes">
         <button class="bc-mode active" data-mode="chat">聊天栏</button>
@@ -1135,6 +1180,14 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div class="frow"><input type="text" id="bc_msg" aria-label="广播内容" placeholder="输入广播内容…"><button class="btn primary" id="bc_send">发送</button></div>
       <div class="bc-out" id="bc_out" role="status">广播结果会显示在这里</div>
       <div class="hint" style="margin-top:8px">三种广播分别使用「设置 → 外观」中对应的文本颜色。聊天栏固定署名 <b>[Server]</b>。模拟任务输出使用配置的「反馈署名」。全屏标题只显示正文。</div>
+      </div>
+      <section class="card" aria-labelledby="sv_chat_title">
+        <h3 id="sv_chat_title">玩家对话 <span class="right"><button type="button" id="sv_chat_latest" disabled>回到最新</button></span></h3>
+        <div class="server-chat" id="sv_chat" tabindex="0" role="region" aria-labelledby="sv_chat_title">
+          <span class="muted server-chat-empty">正在读取玩家对话…</span>
+        </div>
+        <p class="hint" id="sv_chat_notice" role="status"></p>
+      </section>
     </div>
   </section>
 
@@ -1174,6 +1227,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     </section>
     <section class="card" aria-labelledby="console_log_title">
       <h3 id="console_log_title"><span class="dot" style="background:var(--faint)"></span>服务端日志尾 <span class="right"><button id="console_log_toggle" type="button" aria-pressed="false">暂停</button></span></h3>
+      <div class="console-log-settings">
+        <span id="console_poll_label" class="muted">刷新间隔 1 秒</span>
+        <button class="jump" id="console_poll_jump" type="button">到设置页修改</button>
+      </div>
       <div id="console_log_note" class="muted" role="status"><span class="badge dim" id="console_log_state">等待读取</span> <span id="console_log_detail"></span></div>
       <pre class="console-pane console-text" id="console_log_lines" aria-labelledby="console_log_title" tabindex="0">等待读取日志…</pre>
     </section>
@@ -1538,6 +1595,19 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
     </div>
   </div>
 
+  <section class="card" id="card_console_poll" aria-labelledby="cfg_console_poll_title">
+    <h3 id="cfg_console_poll_title">终端日志刷新</h3>
+    <label class="f" for="cfg_console_poll">刷新间隔</label>
+    <div class="frow">
+      <select id="cfg_console_poll" data-native-select>
+        <option value="1000">1 秒（默认）</option>
+        <option value="1500">1.5 秒</option>
+        <option value="3000">3 秒</option>
+      </select>
+      <button class="btn" id="cfg_console_poll_save" type="button">保存刷新间隔</button>
+    </div>
+    <p class="hint" id="cfg_console_poll_notice" role="status"></p>
+  </section>
   <div class="set-sec">消息互通 · 播报与桥接</div>
   <div class="grid g2">
     <div class="card">
@@ -2096,7 +2166,9 @@ function switchTab(name, serverSection){
   if(name==="workflow") loadWorkflow();
   if(name==="prompts") loadPrompts();
   if(name==="settings") loadSettings();
-  syncConsolePolling();
+  if(name==="console" || name==="settings") loadConsolePollSetting();
+  if(name!=="console") syncConsolePolling();
+  syncServerChat();
   // v0.21.8：指纹不匹配检测随页签切换跑一次 —— 同一轮只弹一次，不会反复骚扰
   if(name==="overview" || name==="knowledge" || name==="settings") checkFingerprintNotice();
 }
@@ -2110,6 +2182,7 @@ function switchServerTab(selectedTab){
     tab.tabIndex = selected ? 0 : -1;
     $(tab.getAttribute("aria-controls")).hidden = !selected;
   }
+  syncServerChat();
 }
 serverTabs.forEach((tab, index) => {
   tab.addEventListener("click", () => switchServerTab(tab));
@@ -2322,11 +2395,13 @@ function renderServerCard(card){
       ${note}${raw}
     </div>`;
   }).join("");
-  host.innerHTML = head + rows;
+  host.innerHTML = head + `<div class="sc-metrics">${rows}</div>`;
 }
 
 // ============ 终端：命令问答与日志轮询 ============
-const CONSOLE_POLL_MS = 3000;
+const CONSOLE_POLL_DEFAULT = 1000;
+const CONSOLE_POLL_OPTIONS = [1000, 1500, 3000];
+const CONSOLE_PREVIEW_MS = 250;
 const CONSOLE_HISTORY_LIMIT = 100;
 const CONSOLE_FORBIDDEN = "仅 AstrBot WebUI 管理员可访问";
 let consoleBusy = false;
@@ -2338,6 +2413,10 @@ let consoleLogTimer;
 let consoleLogPending = false;
 let consoleLogEpoch = 0;
 let consoleLogCursor = "";
+let consolePollMs = CONSOLE_POLL_DEFAULT;
+let consolePollReady = false;
+let consolePollConfigRevision = 0;
+let consolePollWarned = false;
 
 function consoleText(tag, value, className = ""){
   const element = document.createElement(tag);
@@ -2440,19 +2519,21 @@ function renderConsoleWarnings(response){
   host.replaceChildren(warning);
 }
 
+async function previewConsole(command, revision){
+  const response = await consoleRequest("console/preview", "POST", {command})
+    .catch(() => ({error:"暂时无法读取命令提示"}));
+  if(revision !== consolePreviewEpoch || consolePermissionDenied(response)) return;
+  renderConsoleMode(response);
+  renderConsoleWarnings(response);
+}
+
 function queueConsolePreview(){
   const revision = ++consolePreviewEpoch;
   clearTimeout(consolePreviewTimer);
   renderConsoleWarnings({});
   const command = $("console_command").value;
   if(!command.trim() || mode === "unknown" || consoleDenied) return;
-  consolePreviewTimer = setTimeout(async () => {
-    const response = await consoleRequest("console/preview", "POST", {command})
-      .catch(() => ({error:"暂时无法读取命令提示"}));
-    if(revision !== consolePreviewEpoch || consolePermissionDenied(response)) return;
-    renderConsoleMode(response);
-    renderConsoleWarnings(response);
-  }, 180);
+  consolePreviewTimer = setTimeout(() => previewConsole(command, revision), CONSOLE_PREVIEW_MS);
 }
 
 function appendConsoleResults(results){
@@ -2485,6 +2566,8 @@ async function submitConsole(event){
   consoleBusy = true;
   syncConsoleComposer();
   consoleFeedback("正在等待命令回执…");
+  clearTimeout(consolePreviewTimer);
+  previewConsole(command, ++consolePreviewEpoch);
   try{
     const response = await consoleRequest("console/execute", "POST", {command});
     if(consolePermissionDenied(response) || consoleDenied) return;
@@ -2493,8 +2576,9 @@ async function submitConsole(event){
       appendConsoleResults(response.results);
       if(response.results.some(item => item.accepted)){
         input.value = "";
-        queueConsolePreview();
+        ++consolePreviewEpoch;
       }
+      renderConsoleWarnings(response);
       consoleFeedback(response.error || "", !!response.error);
     }else{
       const message = response.status === 400 ? response.error : "请求中断，执行结果待确认。请查看日志或审计。";
@@ -2509,7 +2593,7 @@ async function submitConsole(event){
 }
 
 function consolePollingActive(){
-  return mode !== "unknown" && !consoleDenied && !consoleLogPaused && !document.hidden
+  return mode !== "unknown" && consolePollReady && !consoleDenied && !consoleLogPaused && !document.hidden
     && $("page_console").classList.contains("active");
 }
 
@@ -2542,8 +2626,53 @@ async function pollConsoleLog(){
   }finally{
     consoleLogPending = false;
     if(consolePollingActive()){
-      consoleLogTimer = setTimeout(pollConsoleLog, revision === consoleLogEpoch ? CONSOLE_POLL_MS : 0);
+      consoleLogTimer = setTimeout(pollConsoleLog, revision === consoleLogEpoch ? consolePollMs : 0);
     }
+  }
+}
+
+function applyConsolePollSetting(response){
+  const raw = response?.ok ? response.interval : null;
+  const candidate = typeof raw === "number" || typeof raw === "string" ? Number(raw) : NaN;
+  if(!CONSOLE_POLL_OPTIONS.includes(candidate)){
+    if(!consolePollWarned) console.warn("[mc_control] 日志刷新间隔不可用，已回退到 1000 ms");
+    consolePollWarned = true;
+    consolePollMs = CONSOLE_POLL_DEFAULT;
+  }else{
+    consolePollWarned = false;
+    consolePollMs = candidate;
+  }
+  $("console_poll_label").textContent = `刷新间隔 ${consolePollMs / 1000} 秒`;
+  $("cfg_console_poll").value = String(consolePollMs);
+  consolePollReady = true;
+}
+
+async function loadConsolePollSetting(){
+  if(mode === "unknown" || $("cfg_console_poll_save").disabled) return;
+  const revision = ++consolePollConfigRevision;
+  const response = await consoleRequest("settings/console-log", "GET").catch(() => null);
+  if(revision !== consolePollConfigRevision) return;
+  applyConsolePollSetting(response);
+  syncConsolePolling();
+}
+
+async function saveConsolePollSetting(){
+  const button = $("cfg_console_poll_save"), select = $("cfg_console_poll");
+  const notice = $("cfg_console_poll_notice");
+  ++consolePollConfigRevision;
+  button.disabled = true;
+  select.disabled = true;
+  try{
+    const response = await consoleRequest("settings/console-log/save", "POST", {interval:select.value})
+      .catch(() => null);
+    if(response?.ok){
+      applyConsolePollSetting(response);
+      syncConsolePolling();
+    }
+    notice.textContent = response?.ok ? "刷新间隔已保存" : (response?.error || "无法保存刷新间隔");
+  }finally{
+    button.disabled = false;
+    select.disabled = false;
   }
 }
 
@@ -2566,9 +2695,16 @@ function bindConsole(){
     event.currentTarget.textContent = consoleLogPaused ? "继续" : "暂停";
     syncConsolePolling();
   });
+  $("cfg_console_poll_save").addEventListener("click", saveConsolePollSetting);
+  $("console_poll_jump").addEventListener("click", () => {
+    switchTab("settings");
+    jumpToCard("cfg_console_poll", {focus:true});
+  });
   document.addEventListener("visibilitychange", syncConsolePolling);
   syncConsoleComposer();
-  syncConsolePolling();
+  if($("page_console").classList.contains("active") || $("page_settings").classList.contains("active")){
+    loadConsolePollSetting();
+  }
 }
 
 // ============ 服务器页 · 玩家管理 ============
@@ -2635,7 +2771,8 @@ function renderOnlinePlayers(status, guardedOnline, admin){
       // 拿不到时明写「IP 未知」；封禁 IP 使用封禁名单区的独立入口。
       const ip = (online.ips || {})[name] || "";
       const ipCell = ip
-        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>`
+        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>
+          <button class="jump" type="button" data-ban-ip-prefill="${escServer(ip)}">在封禁区使用此 IP</button>`
         : `<span class="player-ip muted" title="可读取的日志中没有该玩家的进服 IP 记录">IP 未知</span>`;
       return `<div class="player-row"><span class="ply">${escServer(name)}</span>${ipCell}
         ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
@@ -2662,8 +2799,22 @@ function playerDateLabel(value){
   return playerDate(value)?.toLocaleString() || value || "未知";
 }
 
+function filterPlayerBans(){
+  const query = $("sv_ban_search").value.trim().toLowerCase();
+  const rows = $("sv_bans").querySelectorAll(".player-row");
+  let visible = 0;
+  for(const row of rows){
+    row.hidden = !row.textContent.toLowerCase().includes(query);
+    if(!row.hidden) visible++;
+  }
+  $("sv_ban_count").textContent = `显示 ${visible} / ${rows.length} 条`;
+  $("sv_ban_no_matches").hidden = !rows.length || visible > 0;
+}
+
 function renderPlayerBans(bans, admin){
   $("sv_ban_card").hidden = !admin;
+  $("sv_ban_search_row").hidden = !admin || !bans?.items?.length;
+  $("sv_ban_no_matches").hidden = true;
   const host = $("sv_bans");
   if(!admin){
     host.replaceChildren();
@@ -2704,16 +2855,20 @@ function renderPlayerBans(bans, admin){
     // 玩家要 `pardon`，IP 要 `pardon-ip`，发错命令服务端只会回一句 unknown。
     const isIp = item.kind === "ip";
     const action = isIp ? "unban_ip" : "unban";
-    const typeTag = isIp ? `<span class="badge dim" title="IP 封禁（pardon-ip）">IP</span>` : "";
+    const typeTag = isIp ? `<span class="badge dim" title="IP 封禁（pardon-ip）">IP</span>`
+      : `<span class="badge dim">玩家</span>`;
     const canAct = item.removable !== false && (isIp || PLAYER_NAME.test(item.name));
     const actionCell = isIp && !canAct
       ? `<span class="muted player-ip-invalid">${escServer(item.note || "格式异常，不能在这里解封")}</span>`
       : playerButtons(item.name, [action], canAct);
-    return `<div class="player-row">${typeTag}<b>${escServer(item.name)}</b>
+    const copy = isIp && canAct
+      ? `<button class="btn sm" type="button" data-copy-ip="${escServer(item.name)}">复制 IP</button>` : "";
+    return `<div class="player-row"><div class="player-ban-target">${typeTag}<b>${escServer(item.name)}</b></div>
       <div class="player-ban-info">${fields}${end}</div>
-      ${actionCell}</div>`;
+      <div class="player-ban-actions">${copy}${actionCell}</div></div>`;
   }).join("");
   host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
+  filterPlayerBans();
 }
 
 function renderPlayerAudit(audit, admin, bans){
@@ -2862,6 +3017,27 @@ function bindPlayerAdmin(){
   banIpInput.addEventListener("keydown", event => {
     if(event.key === "Enter"){ event.preventDefault(); $("sv_ban_ip_btn").click(); }
   });
+  $("sv_ban_search").addEventListener("input", filterPlayerBans);
+  $("sv_players").addEventListener("click", event => {
+    const button = event.target.closest("button[data-ban-ip-prefill]");
+    if(!button || $("sv_ban_card").hidden) return;
+    const ip = button.dataset.banIpPrefill;
+    if(!looksLikeIp(ip)) return;
+    banIpInput.value = ip;
+    banIpHint.textContent = "已填入最近进服 IP，请核对地址后再封禁";
+    jumpToCard(banIpInput, {focus:true});
+  });
+  $("sv_bans").addEventListener("click", async event => {
+    const button = event.target.closest("button[data-copy-ip]");
+    if(!button) return;
+    const address = button.dataset.copyIp;
+    try{
+      await navigator.clipboard.writeText(address);
+      $("sv_ban_result").textContent = `已复制 IP ${address}`;
+    }catch{
+      $("sv_ban_result").textContent = `无法访问剪贴板，请手动复制 ${address}`;
+    }
+  });
 
   reason.addEventListener("input", () => {
     const selection = playerSelection;
@@ -2964,6 +3140,90 @@ async function loadServerEvents(){
   const r = await callGet("events").catch(()=>({ok:false}));
   const evs = (r.ok&&r.events)||[];
   $("sv_events").innerHTML = evs.length ? evs.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
+}
+
+const CHAT_TYPES = new Set(["chat", "whisper", "me"]);
+const CHAT_LABELS = {whisper:" · 私聊", me:" · 动作"};
+const CHAT_POLL_MS = 2000;
+let chatActive = false;
+let chatEpoch = 0;
+let chatTimer;
+let chatSnapshot = "";
+
+function chatAtEnd(host){
+  return host.scrollHeight - host.clientHeight - host.scrollTop < 8;
+}
+
+function renderServerChat(events){
+  const host = $("sv_chat");
+  const messages = events.filter(event => CHAT_TYPES.has(event.type));
+  const snapshot = JSON.stringify(messages);
+  if(snapshot === chatSnapshot) return;
+  chatSnapshot = snapshot;
+  const atEnd = chatAtEnd(host);
+  const top = host.getBoundingClientRect().top;
+  const anchor = atEnd ? null : Array.from(host.children)
+    .find(row => row.getBoundingClientRect().bottom > top);
+  const offset = anchor ? anchor.getBoundingClientRect().top - top : 0;
+  const scroll = host.scrollTop;
+  const counts = new Map();
+  const byKey = new Map();
+  const rows = messages.map(event => {
+    const identity = JSON.stringify([event.ts, event.type, event.player, event.detail]);
+    const count = (counts.get(identity) || 0) + 1;
+    counts.set(identity, count);
+    const key = JSON.stringify([identity, count]);
+    const row = consoleText("div", "", "server-chat-row");
+    row.dataset.chatKey = key;
+    row.append(consoleText("time", event.ts),
+      consoleText("strong", String(event.player ?? "") + (CHAT_LABELS[event.type] || "")),
+      consoleText("p", event.detail));
+    byKey.set(key, row);
+    return row;
+  }).reverse();
+  host.replaceChildren(...(rows.length ? rows : [consoleText("span", "暂无玩家对话", "muted server-chat-empty")]));
+  if(atEnd){
+    host.scrollTop = host.scrollHeight;
+  }else{
+    const next = anchor && byKey.get(anchor.dataset.chatKey);
+    host.scrollTop = next ? host.scrollTop + next.getBoundingClientRect().top - top - offset : scroll;
+  }
+  $("sv_chat_latest").disabled = chatAtEnd(host);
+}
+
+async function pollServerChat(revision){
+  const response = await consoleRequest("events/chat", "GET").catch(() => null);
+  if(revision !== chatEpoch) return;
+  const notice = $("sv_chat_notice");
+  if(response?.authorized === false || response?.status === 403 || response?.status === 401){
+    renderServerChat([]);
+    notice.textContent = "当前会话无权查看玩家对话";
+  }else if(response?.ok && Array.isArray(response.events)){
+    renderServerChat(response.events);
+    notice.textContent = "";
+  }else{
+    if(!chatSnapshot) renderServerChat([]);
+    notice.textContent = "无法读取玩家对话，稍后重试";
+  }
+  chatTimer = setTimeout(() => pollServerChat(revision), CHAT_POLL_MS);
+}
+
+function syncServerChat(){
+  const active = mode !== "unknown" && !document.hidden
+    && $("page_server").classList.contains("active") && !$("server_panel_tools").hidden;
+  if(active === chatActive) return;
+  chatActive = active;
+  const revision = ++chatEpoch;
+  clearTimeout(chatTimer);
+  if(active) pollServerChat(revision);
+}
+
+function bindServerChat(){
+  const host = $("sv_chat"), latest = $("sv_chat_latest");
+  host.addEventListener("scroll", () => { latest.disabled = chatAtEnd(host); }, {passive:true});
+  latest.addEventListener("click", () => { host.scrollTop = host.scrollHeight; });
+  document.addEventListener("visibilitychange", syncServerChat);
+  syncServerChat();
 }
 
 // ============ 知识库 ============
@@ -4240,7 +4500,8 @@ function setupAnimatedSelect(wrap, native){
 }
 function initAnimatedSelects(){
   document.querySelectorAll("select").forEach(native=>{
-    if(native.hidden || native.style.display === "none" || native.closest(".select-pop") || native.id === "cfg_danger_policy") return;
+    if(native.hidden || native.style.display === "none" || native.closest(".select-pop") ||
+        native.id === "cfg_danger_policy" || native.hasAttribute("data-native-select")) return;
     const parent = native.parentElement;
     if(!parent) return;
     const cs = getComputedStyle(native);
@@ -5910,6 +6171,7 @@ async function resetColors(){
 // ============ 事件绑定 ============
 function bind(){
   bindPlayerAdmin();
+  bindServerChat();
   for(const button of serverRefreshButtons) button.onclick = loadServer;
   $("sv_ev_refresh").onclick = loadServerEvents;
   const wfRefresh = $("wf_refresh");

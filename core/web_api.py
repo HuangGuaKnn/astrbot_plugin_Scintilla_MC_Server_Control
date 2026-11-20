@@ -193,6 +193,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/rcon/test", self.test_rcon, ["POST"], "测试RCON连接")
         reg(f"{PAGE_PREFIX}/rcon/reset", self.reset_rcon, ["POST"], "重建RCON连接（清除自动降级）")
         reg(f"{PAGE_PREFIX}/events", self.get_events, ["GET"], "最近服务器事件")
+        reg(f"{PAGE_PREFIX}/events/chat", self.get_chat_events, ["GET"], "读取管理员对话事件")
         reg(f"{PAGE_PREFIX}/server/status", self.get_server_status, ["GET"], "服务器实时状态")
         reg(f"{PAGE_PREFIX}/server/card", self.get_server_card, ["GET"], "实时服务器卡（四字段 · 四态）")
         reg(f"{PAGE_PREFIX}/server/broadcast", self.broadcast, ["POST"], "服务器广播")
@@ -202,6 +203,8 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/console/preview", self.console_preview, ["POST"], "检查终端命令与风险提示")
         reg(f"{PAGE_PREFIX}/console/execute", self.console_execute, ["POST"], "执行终端命令")
         reg(f"{PAGE_PREFIX}/console/log", self.console_log, ["GET"], "读取服务端日志尾")
+        reg(f"{PAGE_PREFIX}/settings/console-log", self.get_console_log_setting, ["GET"], "读取日志刷新间隔")
+        reg(f"{PAGE_PREFIX}/settings/console-log/save", self.save_console_log_setting, ["POST"], "保存日志刷新间隔")
         reg(f"{PAGE_PREFIX}/colors", self.get_colors, ["GET"], "读取文本颜色")
         reg(f"{PAGE_PREFIX}/colors/save", self.save_colors, ["POST"], "保存文本颜色")
         reg(f"{PAGE_PREFIX}/ui/theme", self.get_ui_theme, ["GET"], "读取界面主题偏好")
@@ -1349,6 +1352,13 @@ class McControlWebApi:
             events = []
         return json_response({"ok": True, "events": events})
 
+    async def get_chat_events(self):
+        if not self._console_admin_username():
+            return self._player_admin_forbidden()
+        response = await self.get_events()
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     # ================= 玩家管理 =================
 
     def _player_admin_username(self) -> str:
@@ -1487,6 +1497,22 @@ class McControlWebApi:
             return self._player_admin_forbidden()
         result = await web_console.log_tail(self.plugin, request.query.get("cursor", ""))
         return self._console_response(result)
+
+    async def get_console_log_setting(self):
+        if not self._console_admin_username():
+            return self._player_admin_forbidden()
+        return self._console_response(web_console.log_poll_setting(self.plugin))
+
+    async def save_console_log_setting(self):
+        if not self._console_admin_username():
+            return self._player_admin_forbidden()
+        content_type = request.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return self._console_response({"ok": False, "error": "需要 application/json 请求"}, status_code=415)
+        body, error = await self._body()
+        if error:
+            return self._console_response({"ok": False, "error": error}, status_code=400)
+        return self._console_response(web_console.save_log_poll_setting(self.plugin, body.get("interval")))
 
     async def get_server_card(self):
         """实时服务器卡（v0.25.0）：四个字段 + 每个字段自己的状态。

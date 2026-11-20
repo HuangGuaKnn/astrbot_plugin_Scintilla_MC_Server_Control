@@ -16,6 +16,26 @@ from .log_watcher import LogWatcher, run_blocking
 from .strict_bool import strict_bool
 
 
+LOG_POLL_KEY = "console_log_poll_ms"
+LOG_POLL_OPTIONS = ("1000", "1500", "3000")
+
+
+def log_poll_setting(plugin) -> dict:
+    return {"ok": True, "interval": plugin._cfg(LOG_POLL_KEY, LOG_POLL_OPTIONS[0])}
+
+
+def save_log_poll_setting(plugin, value) -> dict:
+    if value not in LOG_POLL_OPTIONS:
+        return {"ok": False, "error": "日志刷新间隔只能选 1 秒、1.5 秒或 3 秒"}
+    try:
+        written = plugin._set_cfg_batch({LOG_POLL_KEY: value})
+    except Exception:
+        return {"ok": False, "error": "无法写入日志刷新间隔"}
+    if LOG_POLL_KEY not in written or not getattr(plugin, "_last_cfg_save_ok", True):
+        return {"ok": False, "error": "日志刷新间隔未能保存到磁盘"}
+    return log_poll_setting(plugin)
+
+
 MAX_COMMAND_LENGTH = 256
 MAX_BROADCAST_LENGTH = 200
 MAX_BATCH = 20

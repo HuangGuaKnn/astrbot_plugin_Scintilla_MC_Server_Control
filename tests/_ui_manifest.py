@@ -60,6 +60,7 @@ HARD = [
     "ui_server_card_check",
     "ui_player_admin_check",
     "ui_web_console_check",
+    "ui_chat_view_check",
     "ui_theme_check",
     "ui_theme_persist_check",
     "ui_version_override_check",
