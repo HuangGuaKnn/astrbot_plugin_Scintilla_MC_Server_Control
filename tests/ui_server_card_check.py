@@ -105,6 +105,18 @@ def payload_for(card_obj: dict | None, *, ok: bool = True, error: str = "") -> d
     return p
 
 
+def check_beta_tag(page):
+    """v0.33.1：服务器页必须挂「Beta 实验性页面」明示标签。
+
+    这两个页面还在打磨，标出来是为了让用户知道「撞到问题是预期内的」，
+    而不是以为插件坏了。标签被删掉 → 这条红。
+    """
+    tag = page.locator("#server_beta_tag")
+    assert tag.count() == 1, "服务器页应有一个 beta 标签"
+    text = tag.inner_text()
+    assert "Beta" in text and "实验性" in text, f"标签文案不对：{text!r}"
+
+
 def check_server_tabs(page) -> None:
     content = {
         "monitor": ("#sv_status", "#sv_events"),
@@ -169,6 +181,7 @@ def main() -> None:
         page.goto(F.PAGE_URL)
         page.locator('button.tab[data-page="server"]').click()
         check_server_tabs(page)
+        check_beta_tag(page)
         monitor_tab = page.locator('[data-server-tab="monitor"]')
         players_tab = page.locator('[data-server-tab="players"]')
 

@@ -254,11 +254,21 @@ def check_warnings_are_soft(scenario):
     print("[PASS] T2/T4/T14 嵌套命令、带参数选择器和多行提示可见并允许执行")
 
 
+def check_beta_tag(scenario):
+    """v0.33.1：终端页必须挂「Beta 实验性页面」明示标签。"""
+    scenario.open()          # 每个用例自己负责打开页面（与其它 check 一致）
+    page = scenario.page
+    tag = page.locator("#console_beta_tag")
+    assert tag.count() == 1, "终端页应有一个 beta 标签"
+    text = tag.inner_text()
+    assert "Beta" in text and "实验性" in text, f"标签文案不对：{text!r}"
+
+
 CASES = {
     "T3": check_multiline, "T6": check_response_states, "T8": check_polling,
     "T9": check_permission, "T10": check_private_literal_text, "T11": check_notices,
     "T14": check_warnings_are_soft,
-}
+"BETA": check_beta_tag}
 
 
 def main(args):

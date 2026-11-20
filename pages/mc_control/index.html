@@ -475,6 +475,12 @@ summary:hover{text-decoration:underline}
 #player_preview_error:not(:empty){margin-top:8px}
 /* 终端和日志各自滚动，输入和暂停控件始终可见。 */
 .console-notice{margin:0 0 14px;color:var(--dim);font-size:13px;line-height:1.6}
+/* v0.33.1：Beta 明示标签（服务器页 / 终端页）—— 这两块还在打磨，先标出来，
+   比让用户自己撞到问题要好。样式克制：细边框 + 5px 圆点，不做整宽横幅。 */
+.beta-tag{display:inline-flex;align-items:center;gap:6px;margin:0 0 10px;padding:3px 9px;
+  border:1px solid rgba(255,167,38,.35);border-radius:999px;background:rgba(255,167,38,.08);
+  color:var(--warn);font-size:11.5px;letter-spacing:.2px}
+.beta-dot{width:5px;height:5px;border-radius:50%;background:var(--warn);flex:none}
 .console-notice strong{color:var(--warn)}
 .console-pane{min-width:0;min-height:12rem;max-height:22rem;overflow:auto;
   padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2)}
@@ -1072,6 +1078,9 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 
 <!-- ================= 服务器 ================= -->
 <div class="page" id="page_server">
+  <div class="beta-tag" role="note" id="server_beta_tag">
+    <span class="beta-dot" aria-hidden="true"></span>Beta 实验性页面 · 部分页面可能出现意料中的问题
+  </div>
   <div class="server-tabs" role="tablist" aria-label="服务器功能">
     <button type="button" id="server_tab_monitor" role="tab" data-server-tab="monitor" aria-controls="server_panel_monitor" aria-selected="true">监控</button>
     <button type="button" id="server_tab_players" role="tab" data-server-tab="players" aria-controls="server_panel_players" aria-selected="false" tabindex="-1">玩家</button>
@@ -1142,6 +1151,9 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
 
 <!-- ================= 终端 ================= -->
 <div class="page" id="page_console">
+  <div class="beta-tag" role="note" id="console_beta_tag">
+    <span class="beta-dot" aria-hidden="true"></span>Beta 实验性页面 · 部分页面可能出现意料中的问题
+  </div>
   <p class="console-notice" id="console_notice">这不是实时终端（RCON 一问一答）。<strong>命令会立即在服务端执行。</strong>日志通过轮询更新。分级表只覆盖常见命令；<strong>插件命令不在表内，同样会立即执行。</strong></p>
   <div class="grid g2">
     <section class="card" aria-labelledby="console_results_title">
