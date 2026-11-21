@@ -2421,7 +2421,9 @@ function renderServerCard(card){
 // ============ 终端：命令问答与日志轮询 ============
 const CONSOLE_POLL_DEFAULT = 1000;
 const CONSOLE_POLL_OPTIONS = [1000, 1500, 3000];
-const CONSOLE_PREVIEW_MS = 250;
+// 终端命令预览的去抖间隔。250ms 实测打字时提示仍会闪（连续击键间隔常在 100-200ms），
+// 400ms 足以跨过两次击键，而停顿 400ms 基本就是「打完了或在想」——提示正好在这时出现。
+const CONSOLE_PREVIEW_MS = 400;
 const CONSOLE_HISTORY_LIMIT = 100;
 const CONSOLE_FORBIDDEN = "仅 AstrBot WebUI 管理员可访问";
 let consoleBusy = false;
