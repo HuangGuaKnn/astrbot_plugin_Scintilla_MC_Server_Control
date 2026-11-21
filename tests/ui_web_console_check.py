@@ -276,7 +276,14 @@ def check_configured_polling(scenario):
 
     for interval in (1000, 1500, 3000):
         expect(page.locator("#page_settings")).to_be_visible()
+        # 产品行为：值没变化时「保存日志间隔」是禁用的（合理）。
+        # 第一次循环选的 1000 恰好等于默认值 → 没有 change → 按钮禁用 → 点不动。
+        # 所以先切到另一个档位制造真实变化，再选目标值。
+        other = "3000" if interval != 3000 else "1500"
+        select.select_option(other)
         select.select_option(str(interval))
+        expect(page.locator("#cfg_console_poll_save"),
+               "R4 改过档位后保存按钮须可用").to_be_enabled()
         page.locator("#cfg_console_poll_save").click()
         expect(page.locator("#cfg_console_poll_notice")).to_have_text("刷新间隔已保存")
         check_interval(interval, f"R4 日志轮询应使用已保存的 {interval} ms 档位")

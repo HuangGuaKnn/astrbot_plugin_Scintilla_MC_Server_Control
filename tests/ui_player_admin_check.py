@@ -30,6 +30,8 @@ class Scenario:
         self.online = dict(ONLINE_OK)
         self.bans = {"state": "ok", "items": [dict(BAN)]}
         self.posts = []
+        self.ip_searches = []
+        self.ip_search_result = {}
         self.audits = []
         self.audit_limits = []
         self.apply_unban = False
@@ -108,6 +110,9 @@ class Scenario:
                               body=json.dumps({"ok": False, "error": "仅管理员可操作"}))
         elif endpoint == "player/bans":
             fulfill(route_obj, {"ok": True, "authorized": True, "online": self.online, **self.bans})
+        elif endpoint == "player/ip/search":
+            self.ip_searches.append(route_obj.request.post_data_json)
+            fulfill(route_obj, {"ok": True, "details": self.ip_search_result})
         elif endpoint == "player/audit":
             self.audit_limits.append(parse_qs(urlsplit(route_obj.request.url).query).get("limit"))
             fulfill(route_obj, {"ok": True, "items": self.audits})
@@ -420,6 +425,42 @@ def check_online_actions(scenario):
     print("[PASS] P16 已知与未知 IP 在线行动作均恰为四项，解封与 IP 封禁入口独立")
 
 
+def check_remote_ip_search(scenario):
+    scenario.online = {**ONLINE_OK, "ip_details": {"Alex": {"state": "remote", "ip": "", "can_ban": False}}}
+    scenario.open()
+    row = scenario.page.locator("#sv_players .player-row")
+    expect(row.get_by_role("button", name="重新搜索 IP"), "J5 异地模式须禁用重新搜索").to_be_disabled()
+    expect(row).to_contain_text("异地模式下读不到服务端日志，无法搜索")
+    assert not scenario.ip_searches
+    print("[PASS] J5 异地原因可见，重新搜索不可操作")
+
+
+def check_ip_search_details(scenario):
+    scenario.online = {"state": "ok", "players": ["Alex", "Steve", "Morgan"], "online": 3, "max": 20,
+                       "ip_details": {
+                           "Alex": {"state": "found", "ip": "127.0.0.1", "scope": "loopback", "can_ban": False,
+                                    "source": "logs/2026-11-20-1.log.gz", "joined_at": "2026-11-20T12:34:56"},
+                           "Steve": {"state": "not_found", "ip": "", "scanned": 7},
+                           "Morgan": {"state": "unreadable", "ip": ""},
+                       }}
+    scenario.ip_search_result = {"state": "found", "ip": IPV4, "scope": "", "can_ban": True,
+                                 "source": "logs/latest.log", "joined_at": "2026-11-21T14:07:00"}
+    scenario.open()
+    rows = scenario.page.locator("#sv_players .player-row")
+    expect(rows.first).to_contain_text("回环地址（127.0.0.1）")
+    expect(rows.first.get_by_role("button", name="在封禁区使用此 IP")).to_be_disabled()
+    expect(rows.first).to_contain_text("来自 logs/2026-11-20-1.log.gz · 最后一次进服 2026-11-20 12:34")
+    expect(rows.nth(1), "J7 缺记录文案须显示搜索文件数").to_contain_text("最近 7 个日志文件里没有该玩家的进服记录")
+    expect(rows.nth(2)).to_contain_text("日志目录不可读（server_dir 配置可能不对）")
+    rows.nth(1).get_by_role("button", name="重新搜索 IP").press("Enter")
+    expect(rows.nth(1)).to_contain_text(IPV4)
+    expect(rows.nth(1)).to_contain_text("来自 logs/latest.log · 最后一次进服 2026-11-21 14:07")
+    expect(rows.nth(1).get_by_role("button", name="在封禁区使用此 IP")).to_be_enabled()
+    assert scenario.ip_searches == [{"player": "Steve"}]
+    expect(scenario.page.locator("#player_dialog")).to_be_hidden()
+    print("[PASS] J2/J3/J6/J7 地址保护、来源和时间、手动回显、缺记录计数及目录错误")
+
+
 def check_console_notice(scenario):
     """P18：常驻说明明确分类表边界，不让用户把未提示误解为安全。"""
     scenario.open()
@@ -715,7 +756,7 @@ CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P14": check_ban_ip_entry, "P15": check_player_ip, "P16": check_online_actions,
          "P18": check_console_notice, "P20": check_single_color_card,
          "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,
-         "R5": check_long_ban_list}
+         "R5": check_long_ban_list, "J5": check_remote_ip_search, "J7": check_ip_search_details}
 
 
 def main(args):

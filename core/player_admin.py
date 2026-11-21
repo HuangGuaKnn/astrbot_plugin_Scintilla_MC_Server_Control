@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import server_card
 from .command_result import CommandResult, classify_command_output
+from .log_watcher import LoginIpResult, LogWatcher
 from .rcon import RconError
 from .strict_bool import strict_bool
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, VersionInfo
@@ -41,6 +42,7 @@ _READBACK_COMMAND = {
     "unban_ip": "banlist ips",
 }
 _PLAYER_NAME = re.compile(r"[A-Za-z0-9_]{1,16}")
+_LAN_IPV4 = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 #: `banlist ips` 的确定形态：`<ip> was banned by <source>: <reason>`。
 #: 只认这种，不单独抓「看起来像 IP 的串」—— 理由里可能就写着别人的 IP。
 _IP_ENTRY = re.compile(r"(?P<ip>[0-9A-Fa-f:.]+)\s+was banned by\s+(?P<src>[^:]+):\s*(?P<reason>.*)", re.I)
@@ -290,20 +292,62 @@ async def _read_roster(plugin, command: str, rcon=None) -> dict:
     return result
 
 
-async def get_online(plugin) -> dict:
-    """在线名单 + 每个人的「最近进服 IP」（v0.29.0）。
+def _player_ip_details(record: LoginIpResult) -> dict:
+    scope = ""
+    if record.ip:
+        address = ipaddress.ip_address(record.ip)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if address.is_loopback:
+            scope = "loopback"
+        elif address.is_link_local:
+            scope = "link_local"
+        elif any(address in net for net in _LAN_IPV4):
+            scope = "private"
+    return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip) and not scope}
 
-    IP 来自 `log_watcher` 的只读索引 —— 从进服行顺手记下的旁路数据，不参与事件判定。
 
-    三种情况拿不到（一律留空，界面写「IP 未知」，不猜）：
-    * 插件监听开始前就在线的人；
-    * 代理服（读到的是代理地址，不是玩家真实出口）；
-    * 玩家名不是 ASCII（进服行正则只认 `[A-Za-z0-9_]`）。
-    """
-    result = await _read_roster(plugin, "list")
+async def _lookup_player_ips(plugin, players: list[str], *, force: bool = False) -> dict:
+    if strict_bool(plugin._cfg("remote_rcon_mode", False), False, key="remote_rcon_mode"):
+        return {name: _player_ip_details(LoginIpResult("remote")) for name in players}
+    server_dir = str(plugin._cfg("server_dir", "") or "").strip()
+    if not server_dir:
+        return {name: _player_ip_details(LoginIpResult("unreadable")) for name in players}
+    log_path = Path(server_dir) / "logs" / "latest.log"
     watcher = getattr(plugin, "_watcher", None)
-    if watcher is not None and callable(getattr(watcher, "recent_ip", None)):
-        result["ips"] = {name: watcher.recent_ip(name) for name in result.get("players") or []}
+    if not isinstance(watcher, LogWatcher) or watcher.log_path != log_path:
+        # 关闭实时播报时仍可搜索本地日志。按目录复用缓存，不启动监听任务。
+        watcher = getattr(plugin, "_web_ip_lookup", None)
+        if watcher is None or watcher.log_path != log_path:
+            watcher = plugin._web_ip_lookup = LogWatcher(server_dir, getattr(plugin, "_on_server_event", None))
+    records = await watcher.lookup_player_ips(players, force=force)
+    if strict_bool(plugin._cfg("remote_rcon_mode", False), False, key="remote_rcon_mode"):
+        return {name: _player_ip_details(LoginIpResult("remote")) for name in players}
+    if str(plugin._cfg("server_dir", "") or "").strip() != server_dir:
+        return {name: _player_ip_details(LoginIpResult("incomplete")) for name in players}
+    return {name: _player_ip_details(record) for name, record in records.items()}
+
+
+async def search_player_ip(plugin, player: str) -> dict:
+    if not isinstance(player, str) or not _PLAYER_NAME.fullmatch(player):
+        raise ValueError("玩家名须为 1–16 个字母、数字或下划线")
+    return (await _lookup_player_ips(plugin, [player], force=True))[player]
+
+
+async def get_online(plugin) -> dict:
+    """在线名单及最近进服 IP。监听索引未命中时批量查询本地日志。"""
+    result = await _read_roster(plugin, "list")
+    players = result.get("players") or []
+    if not players:
+        return result
+    details = await _lookup_player_ips(plugin, players)
+    result["ip_details"] = details
+    watcher = getattr(plugin, "_watcher", None)
+    if not isinstance(watcher, LogWatcher) and callable(getattr(watcher, "recent_ip", None)):
+        # 兼容只实现旧索引接口的监听器。
+        result["ips"] = {name: watcher.recent_ip(name) for name in players}
+    elif isinstance(watcher, LogWatcher) or any(record["ip"] for record in details.values()):
+        result["ips"] = {name: record["ip"] for name, record in details.items()}
     return result
 
 

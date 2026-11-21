@@ -181,6 +181,45 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
+    ] + v0350_cases()
+
+
+def v0350_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    backend = (*python, "tests/test_v0350_player_ip.py")
+    browser = (*python, UI_TEST)
+    watcher = "core/log_watcher.py"
+    return [
+        Case("J1", "跳过 gzip 解压", watcher,
+             '    if path.name.endswith(".log.gz"):', "    if False:",
+             (*backend, "PlayerIpChecks.test_j1_gzip_is_searched_exactly_and_stops_at_first_matching_file"),
+             "J1 必须检索 gzip 中的精确玩家"),
+        Case("J2", "取消回环地址保护", PLAYER,
+             "        if address.is_loopback:", "        if False:",
+             (*backend, "PlayerIpChecks.test_j2_restricted_ranges_do_not_offer_ban"),
+             "J2 受保护地址必须标注并禁用封禁"),
+        Case("J3", "丢失登录来源", PLAYER,
+             '    return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip) and not scope}',
+             '    return {**record._asdict(), "source": "", "scope": scope, "can_ban": bool(record.ip) and not scope}',
+             (*backend, "PlayerIpChecks.test_j3_and_j7_online_contains_source_time_and_count"),
+             "J3 来源与进服时间须随名单返回"),
+        Case("J4", "禁用未命中缓存", watcher,
+             "if key in keys and expires > now}", "if False}",
+             (*backend, "PlayerIpChecks.test_j4_negative_cache_coalesces_calls_and_expires"),
+             "J4 同一玩家 60 秒内只搜索一次"),
+        Case("J5", "异地 RCON 时仍允许重新搜索", HTML,
+             '  const canSearch = state !== "remote";', "  const canSearch = true;",
+             (*browser, "J5"), "J5 异地模式须禁用重新搜索", baseline=(*browser, "J5")),
+        Case("J6", "手动搜索沿用缓存", PLAYER,
+             "(await _lookup_player_ips(plugin, [player], force=True))[player]",
+             "(await _lookup_player_ips(plugin, [player], force=False))[player]",
+             (*backend, "PlayerIpChecks.test_j6_manual_route_bypasses_cached_miss_and_requires_admin"),
+             "J6 手动重搜须越过缓存"),
+        Case("J7", "缺记录时隐藏搜索文件数", HTML,
+             '`最近 ${scanned} 个日志文件里没有该玩家的进服记录`', '"未找到"',
+             (*browser, "J7"), "J7 缺记录文案须显示搜索文件数", baseline=(*browser, "J7")),
     ]
 
 

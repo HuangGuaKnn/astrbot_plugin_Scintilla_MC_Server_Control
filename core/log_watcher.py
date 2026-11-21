@@ -22,14 +22,19 @@ v0.17.3：整合包把 /kill、/advancement grant 的反馈同样写成「[玩�
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
+import ipaddress
 import re
 import threading
 from queue import Empty, Full, Queue
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Awaitable, Callable
+from stat import S_ISREG
+from typing import Awaitable, Callable, NamedTuple
+from zlib import error as ZlibError
 
 # 规范要求：插件日志器必须来自 astrbot.api（不得使用标准库 logging）。
 from astrbot.api import logger
@@ -368,13 +373,19 @@ _JOIN_PATTERN = re.compile(r"^(?P<player>[A-Za-z0-9_]{1,16}) joined the game$")
 #: 已知限制（日志层物理限制，不是 bug）：代理服读到的是代理地址；插件监听前
 #: 已在线的玩家没有记录；中文名 / 模组改名后的行不匹配。
 _LOGIN_IP_PATTERN = re.compile(
-    r"(?P<player>[A-Za-z0-9_]{1,16})\[/(?P<ip>[^\]\s]+):\d+\] logged in with entity id",
+    r"(?P<player>[A-Za-z0-9_]{1,16})\[/(?P<ip>\[[^\]\s]+\]|[^\]\s]+):\d+\] logged in with entity id",
     re.IGNORECASE,
 )
 #: 索引上限：只在内存里留最近若干玩家，防止长期运行无限增长
 _RECENT_IP_LIMIT = 256
 # 冷启动只回扫有界尾部，历史内容仅用于 IP 索引，不派发事件。
 RECENT_IP_BACKFILL_BYTES = 256 * 1024
+IP_SEARCH_BYTES = 4 * 1024 * 1024
+IP_SEARCH_FILES = 32
+IP_SEARCH_TTL = 60
+IP_SEARCH_SECONDS = 2.0
+_LOGIN_CLOCK = re.compile(r"^\[(?:(\d{4}-\d{2}-\d{2})[ T])?(\d\d:\d\d:\d\d)")
+_ARCHIVE_DAY = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 _LEAVE_PATTERN = re.compile(r"^(?P<player>[A-Za-z0-9_]{1,16}) left the game$")
 _ADVANCEMENT_PATTERN = re.compile(
     r"^(?P<player>[A-Za-z0-9_]{1,16})\s+has (?:made the advancement|"
@@ -432,6 +443,134 @@ _DEATH_PATTERN = re.compile(
 _MSG_EXTRACT = re.compile(r"\]\s*:\s*(.*)$")
 
 
+class LoginIpResult(NamedTuple):
+    state: str
+    ip: str = ""
+    source: str = ""
+    joined_at: str = ""
+    scanned: int = 0
+    limited: bool = False
+
+
+def _login_ip_match(line: str):
+    message = _MSG_EXTRACT.search(line)
+    return _LOGIN_IP_PATTERN.match((message.group(1) if message else line).lstrip())
+
+
+def _login_clock(line: str, modified: datetime, archive_day: date | None = None) -> str:
+    match = _LOGIN_CLOCK.match(line)
+    if not match:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(f"{match[1] or (archive_day or modified.date()).isoformat()}T{match[2]}")
+    except ValueError:
+        return ""
+    if not match[1]:
+        if archive_day:
+            # 文件名记录轮转前的日期。mtime 落到次日时，辨认午夜后的日志行。
+            if modified.date() == archive_day + timedelta(days=1) and stamp.time() <= modified.time():
+                stamp += timedelta(days=1)
+        elif stamp > modified + timedelta(minutes=2):
+            stamp -= timedelta(days=1)
+    return stamp.isoformat(timespec="seconds")
+
+
+def _ip_file_matches(path: Path, modified: datetime, wanted: set[str], deadline: float):
+    matches = {}
+
+    def record(line: bytes, *, newest_first: bool = False):
+        # 进服格式、玩家名与 IP 均为 ASCII。扫描不改变监听器的解码状态。
+        text = line.decode("ascii", errors="replace")
+        match = _login_ip_match(text)
+        if not match or (name := match["player"].casefold()) not in wanted:
+            return
+        if newest_first and name in matches:
+            return
+        try:
+            ip = str(ipaddress.ip_address(match["ip"].strip("[]")))
+        except ValueError:
+            return
+        matches[name] = (ip, _login_clock(text, modified, archive_day))
+
+    day_match = _ARCHIVE_DAY.match(path.name)
+    try:
+        archive_day = date.fromisoformat(day_match[1]) if day_match else None
+    except ValueError:
+        archive_day = None
+    if path.name.endswith(".log.gz"):
+        remaining = IP_SEARCH_BYTES
+        with gzip.open(path, "rb") as stream:
+            while remaining and time.monotonic() < deadline:
+                line = stream.readline(remaining)
+                if not line:
+                    return matches, False
+                remaining -= len(line)
+                if line.endswith(b"\n"):
+                    record(line)
+        return matches, True
+
+    with path.open("rb") as stream:
+        offset = max(0, stream.seek(0, 2) - IP_SEARCH_BYTES)
+        stream.seek(offset)
+        chunk = stream.read(IP_SEARCH_BYTES)
+    if offset:
+        chunk = chunk[chunk.find(b"\n") + 1:] if b"\n" in chunk else b""
+    chunk = chunk[:chunk.rfind(b"\n") + 1]
+    for line in reversed(chunk.splitlines()):
+        if time.monotonic() >= deadline:
+            return matches, True
+        record(line, newest_first=True)
+        if matches.keys() == wanted:
+            break
+    return matches, bool(offset and matches.keys() != wanted)
+
+
+def _scan_login_ips(directory: Path, wanted: set[str]) -> dict[str, LoginIpResult]:
+    deadline = time.monotonic() + IP_SEARCH_SECONDS
+    candidates = []
+    unreadable = False
+    limited = False
+    try:
+        for path in directory.iterdir():
+            if time.monotonic() >= deadline:
+                limited = True
+                break
+            if not path.name.endswith((".log", ".log.gz")):
+                continue
+            try:
+                info = path.lstat()
+                if S_ISREG(info.st_mode):
+                    candidates.append((info.st_mtime_ns, path))
+            except OSError:
+                unreadable = True
+    except OSError:
+        return dict.fromkeys(wanted, LoginIpResult("unreadable"))
+    candidates.sort(key=lambda entry: (entry[0], entry[1].name), reverse=True)
+    pending = set(wanted)
+    results = {}
+    scanned = 0
+    for mtime, path in candidates[:IP_SEARCH_FILES]:
+        if not pending or time.monotonic() >= deadline:
+            limited |= bool(pending)
+            break
+        try:
+            matches, partial = _ip_file_matches(path, datetime.fromtimestamp(mtime / 1e9), pending, deadline)
+        except (OSError, EOFError, ZlibError, ValueError):
+            unreadable = True
+            continue
+        limited |= partial
+        scanned += 1
+        for name, (ip, joined_at) in matches.items():
+            results[name] = LoginIpResult("found", ip, f"logs/{path.name}", joined_at,
+                                          scanned, limited or unreadable)
+            pending.remove(name)
+    limited |= bool(pending) and len(candidates) > IP_SEARCH_FILES
+    state = "unreadable" if unreadable and not scanned else "incomplete" if unreadable else "not_found"
+    for name in pending:
+        results[name] = LoginIpResult(state, scanned=scanned, limited=limited)
+    return results
+
+
 #: v0.23.5：`stop()` 等待监听任务退出的超时（秒）。超时只记警告 ——
 #: 「关不掉一个读日志的协程」不该把插件 terminate() 卡住。
 STOP_TIMEOUT = 5.0
@@ -463,6 +602,9 @@ class LogWatcher:
         self._pos = 0
         # 索引必须随实例保留，不能在每批新增日志之前清空。
         self._recent_ips: dict[str, tuple[str, float]] = {}
+        self._recent_ip_times: dict[str, str] = {}
+        self._ip_search_cache: dict[str, tuple[float, LoginIpResult]] = {}
+        self._ip_search_lock = asyncio.Lock()
         self._ip_backfill_pending = True
         self._task: asyncio.Task | None = None
         self._running = False
@@ -1055,17 +1197,24 @@ class LogWatcher:
         它**不产生任何事件**，以前是被直接丢掉的。现在顺带记一笔，供界面上的
         「封禁这个 IP」使用（管理员不必再自己去翻日志）。
         """
-        match = _LOGIN_IP_PATTERN.search(line)
+        match = _login_ip_match(line)
         if not match:
             return
-        ip = match.group("ip").strip()
-        if not ip:
+        try:
+            ip = str(ipaddress.ip_address(match.group("ip").strip("[]")))
+        except ValueError:
             return
         self._recent_ips[match.group("player").casefold()] = (ip, time.monotonic())
+        times = getattr(self, "_recent_ip_times", None)
+        if times is not None:
+            times[match["player"].casefold()] = _login_clock(line, datetime.now())
+            self._ip_search_cache.pop(match["player"].casefold(), None)
         if len(self._recent_ips) > _RECENT_IP_LIMIT:
             # 字典保插入序：老的先丢一半，够用且简单
             for key in list(self._recent_ips)[: len(self._recent_ips) // 2]:
                 self._recent_ips.pop(key, None)
+                if times is not None:
+                    times.pop(key, None)
 
     def recent_ip(self, player: str) -> str:
         """某玩家最近一次进服时的出口 IP；没有记录返回空串。
@@ -1079,6 +1228,45 @@ class LogWatcher:
     def recent_ips(self) -> dict:
         """索引快照：``{玩家名(小写): ip}``。给需要批量展示的调用方用。"""
         return {key: value[0] for key, value in self._recent_ips.items()}
+
+    async def lookup_player_ips(self, players: list[str], *, force: bool = False) -> dict[str, LoginIpResult]:
+        """为界面补齐最近 IP。文件读取和解压走有界执行器，监听索引只在事件循环更新。"""
+        keys = {name.casefold() for name in players}
+        async with self._ip_search_lock:
+            now = time.monotonic()
+            cached = {key: value for key, (expires, value) in self._ip_search_cache.items()
+                      if key in keys and expires > now}
+            live_before = {key: self._recent_ips.get(key) for key in keys}
+            pending = keys if force else keys - cached.keys() - {key for key in keys if self.recent_ip(key)}
+            if pending:
+                ok, results = await run_blocking(_scan_login_ips, self.log_path.parent, pending,
+                                                 timeout=IP_SEARCH_SECONDS + 1, what="搜索玩家进服 IP")
+                if not ok:
+                    results = dict.fromkeys(pending, LoginIpResult("incomplete", limited=True))
+                expires = time.monotonic() + IP_SEARCH_TTL
+                for key, record in results.items():
+                    if self._recent_ips.get(key) != live_before[key]:
+                        continue
+                    self._ip_search_cache.pop(key, None)
+                    self._ip_search_cache[key] = (expires, record)
+                while len(self._ip_search_cache) > _RECENT_IP_LIMIT:
+                    del self._ip_search_cache[next(iter(self._ip_search_cache))]
+                cached.update(results)
+
+            records = {}
+            for name in players:
+                key = name.casefold()
+                history = cached.get(key, LoginIpResult("not_found"))
+                live = self._recent_ips.get(key)
+                joined_at = self._recent_ip_times.get(key, "")
+                # 最新日志可能刚落盘、监听器尚未读到。仅在时间明确更新时采用，
+                # 且搜索过程中产生的监听记录优先。历史结果始终不会写回监听索引。
+                fresh_file = (history.source == "logs/latest.log" and not history.limited
+                              and joined_at and history.joined_at > joined_at
+                              and live == live_before[key])
+                records[name] = (LoginIpResult("found", live[0], "logs/latest.log", joined_at, history.scanned)
+                                 if live and not fresh_file else history)
+            return records
 
     async def _backfill_recent_ips(self, size: int, gen: "int | None" = None) -> bool:
         """首个可读轮询仅回填一次 IP；IO 结果先验代，绝不解析或派发历史事件。"""

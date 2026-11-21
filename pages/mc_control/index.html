@@ -480,6 +480,9 @@ summary:hover{text-decoration:underline}
 .player-actions{display:flex;gap:5px;flex-wrap:wrap}
 /* v0.29.0：手动封禁 IP 的输入行（与名单行视觉上分开，避免被当成搜索框） */
 .player-ip{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin:0 6px}
+.player-ip-details{display:flex;align-items:center;flex:1 1 270px;min-width:0;flex-wrap:wrap;gap:5px 9px}
+.player-ip-details .player-ip{margin:0;overflow-wrap:anywhere}
+.player-ip-details .player-ip-note{flex-basis:100%;overflow-wrap:anywhere}
 .ban-ip-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 10px}
 .ban-ip-row input{flex:0 0 240px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;
   background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12.5px}
@@ -2762,6 +2765,35 @@ function playerButtons(player, actions, enabled){
   return `<div class="player-actions">${buttons.join("")}</div>`;
 }
 
+function renderPlayerIp(name, ip, details){
+  const state = details?.state;
+  const canSearch = state !== "remote";
+  const notes = [];
+  if(details?.source){
+    const joinedAt = String(details.joined_at || "").replace("T", " ").slice(0, 16);
+    notes.push(`来自 ${details.source} · 最后一次进服 ${joinedAt || "时间未知"}`);
+  }
+  if(details?.scope){
+    const label = details.scope === "loopback" ? "回环地址"
+      : details.scope === "private" ? "内网地址" : "链路本地地址";
+    notes.push(`${label}（${ip}），已禁用 IP 封禁`);
+  }
+  const scanned = Number(details?.scanned) || 0;
+  if(state === "remote") notes.push("异地模式下读不到服务端日志，无法搜索");
+  if(state === "unreadable") notes.push("日志目录不可读（server_dir 配置可能不对）");
+  if(state === "incomplete") notes.push(`搜索未完成或部分日志不可读（已搜索 ${scanned} 个文件）`);
+  if(state === "not_found") notes.push(`最近 ${scanned} 个日志文件里没有该玩家的进服记录`);
+  if(details?.limited) notes.push("搜索范围受读取上限限制");
+  const ban = ip
+    ? `<button class="jump" type="button" data-ban-ip-prefill="${escServer(ip)}" ${details?.can_ban === false ? "disabled" : ""}>在封禁区使用此 IP</button>`
+    : "";
+  return `<div class="player-ip-details">
+    <span class="player-ip${ip ? "" : " muted"}">${escServer(ip || "IP 未知")}</span>
+    ${ban}<button class="btn sm" type="button" data-ip-search="${escServer(name)}" ${canSearch ? "" : "disabled"}>重新搜索 IP</button>
+    <span class="muted player-ip-note" role="status">${notes.map(escServer).join(" · ")}</span>
+  </div>`;
+}
+
 function renderOnlinePlayers(status, guardedOnline, admin){
   const field = status.card?.fields?.find(f => f.key === "online");
   const legacy = status.list || {};
@@ -2784,13 +2816,8 @@ function renderOnlinePlayers(status, guardedOnline, admin){
     tag.innerHTML = playerBadge("ok", `${Number(online.online) || names.length} 人在线`);
     host.innerHTML = names.map(name => {
       if(!admin) return `<span class="ply">${escServer(name)}</span>`;
-      // v0.29.0：IP 来自 log_watcher 的旁路索引（进服行顺手记的）。
-      // 拿不到时明写「IP 未知」；封禁 IP 使用封禁名单区的独立入口。
-      const ip = (online.ips || {})[name] || "";
-      const ipCell = ip
-        ? `<span class="player-ip" title="最近一次进服的出口 IP">${escServer(ip)}</span>
-          <button class="jump" type="button" data-ban-ip-prefill="${escServer(ip)}">在封禁区使用此 IP</button>`
-        : `<span class="player-ip muted" title="可读取的日志中没有该玩家的进服 IP 记录">IP 未知</span>`;
+      const details = online.ip_details?.[name];
+      const ipCell = renderPlayerIp(name, details?.ip ?? online.ips?.[name] ?? "", details);
       return `<div class="player-row"><span class="ply">${escServer(name)}</span>${ipCell}
         ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
     }).join("");
@@ -3035,9 +3062,31 @@ function bindPlayerAdmin(){
     if(event.key === "Enter"){ event.preventDefault(); $("sv_ban_ip_btn").click(); }
   });
   $("sv_ban_search").addEventListener("input", filterPlayerBans);
-  $("sv_players").addEventListener("click", event => {
+  $("sv_players").addEventListener("click", async event => {
+    const search = event.target.closest("button[data-ip-search]");
+    if(search && !search.disabled){
+      const cell = search.closest(".player-ip-details");
+      const notice = cell.querySelector(".player-ip-note");
+      const player = search.dataset.ipSearch;
+      search.disabled = true;
+      notice.textContent = "正在搜索进服日志…";
+      const response = await consoleRequest("player/ip/search", "POST", {player}).catch(() => null);
+      if(!cell.isConnected) return;
+      if(response?.ok && response.details){
+        cell.insertAdjacentHTML("afterend", renderPlayerIp(player, response.details.ip, response.details));
+        const replacement = cell.nextElementSibling.querySelector("[data-ip-search]");
+        if(document.activeElement === search || document.activeElement === document.body){
+          replacement.focus({preventScroll:true});
+        }
+        cell.remove();
+      }else{
+        search.disabled = false;
+        notice.textContent = response?.error || "无法搜索玩家 IP，请稍后重试";
+      }
+      return;
+    }
     const button = event.target.closest("button[data-ban-ip-prefill]");
-    if(!button || $("sv_ban_card").hidden) return;
+    if(!button || button.disabled || $("sv_ban_card").hidden) return;
     const ip = button.dataset.banIpPrefill;
     if(!looksLikeIp(ip)) return;
     banIpInput.value = ip;

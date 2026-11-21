@@ -200,6 +200,7 @@ class McControlWebApi:
         reg(f"{PAGE_PREFIX}/player/action", self.player_action, ["POST"], "执行或预览玩家管理操作")
         reg(f"{PAGE_PREFIX}/player/audit", self.player_audit, ["GET"], "最近玩家操作审计")
         reg(f"{PAGE_PREFIX}/player/bans", self.player_bans, ["GET"], "封禁名单与玩家管理名单")
+        reg(f"{PAGE_PREFIX}/player/ip/search", self.player_ip_search, ["POST"], "重新搜索玩家进服 IP")
         reg(f"{PAGE_PREFIX}/console/preview", self.console_preview, ["POST"], "检查终端命令与风险提示")
         reg(f"{PAGE_PREFIX}/console/execute", self.console_execute, ["POST"], "执行终端命令")
         reg(f"{PAGE_PREFIX}/console/log", self.console_log, ["GET"], "读取服务端日志尾")
@@ -1448,6 +1449,18 @@ class McControlWebApi:
         result = await player_admin.get_bans(self.plugin)
         result["online"] = await player_admin.get_online(self.plugin)
         return json_response({"ok": True, "authorized": True, **result})
+
+    async def player_ip_search(self):
+        if not self._console_admin_username():
+            return self._player_admin_forbidden()
+        body, error = await self._body()
+        if error:
+            return self._console_response({"ok": False, "error": error}, status_code=400)
+        try:
+            details = await player_admin.search_player_ip(self.plugin, body.get("player"))
+        except ValueError as exc:
+            return self._console_response({"ok": False, "error": str(exc)}, status_code=400)
+        return self._console_response({"ok": True, "authorized": True, "details": details})
 
     # ================= 终端控制台 =================
 
