@@ -161,6 +161,7 @@ def v0340_cases():
     chat = (*python, "tests/ui_chat_view_check.py")
     debounce = (*python, "tests/ui_web_console_check.py", "R2")
     polling = (*python, "tests/ui_web_console_check.py", "R4")
+    monitor = (*python, "tests/ui_server_card_check.py")
     return [
         Case("R1", "对话混入非聊天事件", HTML,
              "const messages = events.filter(event => CHAT_TYPES.has(event.type));",
@@ -174,6 +175,12 @@ def v0340_cases():
              "if(!CONSOLE_POLL_OPTIONS.includes(candidate)){",
              "if(!Number.isFinite(candidate)){",
              polling, "R4 非法的刷新间隔须回退到 1000 ms", baseline=polling),
+        # v0.34.1 的监控自动刷新：三重可见性判定里最容易丢的是「浏览器页签在后台」，
+        # 丢了之后页面在后台照样定时打服务端 —— 用户看不见，服务器却在被轮询。
+        Case("R6", "后台时不暂停监控轮询", HTML,
+             'return mode !== "unknown" && !document.hidden',
+             'return mode !== "unknown"',
+             monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
     ]
 
 
