@@ -366,11 +366,42 @@ def check_beta_tag(scenario):
     assert "Beta" in text and "实验性" in text, f"标签文案不对：{text!r}"
 
 
+def check_no_layout_shift(scenario):
+    """R7（v0.35.1）：警告出现/消失都不许推动布局。
+
+    原先 `.console-warnings` 用 `:not(:empty)` 挂 margin，警告一出现就同时冒出
+    「内容高度 + margin」，把输入框顶下去、卡片高度来回抖。
+    这条判据盯**输入框的 y 坐标**——它一动，用户就能感觉到界面在跳。
+    """
+    scenario.open()
+    page = scenario.page
+    box = page.locator("#console_command")
+    # 用 offsetTop / offsetHeight 量，不用 bounding_box()：后者是**视口坐标**，
+    # 而 fill() 会把输入框滚进视野，滚动会让 y 变化 —— 第一版判据就是这么误报的。
+    def top() -> float:
+        return page.eval_on_selector("#console_command", "el => el.offsetTop")
+
+    def warn_h() -> float:
+        return page.eval_on_selector("#console_warnings", "el => el.offsetHeight")
+
+    y0, h0 = top(), warn_h()
+    box.fill("execute as @a run stop")          # 触发三条高危提示
+    page.wait_for_timeout(900)                   # 去抖 400ms + 一轮渲染
+    y1, h1 = top(), warn_h()
+    assert abs(y1 - y0) < 1.0, f"R7 警告出现把输入框顶下去了：offsetTop {y0} → {y1}"
+    assert abs(h1 - h0) < 1.0, f"R7 警告区高度不固定：{h0} → {h1}"
+    box.fill("")                                 # 警告消失
+    page.wait_for_timeout(900)
+    y2 = top()
+    assert abs(y2 - y0) < 1.0, f"R7 警告消失后输入框又动了：offsetTop {y0} → {y2}"
+    print("[PASS] R7 警告出现与消失都不推动输入框，警告区高度恒定")
+
+
 CASES = {
     "T3": check_multiline, "T6": check_response_states, "T8": check_polling,
     "T9": check_permission, "T10": check_private_literal_text, "T11": check_notices,
     "T14": check_warnings_are_soft, "R2": check_debounced_preview, "R4": check_configured_polling,
-"BETA": check_beta_tag}
+"BETA": check_beta_tag, "R7": check_no_layout_shift}
 
 
 def main(args):

@@ -527,7 +527,12 @@ summary:hover{text-decoration:underline}
 .console-text{font:12px/1.55 var(--mono);margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .console-result .console-text{margin-top:5px}
 .console-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px}
-.console-warnings:not(:empty){margin:8px 0;color:var(--warn);font-size:12px;overflow-wrap:anywhere}
+/* v0.35.1：警告区**固定占位**。原先用 :not(:empty) 挂 margin，警告一出现就会
+   同时冒出「内容高度 + 8px margin」，把下面的输入框顶下去 —— 卡片高度来回抖，观感割裂。
+   现在高度恒定，内容超出时在框内滚动，不再影响布局。 */
+.console-warnings{height:3.4em;margin:8px 0;color:var(--warn);font-size:12px;
+  overflow-y:auto;overflow-wrap:anywhere;scrollbar-width:thin}
+/* 空态只是一片安静留白，不加边框/不加提示字 —— 目的是「不出声地占好位置」 */
 .console-warnings ol{margin:4px 0;padding-inline-start:1.5em}
 .console-warnings [data-level="high"]{font-weight:650}
 #console_command.is-warning{border-color:var(--warn)}
