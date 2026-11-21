@@ -527,14 +527,15 @@ summary:hover{text-decoration:underline}
 .console-text{font:12px/1.55 var(--mono);margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .console-result .console-text{margin-top:5px}
 .console-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px}
-/* v0.35.1：警告区**固定占位**。原先用 :not(:empty) 挂 margin，警告一出现就会
-   同时冒出「内容高度 + 8px margin」，把下面的输入框顶下去 —— 卡片高度来回抖，观感割裂。
-   现在高度恒定，内容超出时在框内滚动，不再影响布局。 */
-.console-warnings{height:3.4em;margin:8px 0;color:var(--warn);font-size:12px;
-  overflow-y:auto;overflow-wrap:anywhere;scrollbar-width:thin}
-/* 空态只是一片安静留白，不加边框/不加提示字 —— 目的是「不出声地占好位置」 */
+/* 为常见警告预留行高。更长的内容在执行控件下方向回执区延伸。 */
+.console-warning-slot{display:grid;position:relative;margin:8px 0}
+.console-warnings{--console-warning-lines:4;min-block-size:calc(var(--console-warning-lines) * 1lh);
+  color:var(--warn);font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+@media(max-width:1000px){.console-warnings{--console-warning-lines:6}}
 .console-warnings ol{margin:4px 0;padding-inline-start:1.5em}
 .console-warnings [data-level="high"]{font-weight:650}
+.console-warning-text{transform-origin:top left}
+.console-warning-exit{position:absolute;inset:0;overflow:clip;pointer-events:none;user-select:none}
 #console_command.is-warning{border-color:var(--warn)}
 #console_mode[hidden]{display:none}
 #console_feedback:not(:empty),#console_log_note:not(:empty){margin:8px 0;font-size:12px;overflow-wrap:anywhere}
@@ -1221,14 +1222,10 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
   </div>
   <p class="console-notice" id="console_notice">这不是实时终端（RCON 一问一答）。<strong>命令会立即在服务端执行。</strong>日志通过轮询更新。分级表只覆盖常见命令；<strong>插件命令不在表内，同样会立即执行。</strong></p>
   <div class="grid g2">
-    <section class="card" aria-labelledby="console_results_title">
-      <h3 id="console_results_title"><span class="dot" style="background:var(--cyan)"></span>命令回执 <span class="badge amb right" id="console_mode" hidden>白名单模式</span></h3>
-      <div class="console-pane" id="console_results" role="log" aria-labelledby="console_results_title" tabindex="0">
-        <span class="muted" id="console_empty">尚无命令回执</span>
-      </div>
+    <section class="card" aria-labelledby="console_title">
+      <h3 id="console_title"><span class="dot" style="background:var(--cyan)"></span>命令终端 <span class="badge amb right" id="console_mode" hidden>白名单模式</span></h3>
       <form id="console_form">
         <label class="f" for="console_command">服务器命令</label>
-        <div class="console-warnings" id="console_warnings" role="status"></div>
         <textarea id="console_command" rows="3" placeholder="例如 list" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="console_notice console_warnings console_keys"></textarea>
         <div class="console-actions">
           <span class="hint" id="console_keys"><kbd>Enter</kbd> 执行 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
@@ -1236,6 +1233,12 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         </div>
         <div class="muted" id="console_feedback" role="status"></div>
       </form>
+      <div class="console-warning-slot">
+        <div class="console-warnings" id="console_warnings" role="status"></div>
+      </div>
+      <div class="console-pane" id="console_results" role="log" aria-label="命令回执" tabindex="0">
+        <span class="muted" id="console_empty">尚无命令回执</span>
+      </div>
     </section>
     <section class="card" aria-labelledby="console_log_title">
       <h3 id="console_log_title"><span class="dot" style="background:var(--faint)"></span>服务端日志尾 <span class="right"><button id="console_log_toggle" type="button" aria-pressed="false">暂停</button></span></h3>
@@ -2542,8 +2545,45 @@ function renderConsoleWarnings(response){
   }
   if(multiple) warning.append(list);
   if(response.error) warning.append(consoleText("div", response.error));
-  $("console_command").classList.toggle("is-warning", warning.childNodes.length > 0);
-  host.replaceChildren(warning);
+  const hasWarning = warning.hasChildNodes();
+  const allowMotion = !consoleDenied && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $("console_command").classList.toggle("is-warning", hasWarning);
+  if(hasWarning || !allowMotion){
+    host.parentElement.querySelector(".console-warning-exit")?.remove();
+  }
+  if(hasWarning){
+    const text = document.createElement("div");
+    text.className = "console-warning-text";
+    text.append(warning);
+    host.replaceChildren(text);
+    if(allowMotion){
+      text.animate(
+        [{opacity:.7, transform:"scale(.98)"}, {opacity:1, transform:"scale(1)"}],
+        {duration:180, easing:"ease-out"}
+      );
+    }
+    return;
+  }
+  const previous = host.firstElementChild;
+  if(!previous) return;
+  if(!allowMotion){
+    previous.remove();
+    return;
+  }
+  // 立即清空播报区，只让旧文字的视觉残影淡出。
+  const {opacity, transform} = getComputedStyle(previous);
+  previous.getAnimations().forEach(animation => animation.cancel());
+  const outgoing = document.createElement("div");
+  outgoing.className = "console-warnings console-warning-exit";
+  outgoing.setAttribute("aria-hidden", "true");
+  outgoing.append(previous);
+  host.after(outgoing);
+  const exit = previous.animate(
+    [{opacity, transform}, {opacity:0, transform:"scale(.98)"}],
+    {duration:120, easing:"ease-out"}
+  );
+  const removeOutgoing = () => outgoing.remove();
+  exit.finished.then(removeOutgoing, removeOutgoing);
 }
 
 async function previewConsole(command, revision){

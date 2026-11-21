@@ -15,6 +15,13 @@ from playwright.sync_api import expect, sync_playwright
 ONLINE = "There are 1 of a max of 20 players online: Alex"
 STOP = "Stopping the server"
 INDIRECT = "execute as @a at @e[type=item] run stop"
+THREE_WARNINGS = "execute as @a run stop"
+WARNING_TEXTS = [
+    "嵌套命令：stop",
+    "stop 会关闭服务器，所有在线玩家将断线。",
+    "@a 作用范围：所有匹配的在线玩家。",
+]
+NARROW_VIEWPORT = {"width": 390, "height": 844}
 IPV4 = "192.0.2.9"
 IPV6 = "2001:db8::42"
 LITERAL = f'<span id="console_injected">示例文字 {IPV4} [{IPV6}]</span>'
@@ -36,6 +43,10 @@ def preview(command):
         "results": [{
             "command": line, "accepted": True,
             "warnings": [
+                warning("indirect", WARNING_TEXTS[0]),
+                warning("service", WARNING_TEXTS[1]),
+                warning("selector_a", WARNING_TEXTS[2]),
+            ] if line == THREE_WARNINGS else [
                 warning("indirect", "嵌套命令：stop", "medium"),
                 warning("service", "stop 会关闭服务器"),
                 warning("selector_a", "作用范围：@a 所有在线玩家"),
@@ -302,8 +313,11 @@ def check_permission(scenario):
     expect(page.locator("#console_results")).to_contain_text(ONLINE)
     scenario.authorized = False
     toggle = page.locator("#console_log_toggle")
-    toggle.click()
-    toggle.click()
+    # 产品行为：收到 403 后会**禁用**日志开关（index.html 里 `console_log_toggle.disabled = true`）。
+    # 原来这里点两次 toggle —— 但按钮可能已经禁用，于是 Chromium 下偶发
+    # `element is not enabled`（Edge 慢一点恰好躲过）。改成断言"被禁用"：
+    # 既不点禁用控件，也比原来多守一条（开关也停用）。
+    expect(toggle, "T9 失去权限后日志开关应禁用").to_be_disabled()
     expect(page.locator("#console_command"), "T9 失去权限后应禁用命令输入").to_be_disabled()
     expect(page.locator("#console_execute"), "T9 失去权限后应禁用提交").to_be_disabled()
     expect(page.locator("#console_results .console-result"), "T9 失去权限后清理当前回执").to_have_count(0)
@@ -366,55 +380,164 @@ def check_beta_tag(scenario):
     assert "Beta" in text and "实验性" in text, f"标签文案不对：{text!r}"
 
 
-def check_no_layout_shift(scenario):
-    """R7（v0.35.1）：警告出现/消失都不许推动布局。
-
-    原先 `.console-warnings` 用 `:not(:empty)` 挂 margin，警告一出现就同时冒出
-    「内容高度 + margin」，把输入框顶下去、卡片高度来回抖。
-    这条判据盯**输入框的 y 坐标**——它一动，用户就能感觉到界面在跳。
-    """
+def check_warning_layout(scenario):
+    """按同一判据检查两种尺寸与主题，预览请求由假后端处理。"""
     scenario.open()
     page = scenario.page
-    box = page.locator("#console_command")
-    # 用 offsetTop / offsetHeight 量，不用 bounding_box()：后者是**视口坐标**，
-    # 而 fill() 会把输入框滚进视野，滚动会让 y 变化 —— 第一版判据就是这么误报的。
-    def top() -> float:
-        return page.eval_on_selector("#console_command", "el => el.offsetTop")
+    command = page.locator("#console_command")
+    execute = page.locator("#console_execute")
+    area = page.locator("#console_warnings")
+    items = area.locator("[data-level]")
+    viewport = page.viewport_size
+    theme = page.locator("html").get_attribute("data-theme")
+    # 入场动画会改变卡片的视口坐标。等它结束再记录基线。
+    page.locator("#page_console").evaluate("""el => Promise.all(el.getAnimations({subtree: true})
+        .filter(animation => Number.isFinite(animation.effect.getComputedTiming().endTime))
+        .map(animation => animation.finished))""")
 
-    def warn_h() -> float:
-        return page.eval_on_selector("#console_warnings", "el => el.offsetHeight")
+    def layout():
+        return page.evaluate("""() => {
+            const bounds = el => {
+                const box = el.getBoundingClientRect();
+                return [box.x + scrollX, box.y + scrollY, box.width, box.height];
+            };
+            const command = document.getElementById("console_command");
+            return {
+                inputTop: [command.offsetTop],
+                execute: bounds(document.getElementById("console_execute")),
+                warnings: bounds(document.getElementById("console_warnings")),
+                cards: [...document.querySelectorAll("#page_console .card")].flatMap(bounds),
+            };
+        }""")
 
-    y0, h0 = top(), warn_h()
-    box.fill("execute as @a run stop")          # 触发三条高危提示
-    page.wait_for_timeout(900)                   # 去抖 400ms + 一轮渲染
-    y1, h1 = top(), warn_h()
-    assert abs(y1 - y0) < 1.0, f"R7 警告出现把输入框顶下去了：offsetTop {y0} → {y1}"
-    assert abs(h1 - h0) < 1.0, f"R7 警告区高度不固定：{h0} → {h1}"
-    box.fill("")                                 # 警告消失
-    page.wait_for_timeout(900)
-    y2 = top()
-    assert abs(y2 - y0) < 1.0, f"R7 警告消失后输入框又动了：offsetTop {y0} → {y2}"
-    print("[PASS] R7 警告出现与消失都不推动输入框，警告区高度恒定")
+    before = layout()
+    command.fill(THREE_WARNINGS)
+    expect(items, "R9 必须呈现三条完整警告").to_have_text(WARNING_TEXTS)
+    warnings = items.all()
+    expect(area, "R9 警告区须供读屏播报").to_have_attribute("role", "status")
+    assert "console_warnings" in command.get_attribute("aria-describedby").split(), \
+        "R9 命令输入须关联警告说明"
+    for item in warnings:
+        expect(item, "R9 每条警告须可见").to_be_visible()
+        assert item.evaluate("el => el.checkVisibility({opacityProperty:true, visibilityProperty:true})"), \
+            "R9 每条警告须可见"
+
+    height = area.evaluate("""el => ({
+        scroll: el.scrollHeight, client: el.clientHeight, overflow: getComputedStyle(el).overflowY
+    })""")
+    assert height["overflow"] == "visible" and height["scroll"] <= height["client"] + 1, \
+        f"R8 警告区不得内滚或裁剪：{height}"
+    assert page.evaluate("scrollY === 0"), "R8 警告须在页面首屏可见"
+    box = area.bounding_box()
+    assert box and box["x"] >= -1 and box["y"] >= -1 \
+        and box["x"] + box["width"] <= viewport["width"] + 1 \
+        and box["y"] + box["height"] <= viewport["height"] + 1, \
+        f"R8 警告区须在首屏完整可见：{box} / {viewport}"
+    for control in (command, execute):
+        bounds = control.bounding_box()
+        assert bounds and bounds["y"] + bounds["height"] <= box["y"] + 1, \
+            "R8 警告区不得盖住输入框或执行按钮"
+    for item in warnings:
+        bounds = item.bounding_box()
+        assert bounds and bounds["x"] >= box["x"] - 1 and bounds["y"] >= box["y"] - 1 \
+            and bounds["x"] + bounds["width"] <= box["x"] + box["width"] + 1 \
+            and bounds["y"] + bounds["height"] <= box["y"] + box["height"] + 1, \
+            f"R8 单条警告须完整落在警告区内：{bounds} / {box}"
+
+    visible = layout()
+    command.press("Tab")
+    expect(execute, "R9 Tab 须能从输入框进入执行按钮").to_be_focused()
+    execute.press("Shift+Tab")
+    expect(command, "R9 Shift+Tab 须能回到输入框").to_be_focused()
+    command.fill("")
+    expect(area).to_be_empty()
+    for state in (visible, layout()):
+        for part, positions in before.items():
+            assert all(abs(a - b) <= 1 for a, b in zip(positions, state[part], strict=True)), \
+                f"R7 警告出现或清空时布局移动：{part} {positions} → {state[part]}"
+    print(f"[PASS] R7/R8/R9 布局不跳、三条警告首屏完整显示、键盘可达 "
+          f"({theme} {viewport['width']}×{viewport['height']}，警告区 {height['scroll']}/{height['client']}px)")
+    if viewport == NARROW_VIEWPORT:
+        print("[PASS] R10 窄屏通过相同判据")
+
+
+def check_warning_motion(scenario):
+    scenario.open()
+    page = scenario.page
+    page.emulate_media(reduced_motion="no-preference")
+    command = page.locator("#console_command")
+    area = page.locator("#console_warnings")
+    text = area.locator(".console-warning-text")
+    outgoing = page.locator(".console-warning-exit")
+    # 暂停短动画，让断言无需抢在动画结束前读取状态。
+    area.evaluate("""el => {
+        const slot = el.parentElement;
+        new MutationObserver(() => {
+            for (const animation of slot.getAnimations({subtree:true})) {
+                if (animation.playState === "running") animation.pause();
+            }
+        }).observe(slot, {childList:true, subtree:true});
+    }""")
+
+    command.fill(THREE_WARNINGS)
+    expect(area.locator("[data-level]")).to_have_text(WARNING_TEXTS)
+    assert text.evaluate("""el => {
+        const [animation] = el.getAnimations();
+        const frames = animation?.effect.getKeyframes();
+        return frames && +frames[0].opacity < +frames.at(-1).opacity;
+    }"""), "警告出现时应淡入"
+
+    command.fill("")
+    expect(area).to_be_empty()
+    expect(outgoing).to_have_attribute("aria-hidden", "true")
+    assert outgoing.evaluate("""el => {
+        const [animation] = el.getAnimations({subtree:true});
+        const frames = animation?.effect.getKeyframes();
+        return frames && +frames[0].opacity > 0 && +frames.at(-1).opacity === 0;
+    }"""), "退出中的文字应淡出"
+
+    command.fill(THREE_WARNINGS)
+    expect(area.locator("[data-level]")).to_have_text(WARNING_TEXTS)
+    expect(outgoing).to_have_count(0)
+    command.fill("")
+    outgoing.evaluate("el => el.getAnimations({subtree:true})[0].finish()")
+    expect(outgoing).to_have_count(0)
+
+    page.emulate_media(reduced_motion="reduce")
+    command.fill(THREE_WARNINGS)
+    expect(area.locator("[data-level]")).to_have_text(WARNING_TEXTS)
+    assert text.evaluate("el => el.getAnimations().length") == 0, "减少动态时须直接显示警告"
+    command.fill("")
+    expect(area).to_be_empty()
+    expect(outgoing).to_have_count(0)
+    print("[PASS] 终端警告淡入淡出，退出文字不重复播报，支持减少动态")
 
 
 CASES = {
     "T3": check_multiline, "T6": check_response_states, "T8": check_polling,
     "T9": check_permission, "T10": check_private_literal_text, "T11": check_notices,
     "T14": check_warnings_are_soft, "R2": check_debounced_preview, "R4": check_configured_polling,
-"BETA": check_beta_tag, "R7": check_no_layout_shift}
+    "BETA": check_beta_tag, "R7": check_warning_layout, "R10": check_warning_layout,
+    "MOTION": check_warning_motion,
+}
 
 
 def main(args):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(**UI_LAUNCH_KWARGS)
-        for key in args or CASES:
-            page = browser.new_page(viewport=VIEWPORT, locale="zh-CN")
-            try:
-                scenario = Scenario(page)
-                CASES[key](scenario)
-                assert not scenario.errors, f"{key} 页面异常：{scenario.errors}"
-            finally:
-                page.close()
+        for arg in args or CASES:
+            key = {"R8": "R7", "R9": "R7"}.get(arg, arg)
+            viewport = NARROW_VIEWPORT if key == "R10" else VIEWPORT
+            themes = ("dark", "light") if CASES[key] is check_warning_layout else ("dark",)
+            for theme in themes:
+                page = browser.new_page(viewport=viewport, locale="zh-CN", color_scheme=theme)
+                try:
+                    scenario = Scenario(page)
+                    CASES[key](scenario)
+                    expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                    assert not scenario.errors, f"{key} 页面异常：{scenario.errors}"
+                finally:
+                    page.close()
         browser.close()
 
 

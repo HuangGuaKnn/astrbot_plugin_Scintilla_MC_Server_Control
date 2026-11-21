@@ -181,7 +181,7 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
-    ] + v0350_cases()
+    ] + v0350_cases() + v0360_cases()
 
 
 def v0350_cases():
@@ -243,6 +243,30 @@ def v0330_cases():
              '    return Path(tempfile.mkdtemp(dir=parent, prefix=f"{os.getpid()}-"))',
              '    return PLUGIN_DIR / "tests" / "_shots"', q4,
              "Q4 截图目录必须区分浏览器通道和进程"),
+    ]
+
+
+def v0360_cases():
+    from mutation_all import Case
+
+    layout = (sys.executable, "-B", "-X", "utf8", "tests/ui_web_console_check.py")
+    wide = (*layout, "R7")
+    narrow = (*layout, "R10")
+    reserve = "min-block-size:calc(var(--console-warning-lines) * 1lh);"
+    narrow_reserve = "@media(max-width:1000px){.console-warnings{--console-warning-lines:6}}"
+    entries = "for(const entry of result.warnings || [])"
+    moved = "R7 警告出现或清空时布局移动"
+    return [
+        Case("R7", "删除警告区预留高度", HTML, reserve, "min-block-size:0;",
+             wide, moved, baseline=wide),
+        Case("R8", "恢复固定高度和框内滚动", HTML, reserve,
+             "min-block-size:0;height:3.4em;overflow-y:auto;",
+             wide, "R8 警告区不得内滚或裁剪", baseline=wide),
+        Case("R9", "只呈现命令的第一条警告", HTML, entries,
+             "for(const entry of (result.warnings || []).slice(0, 1))",
+             wide, "R9 必须呈现三条完整警告", baseline=wide),
+        Case("R10", "窄屏仅为警告预留一行", HTML, narrow_reserve,
+             narrow_reserve.replace(":6", ":1"), narrow, moved, baseline=narrow),
     ]
 
 
