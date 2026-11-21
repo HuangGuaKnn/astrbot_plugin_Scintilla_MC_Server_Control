@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import re
 import sys
 import threading
 import time
@@ -215,7 +216,12 @@ def part_p2_event_bool() -> None:
           len(_fire({**base, "notify_join_leave": "maybe"}, EVENT_JOIN)) == 1)
 
     main_src = src("main.py")
-    body = main_src.split("async def _on_server_event", 1)[1][:2000]
+    # 取完整的 _on_server_event 函数体（到下一个同级方法为止），**不要用固定字符窗口**：
+    # v0.34.1 在该函数前部插了 9 行事件缓存分流，把最后一处 _cfg_bool( 挤出了 2000 字符，
+    # 于是这条判据误报「只剩 5 条」—— 窗口大小与函数长度耦合，加一行就红，属于脆断言。
+    _tail = main_src.split("async def _on_server_event", 1)[1]
+    _next_def = re.search(r"\n    (?:async )?def ", _tail)
+    body = _tail[:_next_def.start()] if _next_def else _tail
     check("六条播报分支一律走 _cfg_bool（不再裸读配置真值）",
           body.count("self._cfg_bool(") >= 6, str(body.count("self._cfg_bool(")))
 

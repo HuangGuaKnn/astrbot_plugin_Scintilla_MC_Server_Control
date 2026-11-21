@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
-from collections import Counter
+from collections import Counter, deque
 from html.parser import HTMLParser
 
 from _paths import PLUGIN_DIR
@@ -67,6 +67,46 @@ class RcContracts(unittest.IsolatedAsyncioTestCase):
             status, _, payload = await request(plugin, "GET", "events/chat", username=user, site=site)
             self.assertEqual((status, payload.get("authorized")), (403, False))
             self.assertNotIn("events", payload)
+
+    async def test_broadcast_history_shows_each_submission_once(self):
+        plugin = SettingsPlugin()
+        plugin._recent_chat_events = deque(plugin._recent_events, maxlen=50)
+        plugin.saved["feedback_name"] = "任务助手"
+        plugin._say_gate = lambda *args, **kwargs: None
+        plugin._build_text_cmds = lambda message, prefix, *args, **kwargs: [
+            prefix + json.dumps(message), prefix + json.dumps("续段"),
+        ]
+        cases = (
+            ("chat", "Server", "集合"),
+            ("title", "Server", "准备开始"),
+            ("task", "任务助手", "任务完成"),
+        )
+        for mode, name, message in cases:
+            prefix = "title @a title " if mode == "title" else "tellraw @a "
+            body = message if mode == "title" else f"[{name}] {message}"
+            plugin.replies = {prefix + json.dumps(body): "", prefix + json.dumps("续段"): ""}
+            plugin.last_boundary_confirmed = mode != "task"
+            _, _, payload = await request(plugin, "POST", "server/broadcast",
+                                          body={"mode": mode, "message": message})
+            self.assertTrue(payload["ok"], payload)
+            self.assertIs(payload["confirmed"], mode != "task")
+            self.assertEqual(len(payload["results"]), 2)
+
+        rejected = "无人在线"
+        plugin.last_boundary_confirmed = True
+        plugin.replies = {"tellraw @a " + json.dumps(f"[Server] {rejected}"): "No player was found"}
+        _, _, payload = await request(plugin, "POST", "server/broadcast",
+                                      body={"mode": "chat", "message": rejected})
+        self.assertFalse(payload["ok"])
+
+        for _ in range(2):
+            status, _, payload = await request(plugin, "GET", "events/chat")
+            self.assertEqual(status, 200)
+            self.assertEqual([(row["mode"], row["player"], row["detail"]) for row in payload["events"][:-1]],
+                             list(reversed(cases)))
+            self.assertEqual(payload["events"][-1], plugin._recent_events[0])
+        _, _, payload = await request(plugin, "GET", "events")
+        self.assertEqual(payload["events"], plugin._recent_events)
 
     def test_r3_page_ids_resolve(self):
         html = (PLUGIN_DIR / "pages" / "mc_control" / "index.html").read_text(encoding="utf-8")

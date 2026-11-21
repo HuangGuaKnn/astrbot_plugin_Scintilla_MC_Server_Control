@@ -535,6 +535,7 @@ class McControlPlugin(Star):
         self._mc_tool_recent: dict[str, float] = {}
         # 最近服务器事件缓存（WebUI 实时动态展示）
         self._recent_events: deque = deque(maxlen=60)
+        self._recent_chat_events: deque = deque(maxlen=50)
 
     # ================= 生命周期 =================
 
@@ -4954,12 +4955,17 @@ class McControlPlugin(Star):
             return
         # 无论是否配置播报，都缓存最近事件供 WebUI 展示
         try:
-            self._recent_events.appendleft({
+            record = {
                 "ts": time.strftime("%m-%d %H:%M:%S"),
                 "type": etype,
                 "player": player,
                 "detail": detail,
-            })
+            }
+            self._recent_events.appendleft(record)
+            if etype in (EVENT_CHAT, EVENT_WHISPER, EVENT_ME):
+                chat = getattr(self, "_recent_chat_events", None)
+                if chat is not None:
+                    chat.appendleft(record)
         except Exception:
             pass
         # 聊天桥接（游戏 → 群）：命中的消息由桥接推送，跳过常规播报避免重复

@@ -104,6 +104,7 @@ class StubPlugin:
         self._evt_listener_lock = asyncio.Lock()
         self.logger = logging.getLogger("test.v0242.lifecycle")
         self._recent_events = collections.deque(maxlen=5)
+        self._recent_chat_events = collections.deque(maxlen=5)
         self.bridged: list = []
 
     def _cfg_bool(self, key, default=False):
@@ -165,11 +166,15 @@ async def lifecycle_cases(cls) -> None:
         p._recent_events.clear()
         await cls._on_server_event(p, "chat", "Steve", "hi")
         check("★异地模式下事件回调防御门：不缓存/不桥接",
-              len(p._recent_events) == 0 and p.bridged == [],
+              not p._recent_events and not p._recent_chat_events and p.bridged == [],
               f"{list(p._recent_events)}｜{p.bridged}")
         p.remote = False
         await cls._on_server_event(p, "chat", "Steve", "hi")
         check("本地模式下事件回调照常缓存", len(p._recent_events) == 1, list(p._recent_events))
+        await cls._on_server_event(p, "join", "Alex", "加入游戏")
+        check("对话历史保留聊天并过滤进服事件",
+              list(p._recent_chat_events) == [p._recent_events[-1]]
+              and len(p._recent_events) == 2, list(p._recent_chat_events))
     finally:
         MOD.LogWatcher = orig
 

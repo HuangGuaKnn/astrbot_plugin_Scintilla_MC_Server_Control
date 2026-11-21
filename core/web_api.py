@@ -1356,6 +1356,9 @@ class McControlWebApi:
     async def get_chat_events(self):
         if not self._console_admin_username():
             return self._player_admin_forbidden()
+        chat = getattr(self.plugin, "_recent_chat_events", None)
+        if chat is not None:
+            return self._console_response({"ok": True, "events": list(chat)})
         response = await self.get_events()
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -1699,6 +1702,16 @@ class McControlWebApi:
                         f"第 {idx}/{len(cmds)} 条广播命令没有送达（判定 {verdict.status}）：{raw}"
                         + (("\n" + hint) if hint else "")
                     ),
+                })
+            chat = getattr(plugin, "_recent_chat_events", None)
+            if chat is not None and results:
+                chat.appendleft({
+                    "ts": time.strftime("%m-%d %H:%M:%S"),
+                    "type": "broadcast",
+                    "mode": mode if mode in ("title", "task") else "chat",
+                    "player": fb_name if mode == "task" else say_name,
+                    "detail": message,
+                    "confirmed": confirmed,
                 })
             return json_response({
                 "ok": True, "mode": mode, "message": message,

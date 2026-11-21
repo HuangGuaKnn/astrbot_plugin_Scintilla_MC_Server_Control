@@ -1186,9 +1186,9 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div class="hint" style="margin-top:8px">三种广播分别使用「设置 → 外观」中对应的文本颜色。聊天栏固定署名 <b>[Server]</b>。模拟任务输出使用配置的「反馈署名」。全屏标题只显示正文。</div>
       </div>
       <section class="card" aria-labelledby="sv_chat_title">
-        <h3 id="sv_chat_title">玩家对话 <span class="right"><button type="button" id="sv_chat_latest" disabled>回到最新</button></span></h3>
+        <h3 id="sv_chat_title">对话与广播 <span class="right"><button type="button" id="sv_chat_latest" disabled>回到最新</button></span></h3>
         <div class="server-chat" id="sv_chat" tabindex="0" role="region" aria-labelledby="sv_chat_title">
-          <span class="muted server-chat-empty">正在读取玩家对话…</span>
+          <span class="muted server-chat-empty">正在读取对话与广播…</span>
         </div>
         <p class="hint" id="sv_chat_notice" role="status"></p>
       </section>
@@ -3222,8 +3222,9 @@ function loadServerEvents(){
   return serverEventsRequest;
 }
 
-const CHAT_TYPES = new Set(["chat", "whisper", "me"]);
+const CHAT_TYPES = new Set(["chat", "whisper", "me", "broadcast"]);
 const CHAT_LABELS = {whisper:" · 私聊", me:" · 动作"};
+const BROADCAST_LABELS = {chat:"聊天栏", title:"全屏标题", task:"模拟任务输出"};
 const CHAT_POLL_MS = 2000;
 let chatActive = false;
 let chatEpoch = 0;
@@ -3249,19 +3250,22 @@ function renderServerChat(events){
   const counts = new Map();
   const byKey = new Map();
   const rows = messages.map(event => {
-    const identity = JSON.stringify([event.ts, event.type, event.player, event.detail]);
+    const identity = JSON.stringify([event.ts, event.type, event.player, event.detail, event.mode, event.confirmed]);
     const count = (counts.get(identity) || 0) + 1;
     counts.set(identity, count);
     const key = JSON.stringify([identity, count]);
     const row = consoleText("div", "", "server-chat-row");
     row.dataset.chatKey = key;
+    const label = event.type === "broadcast"
+      ? ` · 广播（${BROADCAST_LABELS[event.mode] || "聊天栏"}）${event.confirmed === false ? " · 未确认" : ""}`
+      : (CHAT_LABELS[event.type] || "");
     row.append(consoleText("time", event.ts),
-      consoleText("strong", String(event.player ?? "") + (CHAT_LABELS[event.type] || "")),
+      consoleText("strong", String(event.player ?? "") + label),
       consoleText("p", event.detail));
     byKey.set(key, row);
     return row;
   }).reverse();
-  host.replaceChildren(...(rows.length ? rows : [consoleText("span", "暂无玩家对话", "muted server-chat-empty")]));
+  host.replaceChildren(...(rows.length ? rows : [consoleText("span", "暂无对话或广播", "muted server-chat-empty")]));
   if(atEnd){
     host.scrollTop = host.scrollHeight;
   }else{
@@ -3277,15 +3281,21 @@ async function pollServerChat(revision){
   const notice = $("sv_chat_notice");
   if(response?.authorized === false || response?.status === 403 || response?.status === 401){
     renderServerChat([]);
-    notice.textContent = "当前会话无权查看玩家对话";
+    notice.textContent = "当前会话无权查看对话与广播";
   }else if(response?.ok && Array.isArray(response.events)){
     renderServerChat(response.events);
     notice.textContent = "";
   }else{
     if(!chatSnapshot) renderServerChat([]);
-    notice.textContent = "无法读取玩家对话，稍后重试";
+    notice.textContent = "无法读取对话与广播，稍后重试";
   }
   chatTimer = setTimeout(() => pollServerChat(revision), CHAT_POLL_MS);
+}
+
+function refreshServerChat(){
+  const revision = ++chatEpoch;
+  clearTimeout(chatTimer);
+  if(chatActive) pollServerChat(revision);
 }
 
 function syncServerChat(){
@@ -3293,9 +3303,7 @@ function syncServerChat(){
     && $("page_server").classList.contains("active") && !$("server_panel_tools").hidden;
   if(active === chatActive) return;
   chatActive = active;
-  const revision = ++chatEpoch;
-  clearTimeout(chatTimer);
-  if(active) pollServerChat(revision);
+  refreshServerChat();
 }
 
 function bindServerChat(){
@@ -6278,7 +6286,7 @@ function bind(){
     $("bc_out").textContent = "发送中…";
     const r = await callPost("server/broadcast", { message: msg, mode: bcMode }).catch(()=>({ok:false,error:"请求失败"}));
     if(r.ok){
-      const lbl={chat:"聊天栏",title:"全屏标题",task:"模拟任务输出"}[r.mode]||r.mode;
+      const lbl = BROADCAST_LABELS[r.mode] || "广播";
       if(r.confirmed === false){
         // v0.24.8（GPT 第三轮复核 P3）：「发出去了」不等于「有人收到」。
         // 没有可靠回执时用黄字，明确写出「未确认」，绝不沿用绿字成功态。
@@ -6288,6 +6296,7 @@ function bind(){
         $("bc_out").innerHTML = `<span style="color:var(--ok)">✓ 已通过 ${lbl}发送：</span> ${escServer(r.message)}`;
       }
       $("bc_msg").value="";
+      if(chatActive) refreshServerChat();
     }
     else $("bc_out").innerHTML = `<span style="color:var(--bad)">✗ 失败：</span> ${escServer(r.error||"未知错误")}`;
   };
