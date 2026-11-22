@@ -1534,6 +1534,8 @@ class McControlPlugin(Star):
         if man is None:
             return
         kb = man.kb if man.kb is not None else man.reload_active()
+        if kb is not None and getattr(kb, "read_health", lambda: {})().get("ok") is False:
+            kb = None
         if kb is not None:
             kb.on_first_write = man.bind_active_if_needed
             kb.embed_fn = getattr(man, "embed_fn", None)

@@ -1737,14 +1737,16 @@ class LogWatcher:
             logger.warning("日志监听：卡死回调留痕已到上限 %d，丢弃最旧的一条引用",
                            MAX_STUCK_CALLBACKS)
 
-    async def _safe_callback(self, etype: str, player: str, detail: str) -> None:
-        """回调包装：**吞掉**普通异常（单条事件失败不影响后续），但让取消穿透。"""
+    async def _safe_callback(self, etype: str, player: str, detail: str) -> bool:
+        """报告单条事件是否交付，保留任务取消语义。"""
         try:
             await self.on_event(etype, player, detail)
         except asyncio.CancelledError:
             raise
-        except Exception:                                        # noqa: BLE001
-            pass
+        except Exception as exc:                                 # noqa: BLE001
+            logger.warning("日志监听：事件回调失败（%s）：%s", etype, type(exc).__name__)
+            return False
+        return True
 
     def _reap_callback(self, task) -> None:
         """回调任务收尾：解除引用并取出异常（免得留一堆 never-retrieved 噪声）。"""
@@ -1798,8 +1800,14 @@ class LogWatcher:
             logger.warning("日志监听：等待事件回调时出错（已忽略）：%s", e)
             return False
         if task in done:
-            self.callbacks_delivered += 1
-            return True
+            if task.cancelled():
+                return False
+            if task.result():
+                self.callbacks_delivered += 1
+                return True
+            self.error_count += 1
+            self.last_error = f"事件回调失败（{etype}）"
+            return False
         self.callback_timeouts += 1
         logger.warning(
             "日志监听：事件回调（%s）超过 %g 秒未返回，已放弃等待并取消；轮询继续"

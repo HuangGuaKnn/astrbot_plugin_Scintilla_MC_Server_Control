@@ -111,9 +111,73 @@ def part_of(h: dict, key: str) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def check_read_health(root: Path) -> None:
+    man = kbmod.KnowledgePresetManager(str(root / "read_health"), "sid")
+    plugin = _FakePlugin()
+    plugin._kbman = man
+    api = McControlWebApi(plugin)
+    file_path = man.kb.file_path
+    original = file_path.read_bytes()
+
+    file_path.unlink()
+    plugin._knowledge = man.reload_active()
+    missing = body(asyncio.run(api.get_state()))
+    assert missing["ok"] and missing["read_health"]["status"] == "missing" \
+        and missing["stats"]["total"] == 0, "缺失文件必须能正常显示空库"
+
+    for damage in (b'{"entries":', b'{"entries":[]}'):
+        file_path.write_bytes(damage)
+        plugin._knowledge = bad = man.reload_active()
+        payload = body(asyncio.run(api.get_state()))
+        assert payload.get("ok") is False and payload.get("read_health", {}).get("ok") is False \
+            and "stats" not in payload, "非法预设必须报告读取故障"
+        health = bad.read_health()
+        backup = file_path.parent / health.get("backup", "")
+        assert backup.is_file() and backup.read_bytes() == damage and not file_path.exists(), \
+            "读取失败须保留改名备份"
+        assert bad.save() is False and not file_path.exists(), "损坏预设禁止被保存为空库"
+        restarted = kbmod.KnowledgePresetManager(str(file_path.parent), "sid")
+        assert restarted.read_health().get("ok") is False, "预设读取故障须在重启后保留"
+        file_path.write_bytes(original)
+        assert man.reload_active().read_health().get("ok") is True, "恢复文件后应正常读取"
+
+    blocked = block_preset_file(man, man.reg["active"])
+    plugin._knowledge = man.reload_active()
+    health = body(asyncio.run(api.get_state())).get("read_health", {})
+    assert health.get("ok") is False and not health.get("backup") and file_path.is_dir(), \
+        "无法读取的路径须报告故障并保持原位置"
+    unblock_preset_file(man, man.reg["active"], blocked)
+
+    registry = man.reg_path
+    registry_data = registry.read_bytes()
+    damaged_registry = b'{"presets":null}'
+    registry.write_bytes(damaged_registry)
+    legacy = registry.parent / "mod_knowledge_legacy.json"
+    legacy.write_text('{"entries":{}}', encoding="utf-8")
+    known_files = set(registry.parent.glob("kb_preset_*.json"))
+    plugin._kbman = broken = kbmod.KnowledgePresetManager(str(registry.parent), "sid")
+    plugin._knowledge = broken.kb
+    payload = body(asyncio.run(api.get_state()))
+    health = payload.get("read_health", {})
+    assert payload.get("ok") is False and health.get("ok") is False \
+        and broken.kb is None and set(registry.parent.glob("kb_preset_*.json")) == known_files, \
+        "非法预设注册表不得触发旧数据迁移"
+    backup = registry.parent / health.get("backup", "")
+    assert backup.is_file() and backup.read_bytes() == damaged_registry and not registry.exists(), \
+        "非法注册表须保留改名备份"
+    assert broken.create("不应写入").get("ok") is False and not registry.exists(), \
+        "注册表读取失败时不得创建预设"
+    restarted = kbmod.KnowledgePresetManager(str(registry.parent), "sid")
+    assert restarted.read_health().get("ok") is False, "注册表读取故障须在重启后保留"
+    registry.write_bytes(registry_data)
+    assert kbmod.KnowledgePresetManager(str(registry.parent), "sid").read_health().get("ok") is True, \
+        "恢复注册表后应正常读取"
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        check_read_health(root)
         man = kbmod.KnowledgePresetManager(str(root / "kb"), "sid", str(root))
 
         print("================ [1] 一个预设写失败 → 聚合为红且能点名 ================")

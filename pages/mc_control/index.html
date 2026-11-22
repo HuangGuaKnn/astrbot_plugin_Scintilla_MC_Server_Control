@@ -2074,7 +2074,7 @@ const EVENT_META = {
   command:["dim","⌨","指令"],
 };
 function statHTML(l,n,s,bar,cls){
-  return `<div class="stat"><div class="l">${l}</div><div class="n">${n??"-"}</div>${s?`<div class="s">${s}</div>`:""}${bar!==undefined?`<div class="bar ${cls||""}" style="width:${Math.max(0,Math.min(100,bar*100))}%"></div>`:""}</div>`;
+  return `<div class="stat"><div class="l">${esc(l)}</div><div class="n">${esc(n??"-")}</div>${s?`<div class="s">${esc(s)}</div>`:""}${bar!==undefined?`<div class="bar ${esc(cls||"")}" style="width:${Math.max(0,Math.min(100,bar*100))}%"></div>`:""}</div>`;
 }
 function setNotice(el, txt, isErr){
   if(!el) return;
@@ -2331,15 +2331,16 @@ async function loadOverview(){
     ? (d.mods===0 && d.items>0 ? `原版物品表 / ${d.items} 物品` : `${d.mods} mods / ${d.items} 物品`)
     : (rmt?"需服务端本地目录":"未初始化");
   const dictionaryRunning = d.master_enabled!==false && d.enabled!==false && !rmt && d.mods!=null;
-  const knowledgeActive = k.master_enabled!==false && k.enabled!==false && !!(k.state&&k.state.enabled);
+  const knowledgeReadFailed = k.read_health?.ok === false;
+  const knowledgeActive = k.master_enabled!==false && k.enabled!==false && !knowledgeReadFailed && !!(k.state&&k.state.enabled);
   const dictionaryStatus = d.master_enabled===false?"总开关已关闭"
     : d.enabled===false?"已停用":rmt?"异地模式禁用":dictionaryRunning?"运行中":"未初始化";
-  const knowledgeStatus = k.master_enabled===false?"总开关已关闭":knowledgeActive?"已开启":"已停用";
+  const knowledgeStatus = knowledgeReadFailed?"读取失败":k.master_enabled===false?"总开关已关闭":knowledgeActive?"已开启":"已停用";
   const workflowStatus = w.master_enabled===false?"总开关已关闭":w.enabled===false?"已停用":"运行中";
   const mods = [
     ["物品词典", dictionaryStatus, dSub, dictionaryRunning, dictionaryRunning?"g":"b"],
     ["知识库", knowledgeStatus,
-      kMis ? `⚠ 指纹不匹配（预设 ${k.preset_name||"?"}）`
+      knowledgeReadFailed ? k.error : kMis ? `⚠ 指纹不匹配（预设 ${k.preset_name||"?"}）`
         : (k.preset_name?`${k.preset_name} · ${k.fingerprint? "指纹 "+k.fingerprint : "未绑定"}${k.server_content?`（${k.server_content}）`:""}`:(k.server_id?`指纹 ${k.server_id}${k.server_content?`（${k.server_content}）`:""}`:(rmt?"异地模式禁用":"未初始化"))),
       knowledgeActive && !!(k.stats&&k.stats.total), knowledgeActive && !kMis?"g":"b"],
     ["多Agent工作流", workflowStatus, `近${w.recent_total??0}次·${w.recent_done??0}成功`, w.recent_done>0, "c"],
@@ -3444,22 +3445,26 @@ function entryHTML(e, isPending){
 // 根本不知道去哪儿修。这里照工作流页的写法办：原因原样显示 + 一个直达设置页的按钮。
 function showKbUnavailable(r){
   const why = (r && r.error) || "知识库接口没有响应（插件可能刚重载，点「重试」或刷新页面即可）";
+  const readFailed = r?.read_health?.ok === false;
+  const label = readFailed ? "知识库读取失败" : "知识库不可用";
+  KB = null;
   KB_DOWN = { on: true, why };
-  $("kb_presets").innerHTML = `<span class="badge bad">知识库不可用</span>`;
+  $("kb_presets").innerHTML = `<span class="badge bad">${label}</span>`;
   $("kb_preset_hint").textContent = "";
   if($("kb_stats")) $("kb_stats").innerHTML = "";
   $("kb_fingerprint").innerHTML = "";
   $("tab_kb_cnt").textContent = "-";
-  $("kb_list").innerHTML = `<div class="empty">知识库当前不可用 —— 原因见上方提示</div>`;
+  $("pending_card").style.display = "none";
+  $("kb_list").innerHTML = `<div class="empty">${label} —— 原因见上方提示</div>`;
   const box = $("kb_alert");
   if(!box) return;
   box.innerHTML = `<div class="kb-alert">
-    <div class="t">⚠ 知识库当前不可用</div>
+    <div class="t">⚠ ${readFailed ? label : "知识库当前不可用"}</div>
     <div class="m">${esc(why)}</div>
-    <div class="m">本页的条目检索 / 沉淀 / 预设管理都建立在「服务端目录 → 整合包指纹」上，目录读不到时整页停摆。
-      在「设置」页补好服务器目录并保存即可恢复（保存即重算指纹，不用重载插件）。</div>
+    ${readFailed ? `<div class="m">恢复有效的知识库文件后，重载插件再试。</div>` : `<div class="m">本页的条目检索 / 沉淀 / 预设管理都建立在「服务端目录 → 整合包指纹」上，目录读不到时整页停摆。
+      在「设置」页补好服务器目录并保存即可恢复（保存即重算指纹，不用重载插件）。</div>`}
     <div class="btnrow">
-      <button class="btn sm" data-kbgo="settings">去设置页填写服务器目录</button>
+      ${readFailed ? "" : `<button class="btn sm" data-kbgo="settings">去设置页填写服务器目录</button>`}
       <button class="btn sm" data-kbgo="retry">重试</button>
     </div>
   </div>`;
@@ -3634,7 +3639,7 @@ function presetChipHTML(p){
   return `<div class="${cls.join(" ")}" data-pid="${p.id}">
       <div class="r1"><span class="nm">${esc(p.name)}</span>${p.active ? `<span class="badge amb">使用中</span>` : ""}</div>
       <div class="r2">${tags}</div>
-      <div class="r2"><span class="fp-mono">${p.fingerprint ? esc(p.fingerprint) : "—"}</span><span>·</span><span>${p.entries} 条</span></div>
+      <div class="r2"><span class="fp-mono">${p.fingerprint ? esc(p.fingerprint) : "—"}</span><span>·</span><span>${p.entries === null ? "读取失败" : esc(p.entries) + " 条"}</span></div>
       ${renamed}${tip}
     </div>`;
 }
@@ -3931,7 +3936,7 @@ async function loadWorkflow(silent){
   const toolStatus = masterOff?"总开关已关闭":r.tool_enabled===false?"工具不可用":"工具已开放";
   $("wf_stats").innerHTML =
     statHTML("流水线", r.enabled===false?"停用":"启用", toolStatus, r.enabled!==false, r.enabled!==false?"g":"b") +
-    statHTML("主 Provider", esc(r.main_provider||"自动"), "各 Agent 可独立指定", undefined, "c") +
+    statHTML("主 Provider", r.main_provider||"自动", "各 Agent 可独立指定", undefined, "c") +
     statHTML("近 15 次任务", done, `${run} 执行中 · ${bad} 失败`, done>0?done/Math.max(logs.length,1):"", done>0?"g":"");
   $("sw_wf_enabled").checked = r.enabled!==false;
   $("sw_wf_tool").checked = (r.tool_setting_enabled ?? r.tool_enabled)!==false;

@@ -340,6 +340,46 @@ def part_callbacks() -> None:
                   {"callbacks_delivered", "callback_timeouts", "callbacks_dropped",
                    "callbacks_inflight", "callbacks_stale"} <= set(h), str(sorted(h)))
 
+            delivered = []
+
+            async def fails_once(etype, player, detail):
+                if etype == "join":
+                    raise ValueError("模拟发送失败")
+                delivered.append((etype, detail))
+
+            watcher = new_watcher(fails_once)
+            before = watcher.health()
+            failed = await watcher._dispatch_event("join", "A", "")
+            after = watcher.health()
+            check("回调抛异常不计为已交付",
+                  not failed and after["callbacks_delivered"] == before["callbacks_delivered"])
+            check("回调失败计入错误且报告事件类型",
+                  after["error_count"] == before["error_count"] + 1 and "join" in after["last_error"])
+            check("回调失败后下一条事件仍可交付",
+                  await watcher._dispatch_event("chat", "A", "下一条") is True
+                  and delivered == [("chat", "下一条")])
+            next_event = asyncio.Event()
+
+            async def poll_callback(etype, player, detail):
+                await fails_once(etype, player, detail)
+                next_event.set()
+
+            with tempfile.TemporaryDirectory() as directory:
+                logs = Path(directory) / "logs"
+                logs.mkdir()
+                latest = logs / "latest.log"
+                latest.touch()
+                polling = lw.LogWatcher(directory, poll_callback, poll_interval=0.05)
+                await polling.start()
+                try:
+                    latest.write_text("[16:30:01] [Server thread/INFO]: A joined the game\n"
+                                      "[16:30:02] [Server thread/INFO]: <A> continued\n", encoding="utf-8")
+                    await asyncio.wait_for(next_event.wait(), timeout=5)
+                    check("回调失败后日志轮询继续处理事件", delivered[-1] == ("chat", "continued")
+                          and "join" in polling.health()["last_error"])
+                finally:
+                    await polling.stop()
+
             # ② 回调卡住：超时返回、轮询不被拖住
             started = time.monotonic()
 

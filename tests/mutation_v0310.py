@@ -181,7 +181,7 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
-    ] + v0350_cases() + v0360_cases() + v0370_cases()
+    ] + v0350_cases() + v0360_cases() + v0370_cases() + v0370_followup_cases()
 
 
 def v0350_cases():
@@ -299,6 +299,44 @@ def v0370_cases():
              'raise RconError(f"RCON 发送失败: {e}", phase=RconError.PHASE_SEND) from e',
              'raise RconError(f"RCON 发送失败: {e}") from e',
              result_checks, "RCON 基础异常抛出处须明确标注阶段", baseline=result_checks),
+    ]
+
+
+def v0370_followup_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    browser = (*python, "tests/ui_kb_detail_check.py")
+    callbacks = (*python, "tests/test_v0247_review_round2_p2.py")
+    files = (*python, "tests/test_v0243_preset_health_aggregate.py")
+    watcher = "core/log_watcher.py"
+    kb = "core/knowledge_base.py"
+    callback_warning = 'logger.warning("日志监听：事件回调失败（%s）：%s", etype, type(exc).__name__)'
+    callback_error = '            self.last_error = f"事件回调失败（{etype}）"'
+    kb_guard = 'if kb is None or self._kb_read_health().get("ok") is False:'
+    broken_registry = 'return {"active": None, "presets": [], "notice": {"popup_keys": [], "suppress_keys": []}}'
+    return [
+        Case("V37X1", "统计卡副标题失去转义", HTML,
+             '<div class="s">${esc(s)}</div>', '<div class="s">${s}</div>',
+             browser, "概览动态字段必须按字面文本显示", baseline=browser),
+        Case("V37L1", "异常回调冒充已交付", watcher,
+             callback_warning + "\n            return False", callback_warning + "\n            return True",
+             callbacks, "回调抛异常不计为已交付", baseline=callbacks),
+        Case("V37L2", "异常回调漏记错误次数", watcher,
+             "            self.error_count += 1\n" + callback_error, callback_error,
+             callbacks, "回调失败计入错误且报告事件类型", baseline=callbacks),
+        Case("V37K1", "损坏预设作为空库响应", "core/web_api.py",
+             kb_guard, "if kb is None:",
+             files, "非法预设必须报告读取故障", baseline=files),
+        Case("V37K2", "非法注册表仍自动迁移", kb,
+             broken_registry, "return self._migrate_legacy()",
+             files, "非法预设注册表不得触发旧数据迁移", baseline=files),
+        Case("V37K3", "读取故障跳过改名备份", kb,
+             "backup = _backup_read_failure(path)", 'backup = ""',
+             files, "读取失败须保留改名备份", baseline=files),
+        Case("V37K4", "知识库页面丢弃专用读取失败提示", HTML,
+             "const readFailed = r?.read_health?.ok === false;", "const readFailed = false;",
+             browser, "知识库读取故障必须显示失败态", baseline=browser),
     ]
 
 

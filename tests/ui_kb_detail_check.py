@@ -34,6 +34,10 @@ TOPIC = "tac 满改 mp5 方案"
 LONG = "【满改方案】\n" + "\n".join(
     f"第{i}行：配件槽位与 NBT 键名（Scope / Under_Barrel / Muzzle / Magazine）需大写驼峰" for i in range(1, 41)
 )
+PRESET_LABEL = "预设 <img data-overview-probe> & A"
+KB_SUMMARY = "摘要 <img data-summary-probe> & B"
+LISTENER_ERROR = "监听异常 <img data-listener-probe> & C"
+READ_ERROR = "读取失败：知识条目已保留备份"
 
 entries = [{
     "topic": TOPIC, "content": LONG, "status": "verified", "enabled": True,
@@ -45,6 +49,8 @@ state = {"calls": [], "posts": [], "fail_rename": False}
 
 
 def kb_state() -> dict:
+    if state.get("read_failed"):
+        return {"ok": False, "read_health": {"ok": False, "status": "failed"}, "error": READ_ERROR}
     return {
         "ok": True,
         "state": {"enabled": True, "learning": True, "auto_apply": True},
@@ -63,10 +69,12 @@ def overview() -> dict:
         "dictionary": {"enabled": True, "mods": 185, "items": 11894},
         "knowledge": {
             "enabled": True, "server_id": FP, "state": {"enabled": True},
-            "stats": {"total": len(entries)}, "preset_name": "默认知识库", "fingerprint": FP,
+            "stats": {"total": len(entries)}, "preset_name": PRESET_LABEL, "fingerprint": FP,
+            "server_content": KB_SUMMARY,
             "match": True, "notice_show": False, "fingerprint_mismatch": False,
         },
-        "workflow": {"enabled": True, "recent": []}, "listener": {"running": True},
+        "workflow": {"enabled": True, "recent": []},
+        "listener": {"running": True, "health": {"last_error": LISTENER_ERROR}},
     }
 
 
@@ -140,6 +148,11 @@ def main() -> int:
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.route(API_GLOB, route)
         page.goto(PAGE_URL)
+        page.wait_for_selector("#ov_modules .stat")
+        panel = page.locator("#ov_modules")
+        text = panel.inner_text()
+        assert all(label in text for label in (PRESET_LABEL, KB_SUMMARY, LISTENER_ERROR)) \
+            and panel.locator("img").count() == 0, "概览动态字段必须按字面文本显示"
         page.wait_for_timeout(600)
         open_kb_tab(page)
 
@@ -241,6 +254,15 @@ def main() -> int:
         print("[6] 旧卡片没坏：禁用/删除按钮还在，弹窗是新增而非替换")
         acts = page.eval_on_selector_all('#kb_list .entry [data-act]', "els => els.map(e => e.dataset.act)")
         check("卡片动作含 view/toggle/del", {"view", "toggle", "del"} <= set(acts), str(acts))
+
+        state["read_failed"] = True
+        page.locator('button.tab[data-page="knowledge"]').click()
+        alert = page.locator("#kb_alert .kb-alert")
+        alert.wait_for()
+        assert alert.locator(".t").inner_text() == "⚠ 知识库读取失败" \
+            and READ_ERROR in alert.inner_text() \
+            and page.locator("#kb_stats .stat").count() == 0 \
+            and page.locator("#tab_kb_cnt").inner_text() == "-", "知识库读取故障必须显示失败态"
 
         browser.close()
 

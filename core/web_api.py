@@ -222,9 +222,16 @@ class McControlWebApi:
         except Exception:                                             # noqa: BLE001
             pass
         kb = getattr(self.plugin, "_knowledge", None)
-        if kb is None:
+        if kb is None or self._kb_read_health().get("ok") is False:
             return None
         return kb
+
+    def _kb_read_health(self) -> dict:
+        for source in (getattr(self.plugin, "_kbman", None), getattr(self.plugin, "_knowledge", None)):
+            read_health = getattr(source, "read_health", None)
+            if callable(read_health):
+                return read_health()
+        return {}
 
     def _cfg_path(self) -> Path:
         """插件配置文件路径（随 AstrBot 数据目录走，不写死本机路径）。"""
@@ -302,6 +309,7 @@ class McControlWebApi:
             "entries": kb.list_entries(),
             "pending": kb.pending_entries(),
             "server_id": kb.server_id,
+            "read_health": self._kb_read_health(),
             # v0.23.5 第四轮：落盘健康度也要随 GET 给出去。写接口回包里的
             # `save_warning` 刷新一次页面就没了 —— 「最近一次落盘失败」此前
             # 在 GET 里完全看不见（GPT 第四轮）。
@@ -1189,6 +1197,10 @@ class McControlWebApi:
                     kb_info["fingerprint_mismatch"] = n["changed"]   # 只要不匹配就一直为 True（概览常驻标记）
             except Exception as e:
                 kb_info["error"] = str(e)
+        else:
+            unavailable = self._kb_uninit()
+            if unavailable.get("read_health"):
+                kb_info.update(read_health=unavailable["read_health"], error=unavailable["error"])
 
         # 工作流
         wf = getattr(plugin, "_workflow", None)
@@ -2150,7 +2162,10 @@ class McControlWebApi:
             reason = ""
         if reason:
             return None
-        return getattr(self.plugin, "_kbman", None)
+        man = getattr(self.plugin, "_kbman", None)
+        if getattr(man, "registry_read_health", {}).get("ok") is False:
+            return None
+        return man
 
 
     def _kb_uninit(self) -> dict:
@@ -2170,6 +2185,9 @@ class McControlWebApi:
                 "error": f"知识库不可用 —— {reason}。"
                          "请到设置页修正「服务器目录」，或关闭「异地 RCON 模式」。",
             }
+        health = self._kb_read_health()
+        if health.get("ok") is False:
+            return {"ok": False, "kb_unavailable": True, "error": health["error"], "read_health": health}
         return {"ok": False, "kb_unavailable": True, "error": "知识库未初始化"}
 
     @staticmethod
@@ -2198,7 +2216,7 @@ class McControlWebApi:
 
     async def get_presets(self):
         man = self._kbman()
-        if man is None:
+        if man is None or self._kb_read_health().get("ok") is False:
             return json_response(self._kb_uninit())
         return json_response({"ok": True, **self._presets_payload(man)})
 

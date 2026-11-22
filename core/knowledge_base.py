@@ -27,9 +27,12 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import re
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime
+from glob import escape as glob_escape
 from pathlib import Path
 from typing import Callable
 
@@ -202,6 +205,61 @@ def _safe_preset_component(value) -> str | None:
             or any(ch in raw for ch in ("/", "\\", "\x00"))):
         return None
     return raw
+
+
+def _read_failure_backup(path: Path) -> Path | None:
+    return next(path.parent.glob(glob_escape(path.name) + ".read-failed-*"), None)
+
+
+def _backup_read_failure(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        return ""
+    fd, name = tempfile.mkstemp(prefix=path.name + ".read-failed-", dir=path.parent)
+    os.close(fd)
+    backup = Path(name)
+    try:
+        path.replace(backup)
+    except OSError:
+        backup.unlink(missing_ok=True)
+        raise
+    return backup.name
+
+
+def _read_knowledge_json(path: Path, validate: Callable[[dict], None]) -> tuple[dict | None, dict]:
+    try:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            backup = _read_failure_backup(path)
+            if backup is None:
+                return None, {"ok": True, "status": "missing"}
+            return None, {
+                "ok": False, "status": "failed", "backup": backup.name,
+                "error": f"读取失败：{path.name} 尚未恢复，原件备份为 {backup.name}",
+            }
+        if not isinstance(data, dict):
+            raise ValueError("文件顶层必须是 JSON 对象")
+        validate(data)
+    except (OSError, ValueError, RecursionError) as exc:
+        backup = ""
+        error = f"读取失败：{path.name}（{exc}）"
+        try:
+            backup = _backup_read_failure(path)
+        except OSError as backup_error:
+            error += f"。无法改名备份，原件留在原位置（{backup_error}）"
+        if backup:
+            error += f"。原件备份为 {backup}"
+        _log.warning("%s", error)
+        return None, {"ok": False, "status": "failed", "error": error, "backup": backup}
+    return data, {"ok": True, "status": "ok"}
+
+
+def _validate_entry_file(data: dict) -> None:
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict) or any(not isinstance(entry, dict) for entry in entries.values()):
+        raise ValueError("知识条目必须是对象")
+    if not isinstance(data.get("deleted", []), list):
+        raise ValueError("删除记录必须是数组")
 
 # ================= 语义增强检索（可选 · v0.21.41） =================
 # 配置项 knowledge.semantic_search（**默认关闭**，见 _conf_schema.json）：
@@ -1084,16 +1142,15 @@ class ModKnowledgeBase:
     # ================= 基础 =================
 
     def load(self) -> None:
-        if self.file_path.exists():
-            try:
-                self._data = json.loads(
-                    self.file_path.read_text(encoding="utf-8")
-                )
-                self._data.setdefault("entries", {})
-            except Exception:
-                self._data = {"preset_id": self.preset_id, "entries": {}}
+        data, self._read_health = _read_knowledge_json(self.file_path, _validate_entry_file)
+        self._data = data if data is not None else {}
+        self._data.setdefault("entries", {})
         self._data.setdefault("preset_id", self.preset_id)
         self._data.setdefault("deleted", [])  # 墓碑：被删除的 topic（防旧文件继承复活）
+        if not self._read_health["ok"]:
+            self._index = None
+            self._sem = None
+            return
         # v0.24.8（第六轮复核 B8）：收敛与迁移各自只**报告**改动，落盘在这里合并成一次 ——
         # 两处各写一次盘的话，save() 里的 _notify_write() 会被触发两次，
         # 同一批内容排两次向量补算后台任务。这正是「合并成一次 save()」的实质。
@@ -1105,6 +1162,9 @@ class ModKnowledgeBase:
             self.save()
         self._load_semantic()
         self._rebuild_index()
+
+    def read_health(self) -> dict:
+        return dict(self._read_health)
 
     def _load_semantic(self) -> None:
         """加载向量缓存（语义通道用）。缺 numpy / 缓存不存在都静默跳过。"""
@@ -1215,6 +1275,10 @@ class ModKnowledgeBase:
         """
         ok = True
         try:
+            if not self._read_health["ok"]:
+                raise ValueError(self._read_health["error"])
+            if not self.file_path.exists() and _read_failure_backup(self.file_path) is not None:
+                raise ValueError("知识库读取失败，须先恢复原文件")
             self._data["preset_id"] = self.preset_id
             self._data["updated_at"] = self._now()
             tmp = self.file_path.with_suffix(".tmp")
@@ -1926,33 +1990,36 @@ class KnowledgePresetManager:
         return True
 
     def _load_registry(self) -> dict:
-        if self.reg_path.exists():
-            try:
-                data = json.loads(self.reg_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and isinstance(data.get("presets"), list):
-                    # Registry files can survive upgrades and may also be edited
-                    # by hand.  Drop malformed ids before any active preset is
-                    # opened; otherwise the KB loader could bypass preset_path()
-                    # and construct a path outside data_dir.
-                    original = data["presets"]
-                    data["presets"] = [
-                        p for p in original
-                        if isinstance(p, dict) and self._safe_preset_id(p.get("id"))
-                    ]
-                    if not data["presets"]:
-                        return self._migrate_legacy()
-                    data.setdefault("active", None)
-                    ids = {p.get("id") for p in data["presets"]}
-                    if data.get("active") not in ids:
-                        data["active"] = data["presets"][0].get("id")
-                    migrated = self._migrate_notice(data)
-                    if (len(data["presets"]) != len(original)
-                            or self._recover_orphans(data) or migrated):
-                        self._write_registry_raw(data)
-                    return data
-            except Exception:
-                pass
-        return self._migrate_legacy()
+        def validate(data: dict) -> None:
+            presets = data.get("presets")
+            if not isinstance(presets, list) or not any(
+                isinstance(preset, dict) and self._safe_preset_id(preset.get("id"))
+                for preset in presets
+            ):
+                raise ValueError("预设注册表必须包含有效预设")
+
+        data, self.registry_read_health = _read_knowledge_json(self.reg_path, validate)
+        if not self.registry_read_health["ok"]:
+            return {"active": None, "presets": [], "notice": {"popup_keys": [], "suppress_keys": []}}
+        if data is None:
+            return self._migrate_legacy()
+        original = data["presets"]
+        data["presets"] = [
+            p for p in original if isinstance(p, dict) and self._safe_preset_id(p.get("id"))
+        ]
+        if not isinstance(data.get("active"), str) or not any(
+            p["id"] == data["active"] for p in data["presets"]
+        ):
+            data["active"] = data["presets"][0]["id"]
+        migrated = self._migrate_notice(data)
+        if len(data["presets"]) != len(original) or self._recover_orphans(data) or migrated:
+            self._write_registry_raw(data)
+        return data
+
+    def read_health(self) -> dict:
+        if self.kb is not None and self.registry_read_health["ok"]:
+            return self.kb.read_health()
+        return dict(self.registry_read_health)
 
     def _migrate_notice(self, data: dict) -> bool:
         """把老 registry 的 notice 字段（永久 suppressed + 单个 ack）迁移为「轮次列表」（v0.21.8）。
@@ -2099,7 +2166,7 @@ class KnowledgePresetManager:
         if exact is None:
             ranked = sorted(
                 presets,
-                key=lambda p: (self._file_entries(p["id"]) > 0, p["updated_at"]),
+                key=lambda p: ((self._file_entries(p["id"]) or 0) > 0, p["updated_at"]),
                 reverse=True,
             )
             exact = ranked[0]
@@ -2114,6 +2181,8 @@ class KnowledgePresetManager:
     def _write_registry_raw(self, reg: dict) -> bool:
         """写预设注册表。返回是否成功（v0.23.5 外部复核：此前是 `except: pass`，零日志）。"""
         try:
+            if not self.registry_read_health["ok"]:
+                raise ValueError(self.registry_read_health["error"])
             tmp = self.reg_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.reg_path)
@@ -2235,14 +2304,9 @@ class KnowledgePresetManager:
             raise ValueError("预设 ID 无效")
         return self.data_dir / f"kb_preset_{raw}.json"
 
-    def _file_entries(self, pid: str) -> int:
-        p = self.preset_path(pid)
-        if not p.exists():
-            return 0
-        try:
-            return len(json.loads(p.read_text(encoding="utf-8")).get("entries", {}))
-        except Exception:
-            return 0
+    def _file_entries(self, pid: str) -> int | None:
+        data, health = _read_knowledge_json(self.preset_path(pid), _validate_entry_file)
+        return len((data or {}).get("entries", {})) if health["ok"] else None
 
     def get(self, pid: str) -> dict | None:
         return next((p for p in self.reg["presets"] if p.get("id") == pid), None)
@@ -2328,6 +2392,8 @@ class KnowledgePresetManager:
 
     def create(self, name: str = "", copy_from: str | None = None) -> dict:
         """新建预设（默认不预设指纹）。copy_from 可指定从哪个预设复制条目。"""
+        if not self.registry_read_health["ok"]:
+            return {"ok": False, "error": self.registry_read_health["error"]}
         pid = _preset_id()
         entries, deleted = {}, []
         if copy_from:
@@ -2731,5 +2797,6 @@ class KnowledgePresetManager:
             # `registry_save_ok` 这两个老字段为兼容既有前端而保留，**口径已改为聚合**
             # （旧名字只反映注册表，正是「预设文件写失败被覆盖」的那个洞）。
             "save_health": self.save_health(),
+            "read_health": self.read_health(),
         }
 
