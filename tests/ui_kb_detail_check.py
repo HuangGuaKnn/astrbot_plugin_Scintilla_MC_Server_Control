@@ -144,9 +144,15 @@ def main() -> int:
         open_kb_tab(page)
 
         print("[1] 卡片：内容确实被截断（基线），但「查看详情」入口在")
-        clipped = page.eval_on_selector('.entry .content',
-                                        "el => ({c: el.clientHeight, s: el.scrollHeight})")
-        check("预览被 72px 截断（看不全 → 才有这个需求）", clipped["s"] > clipped["c"] + 8, str(clipped))
+        # 列表刷新会替换条目。每次从当前 DOM 取正文并同步测量，避免读到已脱离的节点。
+        clipped = page.wait_for_function("""expected => {
+            const el = document.querySelector("#page_knowledge.active #kb_list .entry .content");
+            if (!el || el.textContent !== expected || !el.clientHeight) return null;
+            return {c: el.clientHeight, s: el.scrollHeight, overflow: getComputedStyle(el).overflowY};
+        }""", arg=LONG, timeout=8000).json_value()
+        check("长正文在卡片预览中确实被裁剪",
+              0 < clipped["c"] < clipped["s"] - 8 and clipped["overflow"] in ("hidden", "clip"),
+              str(clipped))
         check("卡片有「查看详情」按钮",
               page.inner_text('#kb_list button[data-act="view"]').strip() == "查看详情")
         check("卡片有「点内容也能看全文」提示",

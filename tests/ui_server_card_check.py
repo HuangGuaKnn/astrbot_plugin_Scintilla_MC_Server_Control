@@ -68,11 +68,12 @@ CARD_EMPTY = card(
     ],
 )
 
+UNRECOGNIZED_RAW = "Players online (2): Steve, Alex · <span>格式标记</span>"
 CARD_UNRECOGNIZED = card(
     "unrecognized", "回执认不出", "3 项正常 · 回执认不出 1 项",
     [
         f("online", "在线人数", "unrecognized", "回执认不出", "—", "/list",
-          "回包认不出（没有命中任何已知形态）", raw="Players online (2): Steve, Alex"),
+          "回包认不出（没有命中任何已知形态）", raw=UNRECOGNIZED_RAW),
         DAY_OK, TPS_OK, VER_OK,
     ],
 )
@@ -354,8 +355,10 @@ def main() -> None:
              '#sv_status .sc-row[data-key="online"][data-state="unrecognized"]')
         assert badge("online") == "回执认不出", badge("online")
         assert "回执认不出" in page.locator("#sv_status .sc-head").inner_text()
-        raw_text = page.locator("#sv_status .sc-raw").first.inner_text()
-        assert "Players online (2): Steve, Alex" in raw_text, raw_text
+        raw = page.locator("#sv_status .sc-raw").first
+        raw_text = raw.inner_text()
+        assert UNRECOGNIZED_RAW in raw_text and raw.locator("span").count() == 0, \
+            "监控未识别回执须按纯文本显示"
         players_tab.click()
         expect(page.locator("#sv_players")).to_contain_text("拿不到")
         expect(page.locator("#sv_players")).not_to_contain_text("当前没有玩家在线")

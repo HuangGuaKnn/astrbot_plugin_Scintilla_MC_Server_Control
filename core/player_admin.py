@@ -304,7 +304,10 @@ def _player_ip_details(record: LoginIpResult) -> dict:
             scope = "link_local"
         elif any(address in net for net in _LAN_IPV4):
             scope = "private"
-    return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip) and not scope}
+    # v0.35.2：回环 / 内网 / 链路本地地址**允许**封禁 —— 服务端的 banned-ips.json 随时可 pardon-ip
+    # 撤销，不影响 RCON 控制面板（走的是另一个端口），所以「封了就把自己关在门外」是错的判断。
+    # scope 保留下来只用于前端提示影响范围，不再作为拦截条件。
+    return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip)}
 
 
 async def _lookup_player_ips(plugin, players: list[str], *, force: bool = False) -> dict:

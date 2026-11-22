@@ -438,7 +438,7 @@ def check_remote_ip_search(scenario):
 def check_ip_search_details(scenario):
     scenario.online = {"state": "ok", "players": ["Alex", "Steve", "Morgan"], "online": 3, "max": 20,
                        "ip_details": {
-                           "Alex": {"state": "found", "ip": "127.0.0.1", "scope": "loopback", "can_ban": False,
+                           "Alex": {"state": "found", "ip": "127.0.0.1", "scope": "loopback", "can_ban": True,
                                     "source": "logs/2026-11-20-1.log.gz", "joined_at": "2026-11-20T12:34:56"},
                            "Steve": {"state": "not_found", "ip": "", "scanned": 7},
                            "Morgan": {"state": "unreadable", "ip": ""},
@@ -447,8 +447,13 @@ def check_ip_search_details(scenario):
                                  "source": "logs/latest.log", "joined_at": "2026-11-21T14:07:00"}
     scenario.open()
     rows = scenario.page.locator("#sv_players .player-row")
-    expect(rows.first).to_contain_text("回环地址（127.0.0.1）")
-    expect(rows.first.get_by_role("button", name="在封禁区使用此 IP")).to_be_disabled()
+    note = rows.first.inner_text()
+    if not all(text in note for text in (
+        "回环地址（127.0.0.1）", "最后一跳", "封禁会连带影响所有经它进来的连接",
+    )):
+        raise AssertionError("J2 回环地址须提示影响范围")
+    loopback_ban = rows.first.get_by_role("button", name="在封禁区使用此 IP")
+    expect(loopback_ban).to_be_enabled()
     expect(rows.first).to_contain_text("来自 logs/2026-11-20-1.log.gz · 最后一次进服 2026-11-20 12:34")
     expect(rows.nth(1), "J7 缺记录文案须显示搜索文件数").to_contain_text("最近 7 个日志文件里没有该玩家的进服记录")
     expect(rows.nth(2)).to_contain_text("日志目录不可读（server_dir 配置可能不对）")
@@ -457,8 +462,11 @@ def check_ip_search_details(scenario):
     expect(rows.nth(1)).to_contain_text("来自 logs/latest.log · 最后一次进服 2026-11-21 14:07")
     expect(rows.nth(1).get_by_role("button", name="在封禁区使用此 IP")).to_be_enabled()
     assert scenario.ip_searches == [{"player": "Steve"}]
+    loopback_ban.press("Enter")
+    expect(scenario.page.locator("#sv_ban_ip")).to_have_value("127.0.0.1")
+    assert scenario.posts == [], "J2 填入地址不得自动发送封禁"
     expect(scenario.page.locator("#player_dialog")).to_be_hidden()
-    print("[PASS] J2/J3/J6/J7 地址保护、来源和时间、手动回显、缺记录计数及目录错误")
+    print("[PASS] J2/J3/J6/J7 回环标注和地址填入、来源和时间、手动回显、缺记录计数及目录错误")
 
 
 def check_console_notice(scenario):

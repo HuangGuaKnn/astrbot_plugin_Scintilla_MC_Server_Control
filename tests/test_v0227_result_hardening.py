@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import sys
@@ -305,15 +306,17 @@ def rcon_error_phase() -> None:
 
     # rcon.py 里每个构造点都标了阶段（不靠猜）
     rcon_src = (PLUGIN_DIR / "core/rcon.py").read_text(encoding="utf-8")
-    raises = [m for m in re.finditer(r"raise Rcon\w*Error\(", rcon_src)]
-    unphased = 0
-    for m in raises:
-        blob = rcon_src[m.start():m.start() + 400]
-        if "phase=" not in blob and "PartialResponse" not in blob \
-                and "Timeout" not in blob:
-            unphased += 1
-    check(f"rcon.py 的 {len(raises)} 个构造点都带阶段（或为默认 read 的子类）",
-          unphased == 0, f"未标注 {unphased} 处")
+    raises = [
+        node for node in ast.walk(ast.parse(rcon_src))
+        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name) and node.exc.func.id == "RconError"
+    ]
+    unphased = [
+        node.lineno for node in raises
+        if len(node.exc.args) < 2 and not any(kw.arg == "phase" for kw in node.exc.keywords)
+    ]
+    check("RCON 基础异常抛出处须明确标注阶段",
+          bool(raises) and not unphased, f"未标注阶段的行号：{unphased}")
 
     # _exec_checked：connect → failed，其余 → unknown
     check("★_exec_checked 按 phase 分流（源码断言）",
@@ -360,10 +363,11 @@ def single_execute_parser() -> None:
     # 解析不出来时绝不猜：返回一个不在任何豁免清单里的名字
     bad = "execute as @a say hi"      # execute 子命令无法识别 → CommandParseError
     try:
-        jc_unwrap_failed = False
-        cr.effective_command_segment(bad)
+        cr.unwrap_command(bad)
     except cr.CommandParseError:
-        jc_unwrap_failed = True
+        check("共享解析器须拒绝无法解析的 execute", True)
+    else:
+        check("共享解析器须拒绝无法解析的 execute", False)
     seg_bad = cr.effective_command_segment(bad)
     check("★解析失败（execute 子命令无法识别）→ 不落进静默/幂等豁免清单",
           seg_bad[0] not in cr.SILENT_EMPTY_SUCCESS_COMMANDS
@@ -374,8 +378,6 @@ def single_execute_parser() -> None:
     r = classify(bad, "", boundary_confirmed=True, response_received=True)
     check("★解析失败的命令空响应 → 仍是 unknown（不借豁免逃成 success）",
           r.status == "unknown", r.status)
-    check("（参考）unwrap_command 对该输入直接抛错 = fail-closed 源头",
-          jc_unwrap_failed or True)
 
 
 # ===================== 七、工作流汇总：未确认档必须被看见 =====================

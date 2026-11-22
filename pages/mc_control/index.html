@@ -2823,7 +2823,9 @@ function renderPlayerIp(name, ip, details){
   if(details?.scope){
     const label = details.scope === "loopback" ? "回环地址"
       : details.scope === "private" ? "内网地址" : "链路本地地址";
-    notes.push(`${label}（${ip}），已禁用 IP 封禁`);
+    // v0.35.2：不再禁用，改为提示影响范围 —— 服务端只看到「最后一跳」的地址，
+    // 封它可能连带挡掉所有经同一转发/代理进来的连接。可撤销（pardon-ip），不阻断。
+    notes.push(`${label}（${ip}）—— 可能是代理/转发的最后一跳，封禁会连带影响所有经它进来的连接`);
   }
   const scanned = Number(details?.scanned) || 0;
   if(state === "remote") notes.push("异地模式下读不到服务端日志，无法搜索");

@@ -54,17 +54,22 @@ class PlayerIpChecks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.watcher.recent_ips(), {})
         self.watcher.on_event.assert_not_called()
 
-    async def test_j2_restricted_ranges_do_not_offer_ban(self):
+    async def test_j2_restricted_ranges_are_labelled_but_still_bannable(self):
+        # v0.35.2：原先这些地址会置 can_ban=False（"禁用封禁"）。改为**标注 + 允许**：
+        # 服务端 banned-ips.json 随时可用 pardon-ip 撤销，且封禁不影响 RCON 控制面板
+        # （走的是不同端口），所以「封了就把自己关在门外」是错的判断。使用者要能实验。
         for text, expected in (("127.0.0.1", "loopback"), ("127.8.0.2", "loopback"), ("::1", "loopback"),
                                ("::ffff:127.0.0.1", "loopback"), ("10.4.3.2", "private"),
                                ("172.16.0.1", "private"), ("172.31.255.1", "private"),
                                ("192.168.1.5", "private"), ("169.254.1.2", "link_local"), ("fe80::42", "link_local")):
             with self.subTest(address=text):
                 details = player_admin._player_ip_details(log_watcher.LoginIpResult("found", text))
-                self.assertEqual((details["scope"], details["can_ban"]), (expected, False),
-                                 "J2 受保护地址必须标注并禁用封禁")
+                self.assertEqual(details["scope"], expected, "J2 受保护地址必须标注出范围")
+                self.assertTrue(details["can_ban"], "J2 受保护地址仍须允许封禁（可撤销、不影响控制面板）")
         for text in ("192.0.2.9", "172.32.1.2", "2001:db8::42"):
-            self.assertTrue(player_admin._player_ip_details(log_watcher.LoginIpResult("found", text))["can_ban"])
+            details = player_admin._player_ip_details(log_watcher.LoginIpResult("found", text))
+            self.assertTrue(details["can_ban"])
+            self.assertEqual(details["scope"], "", "公网地址不该被标注范围")
 
     async def test_j3_and_j7_online_contains_source_time_and_count(self):
         self.write("2026-11-20-1.log.gz", login("Steve", "127.0.0.1", "23:50:08"),
@@ -72,7 +77,8 @@ class PlayerIpChecks(unittest.IsolatedAsyncioTestCase):
         details = (await player_admin.get_online(self.plugin))["ip_details"]["Steve"]
         self.assertEqual((details.get("source"), details.get("joined_at")),
                          ("logs/2026-11-20-1.log.gz", "2026-11-20T23:50:08"), "J3 来源与进服时间须随名单返回")
-        self.assertFalse(details["can_ban"])
+        self.assertEqual(details.get("scope"), "loopback", "J2 回环地址须标注范围")
+        self.assertTrue(details["can_ban"], "J2 回环地址仍允许封禁（可撤销）")
         missing = (await self.watcher.lookup_player_ips(["Alex"]))["Alex"]
         self.assertEqual((missing.state, missing.scanned), ("not_found", 1), "J7 缺记录须带实际搜索数")
 

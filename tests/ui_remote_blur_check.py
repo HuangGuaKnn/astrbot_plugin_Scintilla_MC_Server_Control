@@ -369,7 +369,8 @@ def main() -> int:
         s = st["sample"]
         check("被封内容 computed filter 含 blur", "blur" in (s.get("childFilter") or ""), str(s.get("childFilter")))
         check("被封内容 pointer-events:none", s.get("childPE") == "none", str(s.get("childPE")))
-        check("被封内容透明度压低（≤0.5）", (s.get("childOpacity") or 1) <= 0.5, str(s.get("childOpacity")))
+        opacity = s.get("childOpacity")
+        check("被封内容透明度压低（≤0.5）", opacity is not None and 0 <= opacity <= 0.5, str(opacity))
         check("提示牌不参与模糊（filter:none）", s.get("badgeFilter") == "none", str(s.get("badgeFilter")))
         check("提示牌没越出卡片边界", bool(s.get("badgeIn")), "越界了")
         print("      提示牌纵向位置（占卡片高度比例）：")
@@ -378,7 +379,9 @@ def main() -> int:
             print(f"        · {i} → 卡片高 {b.get('h')}px，牌子在 {b.get('topPct')} 处")
         for i in ("cfg_ev_enabled", "cfg_bridge_en"):
             q = st["blocks"][i]
-            check(f"{i}（高卡片）提示牌靠上、不会被滚出视野", (q.get("topPct") or 1) <= 0.45, str(q))
+            top_pct = q.get("topPct")
+            check(f"{i}（高卡片）提示牌靠上、不会被滚出视野",
+                  top_pct is not None and 0 <= top_pct <= 0.45, str(q))
         check("行级内容也被模糊", "blur" in (s.get("rowFilter") or ""), str(s.get("rowFilter")))
         check("行级小标签浮在磨砂层之上（z-index ≥ 2）",
               s.get("rowTagZ") not in (None, "auto") and int(s["rowTagZ"]) >= 2, str(s.get("rowTagZ")))

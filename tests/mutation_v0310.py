@@ -181,7 +181,7 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
-    ] + v0350_cases() + v0360_cases()
+    ] + v0350_cases() + v0360_cases() + v0370_cases()
 
 
 def v0350_cases():
@@ -196,13 +196,29 @@ def v0350_cases():
              '    if path.name.endswith(".log.gz"):', "    if False:",
              (*backend, "PlayerIpChecks.test_j1_gzip_is_searched_exactly_and_stops_at_first_matching_file"),
              "J1 必须检索 gzip 中的精确玩家"),
-        Case("J2", "取消回环地址保护", PLAYER,
+        # v0.35.2：回环/内网地址改为「标注 + 允许封禁」。这条变异改为**删掉影响范围提示**——
+        # 提示没了，用户就不知道封这个地址会连带挡掉所有经它进来的连接。
+        Case("J2", "删掉回环/内网地址的影响范围提示", HTML,
+             '    notes.push(`${label}（${ip}）—— 可能是代理/转发的最后一跳，封禁会连带影响所有经它进来的连接`);',
+             "",
+             (*browser, "J7"), "J2 回环地址须提示影响范围",
+             baseline=(*browser, "J7")),
+        Case("J2b", "重新禁用回环地址封禁", PLAYER,
+             'return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip)}',
+             'return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip) and not scope}',
+             (*backend, "PlayerIpChecks.test_j2_restricted_ranges_are_labelled_but_still_bannable"),
+             "J2 受保护地址仍须允许封禁"),
+        Case("J2c", "保留提示但漏掉最后一跳", HTML,
+             "可能是代理/转发的最后一跳，封禁会连带影响所有经它进来的连接",
+             "检测到代理或转发地址，封禁会连带影响所有经它进来的连接",
+             (*browser, "J7"), "J2 回环地址须提示影响范围", baseline=(*browser, "J7")),
+        Case("J2d", "回环地址丢失范围标注", PLAYER,
              "        if address.is_loopback:", "        if False:",
-             (*backend, "PlayerIpChecks.test_j2_restricted_ranges_do_not_offer_ban"),
-             "J2 受保护地址必须标注并禁用封禁"),
+             (*backend, "PlayerIpChecks.test_j2_restricted_ranges_are_labelled_but_still_bannable"),
+             "J2 受保护地址必须标注出范围"),
         Case("J3", "丢失登录来源", PLAYER,
-             '    return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip) and not scope}',
-             '    return {**record._asdict(), "source": "", "scope": scope, "can_ban": bool(record.ip) and not scope}',
+             'return {**record._asdict(), "scope": scope, "can_ban": bool(record.ip)}',
+             'return {**record._asdict(), "source": "", "scope": scope, "can_ban": bool(record.ip)}',
              (*backend, "PlayerIpChecks.test_j3_and_j7_online_contains_source_time_and_count"),
              "J3 来源与进服时间须随名单返回"),
         Case("J4", "禁用未命中缓存", watcher,
@@ -267,6 +283,22 @@ def v0360_cases():
              wide, "R9 必须呈现三条完整警告", baseline=wide),
         Case("R10", "窄屏仅为警告预留一行", HTML, narrow_reserve,
              narrow_reserve.replace(":6", ":1"), narrow, moved, baseline=narrow),
+    ]
+
+
+def v0370_cases():
+    from mutation_all import Case
+
+    result_checks = (sys.executable, "-B", "-X", "utf8", "tests/test_v0227_result_hardening.py")
+    return [
+        Case("V37P1", "共享解析器把语法错误当成无内部指令", "core/java_commands.py",
+             '        raise CommandParseError(f"无法识别的 execute 子命令「{tokens[idx]}」")',
+             "        return None",
+             result_checks, "共享解析器须拒绝无法解析的 execute", baseline=result_checks),
+        Case("V37P2", "发送失败漏标 RCON 阶段", "core/rcon.py",
+             'raise RconError(f"RCON 发送失败: {e}", phase=RconError.PHASE_SEND) from e',
+             'raise RconError(f"RCON 发送失败: {e}") from e',
+             result_checks, "RCON 基础异常抛出处须明确标注阶段", baseline=result_checks),
     ]
 
 
