@@ -1,4 +1,4 @@
-"""历史变异与当前专项的统一入口：串行验收、隔离修改、按目标断言统计。"""
+"""按目标文件在隔离副本运行变异，支持工作区增量和完整验收。"""
 from __future__ import annotations
 
 import argparse
@@ -12,15 +12,29 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, Lock
+from time import perf_counter
+
+from verify_timing import print_bill
+from verify_process import kill_tree
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310")
-SPECIAL_CHECKS = {"v0330-checks": "v0.33.0", "v0340-checks": "v0.34.0"}
+SPECIAL_CHECKS = {"v0330-checks": "v0.33.0", "v0340-checks": "v0.34.0", "v0390-runner": "v0.39.0 流水线"}
 VERDICTS = ("KILLED", "SURVIVED", "INVALID")
+LOCK_PATH = "tests/.mutation.lock"
+SHARED_PATHS = frozenset({
+    "core/command_result.py", "core/version_caps.py", "core/rcon.py",
+    "core/server_card.py", "core/tool_guard.py", "core/strict_bool.py", "core/java_commands.py",
+    "main.py", "core/web_api.py", "core/log_watcher.py", "_conf_schema.json",
+    "core/player_admin.py", "core/knowledge_base.py",
+    ".gitignore", "run_release_verify.py", "tests/_paths.py",
+})
 
 
 @dataclass(frozen=True)
@@ -33,6 +47,17 @@ class Case:
     command: tuple[str, ...]
     failure: str = ""
     baseline: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class RegisteredCase:
+    suite: str
+    index: int
+    case: Case
+
+    @property
+    def key(self):
+        return self.suite, self.index
 
 
 def registered_cases(module) -> list[Case]:
@@ -80,7 +105,7 @@ def pid_alive(pid: int) -> bool:
 
 @contextmanager
 def pid_lock(source: Path):
-    lock = source / "tests" / ".mutation.lock"
+    lock = source / LOCK_PATH
     token = f"{os.getpid()}\n"
     try:
         with lock.open("x", encoding="ascii", newline="\n") as file:
@@ -107,12 +132,55 @@ def git(source: Path, *args: str) -> bytes:
     return subprocess.check_output(["git", "-C", str(source), *args])
 
 
+def changed_files(source: Path, ref: str) -> set[str]:
+    revision = git(source, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}").decode().strip()
+    changed = git(source, "diff", "--name-only", "--no-renames", "-z", revision, "--")
+    untracked = git(source, "ls-files", "--others", "--exclude-standard", "-z")
+    return set((changed + untracked).decode("utf-8").split("\0")) - {"", LOCK_PATH}
+
+
+def group_by_path(registry):
+    groups = {}
+    for item in registry:
+        groups.setdefault(item.case.path, []).append(item)
+    return groups
+
+
+def verify_selection(registry, chosen, paths):
+    expected = {item.key for item in registry if item.case.path in paths}
+    if len(chosen) != len(expected) or {item.key for item in chosen} != expected:
+        raise RuntimeError("E3 增量选区与全量登记中的目标文件交集不一致")
+
+
+def select_cases(registry, paths):
+    if paths is None:
+        return registry
+    groups = group_by_path(registry)
+    shared = paths & SHARED_PATHS
+    unknown = paths - groups.keys() - shared
+    if shared or unknown:
+        reason = []
+        if shared:
+            reason.append("共享文件 " + "、".join(sorted(shared)))
+        if unknown:
+            reason.append("无法从变异目标判断依赖的文件 " + "、".join(sorted(unknown)))
+        print("[WARN] " + "；".join(reason) + "，退回全量")
+        chosen = registry
+    else:
+        chosen = [item for path in sorted(paths) for item in groups[path]]
+        verify_selection(registry, chosen, paths)
+        chosen.sort(key=lambda item: item.key)
+    scope = "本次只跑了" if len(chosen) < len(registry) else "本次跑全量"
+    print(f"{scope} {len(chosen)}/{len(registry)}，来源文件为 " + ("、".join(sorted(paths)) or "无"))
+    return chosen
+
+
 def copy_workspace(source: Path, snapshot: Path) -> None:
     # 旧用例会考察 Git/忽略规则。元数据另克隆一份，再覆盖当前工作区的可交付文件。
     git(source, "clone", "--quiet", "--no-hardlinks", "--no-checkout", "--", str(source), str(snapshot))
     git(snapshot, "read-tree", "HEAD")
     files = git(source, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    for rel in set(files.decode("utf-8").split("\0")) - {"", "tests/.mutation.lock"}:
+    for rel in set(files.decode("utf-8").split("\0")) - {"", LOCK_PATH}:
         src = source / rel
         if src.is_file() and not src.is_symlink():
             dest = snapshot / rel
@@ -157,8 +225,15 @@ def anchor(raw: bytes, case: Case) -> tuple[int, bytes, bytes]:
 
 
 def run_test(root: Path, command, env):
-    return subprocess.run(command, cwd=root, env=env, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=300)
+    with subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, encoding="utf-8", errors="replace",
+                          start_new_session=os.name != "nt") as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=300)
+        except BaseException:
+            kill_tree(proc)
+            raise
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
 def classify(result, marker: str) -> tuple[str, str]:
@@ -178,6 +253,20 @@ def classify(result, marker: str) -> tuple[str, str]:
     return "INVALID", f"rc={result.returncode}，未匹配目标判据 {marker!r}\n" + "\n".join(detail[-16:])
 
 
+def baseline_command(case: Case):
+    return case.baseline or case.command[:5]
+
+
+def check_baseline(root, command, env):
+    cost = perf_counter()
+    try:
+        result = run_test(root, command, env)
+        error = "" if result.returncode == 0 else (result.stdout + result.stderr or f"rc={result.returncode}，无输出")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        error = str(exc)
+    return error, perf_counter() - cost
+
+
 def exercise(root: Path, case: Case, env, baselines) -> tuple[str, str]:
     path = root / case.path
     if not path.is_file():
@@ -186,19 +275,9 @@ def exercise(root: Path, case: Case, env, baselines) -> tuple[str, str]:
     count, before, after = anchor(raw, case)
     if count != 1 or before == after:
         return "INVALID", f"锚点已漂移，需更新（出现 {count} 次，要求唯一且替换内容不同）"
-    base = case.baseline or case.command[:5]
-    if base not in baselines:
-        try:
-            result = run_test(root, base, env)
-            baselines[base] = "" if result.returncode == 0 else result.stdout + result.stderr
-            if result.returncode and not baselines[base]:
-                baselines[base] = f"rc={result.returncode}，无输出"
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            baselines[base] = str(exc)
-        label = "FAIL" if baselines[base] else "PASS"
-        print(f"[BASELINE {label}] {base[-1]}", flush=True)
-    if baselines[base]:
-        return "INVALID", "未修改时用例不通过\n" + baselines[base][-3000:]
+    error = baselines[baseline_command(case)]
+    if error:
+        return "INVALID", "未修改时用例不通过\n" + error[-3000:]
     try:
         path.write_bytes(raw.replace(before, after, 1))
         try:
@@ -211,40 +290,151 @@ def exercise(root: Path, case: Case, env, baselines) -> tuple[str, str]:
             raise RuntimeError(f"{case.path} 未逐字节恢复")
 
 
-def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
+def estimated_cost(command):
+    return 15 if any(arg.replace("\\", "/").startswith("tests/ui_") for arg in command) else 3
+
+
+def distribute(items, jobs, cost):
+    batches = [[] for _ in range(jobs)]
+    lengths = [0] * jobs
+    for item in sorted(items, key=cost, reverse=True):
+        worker = lengths.index(min(lengths))
+        batches[worker].append(item)
+        lengths[worker] += cost(item)
+    return batches
+
+
+def worker_env(directory):
+    scratch = directory / "tmp"
+    scratch.mkdir()
+    astrbot = directory / "astrbot"
+    return {**os.environ, "ASTRBOT_ROOT": str(astrbot), "ASTRBOT_DATA_DIR": str(astrbot / "data"),
+            "TMP": str(scratch), "TEMP": str(scratch), "TMPDIR": str(scratch),
+            "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def execute_groups(groups, roots, envs, originals, legacy):
+    jobs = len(roots)
+    stopping = Event()
+    output = Lock()
+    stages = []
+
+    def log(message):
+        with output:
+            print(message, flush=True)
+
+    def baselines_for_worker(worker, commands):
+        results = {}
+        for command in commands:
+            if stopping.is_set():
+                break
+            error, cost = check_baseline(roots[worker], command, envs[worker])
+            results[command] = error
+            log(f"[BASELINE {'FAIL' if error else 'PASS'}] {command[-1]} ({cost:.3f}s)")
+        return results
+
+    def run_groups(worker, assigned):
+        results = {}
+        for items in assigned:
+            path = items[0].case.path
+            started = perf_counter()
+            tally = Counter()
+            for item in items:
+                if stopping.is_set():
+                    break
+                case = item.case
+                case_started = perf_counter()
+                verdict, detail = exercise(roots[worker], case, envs[worker], baselines)
+                cost = perf_counter() - case_started
+                results[item.key] = verdict
+                tally[verdict] += 1
+                label = verdict
+                if legacy and item.suite in ("v0247_round2", "v0248", "v0249"):
+                    label = "INFRA-ERR" if verdict == "INVALID" else verdict
+                elif legacy and verdict == "KILLED":
+                    label = "RED"
+                log(f"[{label}] {item.suite}/{item.index:02} {case.criterion} {case.description} "
+                    f"｜ {path} ({cost:.3f}s) → {detail}")
+            if digests(roots[worker], [path])[path] != originals[path]:
+                raise RuntimeError(f"{path} 变异组结束后未恢复")
+            log(f"[GROUP] {path} {sum(tally.values())}/{len(items)} 条 ({perf_counter() - started:.3f}s)"
+                " ｜ " + ", ".join(f"{tally[v]} {v}" for v in VERDICTS))
+        return results
+
+    def schedule(pool, function, batches):
+        futures = [pool.submit(function, worker, items) for worker, items in enumerate(batches) if items]
+        results = {}
+        try:
+            for future in as_completed(futures):
+                results.update(future.result())
+        except BaseException:
+            stopping.set()
+            raise
+        return results
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        commands = dict.fromkeys(baseline_command(item.case) for items in groups.values() for item in items)
+        started = perf_counter()
+        baselines = schedule(pool, baselines_for_worker, distribute(commands, jobs, estimated_cost))
+        stages.append(("未修改基线", perf_counter() - started))
+        started = perf_counter()
+        assigned = distribute(groups.values(), jobs, lambda group: sum(estimated_cost(i.case.command) for i in group))
+        results = schedule(pool, run_groups, assigned)
+        stages.append(("变异执行", perf_counter() - started))
+    return results, stages
+
+
+def run(suites, *, source: Path = ROOT, legacy: bool = False, jobs: int = 4,
+        paths: set[str] | None = None, plan: bool = False) -> int:
+    started = perf_counter()
+    registry = [RegisteredCase(name, index, case) for name, cases in suites.items()
+                for index, case in enumerate(cases, 1)]
+    chosen = select_cases(registry, paths)
+    groups = group_by_path(chosen)
+    jobs = min(jobs, len(groups))
+    if plan or not chosen:
+        for item in chosen:
+            print(f"[PLAN] {item.suite}/{item.index:02} {item.case.criterion} ｜ {item.case.path}")
+        print(f"共 {len(chosen)} 条变异，{len(groups)} 个目标文件，{jobs} 路")
+        if not plan:
+            print_bill("变异", started, [("选区", perf_counter() - started)])
+        return 0
+    stages = [("选区", perf_counter() - started)]
     counts = {name: Counter() for name in suites}
     with pid_lock(source):
+        setup_started = perf_counter()
         revision = git(source, "rev-parse", "--short", "HEAD").decode().strip()
-        originals = digests(source, (case.path for cases in suites.values() for case in cases))
+        originals = digests(source, groups)
         try:
             with tempfile.TemporaryDirectory(prefix="scintilla-mutations-") as temp:
-                root = Path(temp) / source.name
-                copy_workspace(source, root)
-                if digests(root, originals) != originals:
+                directories = [Path(temp) / str(worker + 1) for worker in range(jobs)]
+                roots = [directory / source.name for directory in directories]
+                copy_workspace(source, roots[0])
+                for root in roots[1:]:
+                    shutil.copytree(roots[0], root)
+                if any(digests(root, originals) != originals for root in roots):
                     raise RuntimeError("隔离副本与源工作区不一致")
-                astrbot = Path(temp) / "astrbot"
-                env = {**os.environ, "ASTRBOT_ROOT": str(astrbot), "ASTRBOT_DATA_DIR": str(astrbot / "data"),
-                       "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
-                baselines = {}
+                envs = [worker_env(directory) for directory in directories]
+                print(f"{len(chosen)} 条变异，{len(groups)} 个目标文件，{jobs} 路独立副本", flush=True)
+                stages.append(("副本准备", perf_counter() - setup_started))
                 try:
-                    for name, cases in suites.items():
-                        for index, case in enumerate(cases, 1):
-                            verdict, detail = exercise(root, case, env, baselines)
-                            counts[name][verdict] += 1
-                            label = verdict
-                            if legacy and name in ("v0247_round2", "v0248", "v0249"):
-                                label = "INFRA-ERR" if verdict == "INVALID" else verdict
-                            elif legacy and verdict == "KILLED":
-                                label = "RED"
-                            print(f"[{label}] {name}/{index:02} {case.criterion} {case.description} "
-                                  f"｜ {case.path} → {detail}", flush=True)
+                    results, costs = execute_groups(groups, roots, envs, originals, legacy)
+                    stages.extend(costs)
                 finally:
-                    snapshot_clean = verify_hashes(root, originals, "隔离副本", revision)
+                    restore_started = perf_counter()
+                    snapshot_clean = all([verify_hashes(root, originals, f"隔离副本 {index}", revision)
+                                          for index, root in enumerate(roots, 1)])
         finally:
             source_clean = verify_hashes(source, originals, "源工作区", revision)
+        stages.append(("SHA-256 核对及清理", perf_counter() - restore_started))
+    if results.keys() != {item.key for item in chosen}:
+        raise RuntimeError("变异结果缺项或多出未计划的项目")
+    selected_counts = Counter(item.suite for item in chosen)
+    for (name, _), verdict in results.items():
+        counts[name][verdict] += 1
     if legacy:
         name, tally = next(iter(counts.items()))
-        total = len(suites[name])
+        total = selected_counts[name]
         print(f"KILLED {tally['KILLED']}/{total}" if name in ("v0247_round2", "v0248", "v0249")
               else f"定向变异 {tally['KILLED']}/{total} 变红，逐条字节级还原")
     else:
@@ -253,24 +443,28 @@ def run(suites, *, source: Path = ROOT, legacy: bool = False) -> int:
             print("\n| 脚本 | 总数 | KILLED | SURVIVED | INVALID |")
             print("| --- | ---: | ---: | ---: | ---: |")
             for name, tally in historical.items():
-                print(f"| mutation_{name}.py | {len(suites[name])} | "
+                print(f"| mutation_{name}.py | {selected_counts[name]} | "
                       + " | ".join(str(tally[v]) for v in VERDICTS) + " |")
             totals = sum(historical.values(), Counter())
-            print(f"| 合计 | {sum(len(suites[name]) for name in historical)} | "
+            print(f"| 合计 | {sum(selected_counts[name] for name in historical)} | "
                   + " | ".join(str(totals[v]) for v in VERDICTS) + " |")
         for name, label in SPECIAL_CHECKS.items():
             if name in counts:
                 tally = counts[name]
-                print(f"\n{label} 专项（独立于历史合计） {len(suites[name])} 条"
+                print(f"\n{label} 专项（独立于历史合计） {selected_counts[name]} 条"
                       + "：" + ", ".join(f"{tally[v]} {v}" for v in VERDICTS))
+    print(f"\n本轮总计 {len(chosen)}/{len(registry)} 条，"
+          + ", ".join(f"{sum(tally[v] for tally in counts.values())} {v}" for v in VERDICTS))
+    print_bill("变异", started, stages)
     return 0 if snapshot_clean and source_clean and all(
-        counts[name]["KILLED"] == len(cases) for name, cases in suites.items()
+        counts[name]["KILLED"] == selected_counts[name] for name in suites
     ) else 1
 
 
-def entry(suites, *, legacy=False) -> int:
+def entry(suites, *, legacy=False, jobs=4, ref=None, plan=False) -> int:
     try:
-        return run(suites, legacy=legacy)
+        paths = changed_files(ROOT, ref) if ref is not None else None
+        return run(suites, source=ROOT, legacy=legacy, jobs=jobs, paths=paths, plan=plan)
     except LockError as exc:
         print(f"[INVALID] {exc}", file=sys.stderr, flush=True)
         return 1
@@ -288,7 +482,17 @@ def main(argv=None) -> int:
     selected.add_argument("--suite", choices=SUITES, action="append", help="仅运行指定历史组，可重复")
     selected.add_argument("--v0330-checks", action="store_true", help="仅运行 v0.33.0 专项")
     selected.add_argument("--v0340-checks", action="store_true", help="仅运行 v0.34.0 专项")
+    selected.add_argument("--changed", action="store_true", help="按 HEAD 与当前工作区的改动选区")
+    selected.add_argument("--since", metavar="REF", help="按指定提交与当前工作区的改动选区")
+    selected.add_argument("--runner-checks", action="store_true", help="仅运行 v0.39.0 验证流水线专项")
+    parser.add_argument("--jobs", type=int, default=4, help="隔离执行路数，1 为串行（默认 4）")
+    parser.add_argument("--plan", action="store_true", help="仅显示选区和用例")
     args = parser.parse_args(argv)
+    if args.jobs < 1:
+        parser.error("--jobs 至少为 1")
+    if args.runner_checks:
+        from mutation_v0390 import mutation_cases
+        return entry({"v0390-runner": mutation_cases()}, jobs=args.jobs, plan=args.plan)
     suites = {}
     if not (args.v0330_checks or args.v0340_checks):
         suites.update({name: registered_cases(importlib.import_module(f"mutation_{name}"))
@@ -299,7 +503,7 @@ def main(argv=None) -> int:
             suites["v0330-checks"] = v0330_cases()
         if not args.v0330_checks:
             suites["v0340-checks"] = v0340_cases()
-    return entry(suites)
+    return entry(suites, jobs=args.jobs, ref="HEAD" if args.changed else args.since, plan=args.plan)
 
 
 if __name__ == "__main__":

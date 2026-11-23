@@ -17,6 +17,7 @@
   <python> run_release_verify.py             # 本机全跑：静态 + 回归 + UI 硬门禁（全部契约类）
   <python> run_release_verify.py --ci        # 与 CI / 发版一致：只跑 CI_OK 里的那几件 UI
   <python> run_release_verify.py --bundled # 发版前必跑：与 CI 同通道（自带 Chromium）
+  <python> run_release_verify.py --jobs 1 # 复现串行；本机默认 4 路，CI 默认串行
   <python> run_release_verify.py --plan      # 只打印「将要跑什么」，一条都不执行
   <python> run_release_verify.py --guard     # 只做 UI 归类守卫（清单唯一来源）
   <python> run_release_verify.py --list-ui   # 只打印四份名单（含 CI 可跑 / 本机专属）
@@ -32,16 +33,18 @@ UI 用例会拉起浏览器，只杀父进程会留下一堆孤儿进程继续�
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tarfile
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import perf_counter
 
 ROOT = Path(__file__).resolve().parent
 TESTS = ROOT / "tests"
@@ -56,6 +59,8 @@ from _ui_manifest import (  # noqa: E402
     local_only,
     ui_stems,
 )
+from verify_timing import print_bill  # noqa: E402
+from verify_process import kill_tree  # noqa: E402
 
 #: `--ui-set=` 的取值 → 实际要跑的 UI 用例（唯一一处「集合怎么算」）
 UI_SETS = {
@@ -112,30 +117,6 @@ def pick_python(quiet: bool = False) -> str:
 PY = pick_python(quiet=any(a in sys.argv for a in ("--emit-env", "--guard")))
 
 
-def kill_tree(proc: subprocess.Popen) -> None:
-    """把一个子进程**连子孙一起**收掉（超时清理用）。
-
-    为什么不能只 `proc.kill()`：UI 用例会拉起 Edge / Chromium，父进程一死，浏览器
-    进程就成了孤儿，继续占着调试端口与页面 —— 下一个用例连不上，失败原因还看不出来。
-    """
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True)
-        else:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:                            # noqa: BLE001
-                proc.kill()
-    except Exception:                                    # noqa: BLE001
-        try:
-            proc.kill()
-        except Exception:                                # noqa: BLE001
-            pass
-
-
 #: 「假绿」检测（2026-10-08 · F15 同类防护）：子进程自己打印了 ``[FAIL]`` 却退出 0。
 #: 门禁只看退出码，所以「断言全跑完但收尾漏了/缩进在可选分支里」（F15 正是如此）必须在这里拦下。
 _FAKE_GREEN_RE = re.compile(r"^\s*\[FAIL\]", re.M)
@@ -173,19 +154,26 @@ def run_file(rel: str, timeout: float, env_extra: dict | None = None):
               "text": True, "encoding": "utf-8", "errors": "replace", "env": env}
     if os.name != "nt":
         kwargs["start_new_session"] = True               # 让 kill_tree 能整组收掉
-    t0 = time.time()
-    proc = subprocess.Popen([PY, str(ROOT / rel)], **kwargs)
+    t0 = perf_counter()
     timed_out = False
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        kill_tree(proc)
+    with TemporaryDirectory(prefix="scintilla-verify-") as temp:
+        env.update(TMP=temp, TEMP=temp, TMPDIR=temp, ASTRBOT_ROOT=str(Path(temp) / "astrbot"),
+                   PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.Popen([PY, str(ROOT / rel)], **kwargs)
         try:
-            out, _ = proc.communicate(timeout=20)
-        except Exception:                                # noqa: BLE001
-            out = ""
-    cost = time.time() - t0
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            kill_tree(proc)
+            try:
+                out, _ = proc.communicate(timeout=20)
+            except Exception:                            # noqa: BLE001
+                out = ""
+        except BaseException:
+            kill_tree(proc)
+            proc.wait()
+            raise
+    cost = perf_counter() - t0
     ok = (not timed_out) and proc.returncode == 0
     # 假绿检测：退出码说通过，输出里却明明白白打了 [FAIL] —— 判红，证据留在尾部输出里。
     # 有极少数用例是**故意**打印 [FAIL] 正文的（例如测「严格模式下环境缺件要报失败」的
@@ -796,6 +784,12 @@ def main(argv: list[str]) -> int:
     no_ui = "--no-ui" in argv
     all_ui = "--all-ui" in argv
     ci_mode = "--ci" in argv
+    strict_env = bool(ci_mode or os.environ.get("CI", "").lower() in ("1", "true"))
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--jobs", type=int, default=1 if strict_env or all_ui else 4)
+    args, _ = parser.parse_known_args(argv)
+    if args.jobs < 1:
+        parser.error("--jobs 至少为 1")
     # v0.24.11 技术债（CI 连红四次换来的教训）：本机默认走系统 Edge，CI 走 playwright 自带的
     # bundled Chromium —— 两套内核对 file:// 的 fetch、对内部 API 的行为都可能不同。
     # 所以**发版前本机至少补跑一次** `--bundled`，与 CI 同通道。
@@ -835,18 +829,21 @@ def main(argv: list[str]) -> int:
         return 0
 
     print(f"解释器：{PY}")
+    started = perf_counter()
+    stages = []
     # 发版 / CI 环境：发布包卫生的「环境缺件」也算失败（fail-closed）
-    strict_env = bool(ci_mode or os.environ.get("CI", "").lower() in ("1", "true"))
     total_fail: list[str] = [] if ui_only else static_checks(strict_env=strict_env)
+    if not ui_only:
+        stages.append(("静态检查", perf_counter() - started))
     if not only_static:
         groups = []
         labels = []
         if not ui_only:
-            groups.append(("test_*.py", test_plan(), TIMEOUT_TEST, None))
+            groups.append((test_plan(), TIMEOUT_TEST))
             labels.append("② 回归 / 单元测试")
         if not no_ui:
             ui_names = ui_plan(all_ui, ci_mode, ui_set)
-            groups.append(("ui", [f"{n}.py" for n in ui_names], TIMEOUT_UI, None))
+            groups.append(([f"{n}.py" for n in ui_names], TIMEOUT_UI))
             if all_ui:
                 labels.append("③ WebUI 全部用例（含观察期 / 取证；本机复现用）")
             elif ui_set == "ci-soft":
@@ -855,22 +852,29 @@ def main(argv: list[str]) -> int:
                 labels.append("③ WebUI 契约类（CI 可跑子集，硬门禁）")
             else:
                 labels.append("③ WebUI 契约类（本机全跑，硬门禁）")
-        for (pattern, files, timeout, env_extra), label in zip(groups, labels):
+        for (files, timeout), label in zip(groups, labels):
+            workers = max(1, min(args.jobs, len(files)))
             print("=" * 68)
-            print(f"{label}（{len(files)} 个文件，单文件超时 {timeout:g}s）")
+            print(f"{label}（{len(files)} 个文件，{workers} 路，单文件超时 {timeout:g}s）")
             print("=" * 68)
-            for name in files:
-                ok, cost, out, timed_out = run_file(f"tests/{name}", timeout, env_extra)
-                flag = "TIMEOUT" if timed_out else ("PASS" if ok else "FAIL")
-                print(f"[{flag}] tests/{name}  ({cost:.1f}s)")
-                if not ok:
-                    total_fail.append(name)
-                    for line in out.strip().splitlines()[-12:]:
-                        print("    " + line)
+            stage_started = perf_counter()
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending = {pool.submit(run_file, f"tests/{name}", timeout): name for name in files}
+                for future in as_completed(pending):
+                    name = pending[future]
+                    ok, cost, out, timed_out = future.result()
+                    flag = "TIMEOUT" if timed_out else ("PASS" if ok else "FAIL")
+                    print(f"[{flag}] tests/{name}  ({cost:.3f}s)", flush=True)
+                    if not ok:
+                        total_fail.append(name)
+                        for line in out.strip().splitlines()[-12:]:
+                            print("    " + line)
+            stages.append((label.split("（")[0], perf_counter() - stage_started))
             print(f"→ {label}：{len(files) - len([n for n in total_fail if n in files])}"
                   f"/{len(files)} 通过\n")
 
     print("=" * 68)
+    print_bill("门禁", started, stages)
     if total_fail:
         print("失败项：", ", ".join(total_fail))
         return 1

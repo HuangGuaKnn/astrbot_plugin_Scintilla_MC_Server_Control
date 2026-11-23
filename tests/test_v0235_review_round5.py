@@ -540,6 +540,7 @@ def part_d() -> None:
 # ============================================ E. 发版门禁：与 CI 同一套 + 清单唯一来源
 
 def part_e() -> None:
+    from inspect import getsource
     print("================ [E] 发版门禁：UI 契约类不许被绕过 ================")
     check("静态：release.yml 跑 run_release_verify.py（不再只跑 test_*.py）",
           "run_release_verify.py" in REL_YML)
@@ -555,7 +556,10 @@ def part_e() -> None:
           "import run_release_verify as RV" in ALL_RUNNER
           and "import subprocess" not in ALL_RUNNER)
     check("静态：验证脚本逐文件超时 + 连进程树一起收（UI 用例会留浏览器孤儿）",
-          "TimeoutExpired" in RELEASE_VERIFY_SRC and "taskkill" in RELEASE_VERIFY_SRC)
+          "TimeoutExpired" in getsource(RV.run_file)
+          and "kill_tree(proc)" in getsource(RV.run_file)
+          and '"taskkill", "/F", "/T", "/PID"' in getsource(RV.kill_tree)
+          and "os.killpg" in getsource(RV.kill_tree))
 
     # 清单守卫：每个 ui_*.py 都必须有归属（ui_theme_flash_trace 当年就是漏网的）
     sys.path.insert(0, str(PLUGIN / "tests"))
