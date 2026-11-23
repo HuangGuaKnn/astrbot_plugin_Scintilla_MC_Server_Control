@@ -154,6 +154,33 @@ def verify_q2() -> int:
     return 0
 
 
+def v0380_cases():
+    """v0.38.0 的两条守门人：红线新增的 ban-ip 模式 + 审计目标 IP 口径。"""
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    admin = (*python, "tests/test_v0260_player_admin.py")
+    BS = chr(92)          # 反斜杠：锚点里要匹配正则的 \b，不能写成源码里的转义
+    # 注意两个细节：原行末尾还有一个逗号；且必须连换行一起删 ——
+    # 只删到 `)` 会在原处留下一行孤零零的 `,`，直接 SyntaxError（出单人踩过）。
+    banip_before = '    "ban-ip": (r"^banned ip' + BS + 'b",),' + chr(10)
+    audit_before = ('    action, player, command = row["action"], row["player"], row["command"]'
+                    + chr(10) + '    if action in _IP_ACTIONS:')
+    audit_after = ('    action, player, command = row["action"], row["player"], row["command"]'
+                   + chr(10) + "    if False:")
+    return [
+        # ban-ip / pardon-ip 的锚定成功模式是**红线文件**里的新增：删掉它，IP 封禁的回执
+        # 就判不出成功（只报「认不出」），而「回读名单」那条路径的断言会先红。
+        Case("V38A", "删掉 ban-ip 的锚定成功模式", "core/command_result.py",
+             banip_before, "", admin, "关联失败时应继续执行并回读封禁"),
+        # 审计口径：IP 类动作的目标地址要落**真实地址**（其余字段仍脱敏）。
+        # 锚点必须带上一行：`if action in _IP_ACTIONS:` 在 build_command 里还出现过一次，
+        # 单行锚点会打到地址校验分支上去（出单人第一次就这么打的，跑出 9 个 ERROR）。
+        Case("V38B", "审计的 IP 目标回退成全脱敏", PLAYER,
+             audit_before, audit_after, admin, "审计应记录真实目标地址", baseline=admin),
+    ]
+
+
 def v0340_cases():
     from mutation_all import Case
 
@@ -181,7 +208,7 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
-    ] + v0350_cases() + v0360_cases() + v0370_cases() + v0370_followup_cases() + v0371_cases()
+    ] + v0350_cases() + v0360_cases() + v0370_cases() + v0380_cases() + v0370_followup_cases() + v0371_cases()
 
 
 def v0350_cases():

@@ -722,7 +722,7 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertGuarded(plugin, "list", command, "banlist ips")
         disk = self.audit.read_text(encoding="utf-8")
         row, = map(json.loads, disk.splitlines())
-        self.assertEqual(row["player"], target)
+        self.assertEqual(row["player"], target, "审计应记录真实目标地址")
         self.assertEqual(row["command"], f"ban-ip {target} source [IP 已隐藏]")
         self.assertEqual(row["ip_matches"], {"state": "partial", "players": ["Steve", "Alt_42"]})
         self.assertNotIn(other_ip, disk, "理由及回执里的其他地址应脱敏")
