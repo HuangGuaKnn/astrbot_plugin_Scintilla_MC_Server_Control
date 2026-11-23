@@ -76,8 +76,17 @@ def _parse_ip_bans(text: str) -> list[str] | None:
         return None
     if _NO_BANS.search(clean):
         return []
+    # 先取声明数量，再把「There are N bans:」这类前缀剥掉再扫 IP。
+    # 不剥的话，IP 字符类 `[0-9A-Fa-f:.]+` 会把前缀末尾那个**冒号**吞进候选
+    # （拿到 ":203.0.113.99"）→ ip_address() 报错 → 跳过 → 声明数与实际数对不上
+    # → 整段被判 None。实测 1.13.2 的 `banlist ips` 就是
+    # `There are 1 bans:203.0.113.99 was banned by Recon: ...`，
+    # 于是每次 IP 封禁的回读都拿不到名单，界面永远显示「已发出但未确认」。
+    declared = _BAN_COUNT.search(clean)
+    body = re.sub(r"^There are\s+\d+\b[^:]*:\s*", "", clean, flags=re.I)
+
     found: list[str] = []
-    for match in _IP_ENTRY.finditer(clean):
+    for match in _IP_ENTRY.finditer(body):
         candidate = match.group("ip")
         try:
             address = str(ipaddress.ip_address(candidate))
@@ -85,7 +94,6 @@ def _parse_ip_bans(text: str) -> list[str] | None:
             continue
         if address not in found:
             found.append(address)
-    declared = _BAN_COUNT.search(clean)
     if declared and int(declared.group(1)) != len(found):
         return None
     return found or None

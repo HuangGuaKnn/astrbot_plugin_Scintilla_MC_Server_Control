@@ -807,5 +807,31 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(forbidden, lowered, f"P13 不应触碰 {forbidden}")
 
 
+    async def test_parse_ip_bans_handles_modern_count_prefix(self):
+        """1.13.2 实测：`banlist ips` 回执是 `There are 1 bans:<ip> was banned by Recon: ...`。
+
+        前缀末尾那个**冒号**会被 IP 字符类 `[0-9A-Fa-f:.]+` 吞进候选（拿到 ":203.0.113.99"），
+        ip_address() 因此报错跳过 → 声明数与实际数对不上 → 整段被判 None →
+        **每次 IP 封禁的回读都拿不到名单，界面永远显示「已发出但未确认」**。
+        """
+        cases = [
+            ("There are 1 bans:203.0.113.99 was banned by Recon: Banned by an operator.",
+             ["203.0.113.99"], "现代前缀"),
+            ("There are 1 total banned IPs:203.0.113.99 was banned by Server: x",
+             ["203.0.113.99"], "旧式前缀"),
+            ("There are 2 bans:10.0.0.1 was banned by Recon: a\n10.0.0.2 was banned by Recon: b",
+             ["10.0.0.1", "10.0.0.2"], "两条"),
+            ("There are no bans", [], "空列表"),
+        ]
+        for text, expected, label in cases:
+            with self.subTest(case=label):
+                self.assertEqual(player_admin._parse_ip_bans(text), expected,
+                                 "IP 封禁回读须解析出地址（含前缀冒号）")
+        # 声明 2 条却只给 1 条 → 仍然判 None，不许猜（这条是原有的严格性，别放宽）
+        self.assertIsNone(
+            player_admin._parse_ip_bans("There are 2 bans:10.0.0.1 was banned by Recon: a"),
+            "声明数量与条目数不符时须判认不出")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

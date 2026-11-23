@@ -176,6 +176,10 @@ def v0380_cases():
         # 审计口径：IP 类动作的目标地址要落**真实地址**（其余字段仍脱敏）。
         # 锚点必须带上一行：`if action in _IP_ACTIONS:` 在 build_command 里还出现过一次，
         # 单行锚点会打到地址校验分支上去（出单人第一次就这么打的，跑出 9 个 ERROR）。
+        Case("V38C", "banlist ips 不剥前缀就扫 IP", PLAYER,
+             '    body = re.sub(r"^There are', "    body = clean  # ",
+             (*python, "tests/test_v0260_player_admin.py"),
+             "IP 封禁回读须解析出地址（含前缀冒号）"),
         Case("V38B", "审计的 IP 目标回退成全脱敏", PLAYER,
              audit_before, audit_after, admin, "审计应记录真实目标地址", baseline=admin),
     ]
