@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/ → _paths
 from _paths import PLUGIN_DIR, add_sys_paths, require_app  # noqa: E402
@@ -47,6 +48,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.main import (                   
     EVENT_JOIN,
     EVENT_LEAVE,
     McControlPlugin,
+    StarTools,
 )
 
 FAILED: list[str] = []
@@ -174,7 +176,7 @@ class _EvtFake:
     def _notify_target_allows(self, target, group) -> bool:
         return True
 
-    async def _send_to_targets(self, targets, chain) -> bool:
+    async def _send_to_targets(self, targets, chain, *, require_all=False) -> bool:
         self.sent.append(list(targets))
         return True
 
@@ -224,6 +226,38 @@ def part_p2_event_bool() -> None:
     body = _tail[:_next_def.start()] if _next_def else _tail
     check("六条播报分支一律走 _cfg_bool（不再裸读配置真值）",
           body.count("self._cfg_bool(") >= 6, str(body.count("self._cfg_bool(")))
+
+    class DeliveryScenario(_EvtFake):
+        _send_to_targets = McControlPlugin._send_to_targets
+
+        def _target_candidates(self, target):
+            return [target]
+
+    async def check_delivery(directory: str) -> None:
+        targets = ["fixture:GroupMessage:a", "fixture:GroupMessage:b"]
+        fake = DeliveryScenario({**base, "notify_targets": targets})
+        fake.logger = Mock()
+        watcher = lw.LogWatcher(directory, fake._on_server_event)
+        before = watcher.health()
+        with patch.object(StarTools, "send_message", AsyncMock(side_effect=[False, False])) as send:
+            delivered = await watcher._dispatch_event(EVENT_JOIN, "Steve", "")
+        after = watcher.health()
+        assert send.await_count == len(targets) and fake.logger.error.call_count == 1 \
+            and delivered is False and after["callbacks_delivered"] == before["callbacks_delivered"] \
+            and after["error_count"] == before["error_count"] + 1 \
+            and "播报失败" in after["last_error"] and EVENT_JOIN in after["last_error"], \
+            "播报目标全失败须记错且不增加已交付"
+
+        with patch.object(StarTools, "send_message", AsyncMock(side_effect=[True, False])):
+            partial = await watcher._dispatch_event(EVENT_JOIN, "Alex", "")
+        assert partial is False and watcher.health()["callbacks_delivered"] == before["callbacks_delivered"]
+        with patch.object(StarTools, "send_message", AsyncMock(return_value=True)):
+            later = await watcher._dispatch_event(EVENT_JOIN, "Morgan", "")
+        assert later is True and watcher.health()["callbacks_delivered"] == before["callbacks_delivered"] + 1
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(check_delivery(directory))
 
 
 # ============================================================ [3] WebAPI 请求体

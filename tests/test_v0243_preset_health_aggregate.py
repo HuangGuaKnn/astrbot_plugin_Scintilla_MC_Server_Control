@@ -174,10 +174,81 @@ def check_read_health(root: Path) -> None:
         "恢复注册表后应正常读取"
 
 
+async def check_live_read_and_copy(root: Path) -> None:
+    man = kbmod.KnowledgePresetManager(str(root), "sid")
+    active = man.kb
+    plugin = _FakePlugin()
+    plugin._kbman = man
+    plugin._knowledge = active
+    api = McControlWebApi(plugin)
+    active.save_entry("旧条目", "活动预设此前已加载")
+    path = active.file_path
+    valid = path.read_bytes()
+    assert body(await api.get_state())["stats"]["total"] == 1
+
+    damage = b'{"entries":'
+    path.write_bytes(damage)
+    first = body(await api.get_state())
+    backup = path.parent / first.get("read_health", {}).get("backup", "")
+    refreshed = body(await api.get_state())
+    assert first.get("ok") is False and refreshed.get("ok") is False \
+        and refreshed.get("read_health", {}).get("status") == "failed" \
+        and "stats" not in refreshed and "entries" not in refreshed and not active.list_entries() \
+        and backup.is_file() and backup.read_bytes() == damage and not path.exists(), \
+        "运行中损坏同进程刷新须失效旧条目并报告读取失败"
+    assert body(await api.get_presets()).get("ok") is False
+
+    raw_source = man.create("尚未检查的损坏源")
+    raw_path = man.preset_path(raw_source["id"])
+    raw_path.write_bytes(damage)
+    for source in (active.preset_id, raw_source["id"]):
+        before = set(root.iterdir())
+        before_presets = len(man.reg["presets"])
+
+        async def copy_request():
+            return {"name": "复制损坏预设", "copy_from": source}, None
+
+        api._body = copy_request
+        result = body(await api.create_preset())
+        after = set(root.iterdir())
+        assert result.get("ok") is False and "读取失败" in result.get("error", "") \
+            and len(after) == len(before) and len(man.reg["presets"]) == before_presets \
+            and all(".read-failed-" in file.name for file in after - before), \
+            "损坏源复制必须失败且不得创建副本文件"
+
+    path.write_bytes(valid)
+    recovered = body(await api.get_state())
+    assert recovered.get("ok") is True and recovered["read_health"]["status"] == "ok" \
+        and [entry["topic"] for entry in recovered["entries"]] == ["旧条目"] \
+        and man.kb is active, "同进程恢复有效预设后应重新读取"
+
+
+def check_registry_id_types(root: Path) -> None:
+    for index, bad_id in enumerate((123, ["bad-type"])):
+        directory = root / str(index)
+        directory.mkdir(parents=True)
+        registry = directory / kbmod.KnowledgePresetManager.REG_NAME
+        damaged = json.dumps({"presets": [{"id": bad_id}, {"id": "valid-id"}], "active": None}).encode()
+        registry.write_bytes(damaged)
+        man = kbmod.KnowledgePresetManager(str(directory), "sid")
+        plugin = _FakePlugin()
+        plugin._kbman = man
+        plugin._knowledge = man.kb
+        payload = body(asyncio.run(McControlWebApi(plugin).get_state()))
+        health = payload.get("read_health", {})
+        backup = directory / health.get("backup", "")
+        assert payload.get("ok") is False and health.get("status") == "failed" \
+            and "读取失败" in payload.get("error", "") and not registry.exists() \
+            and backup.is_file() and backup.read_bytes() == damaged \
+            and ".read-failed-" in backup.name, "注册表 ID 类型错误必须报告读取失败并备份"
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         check_read_health(root)
+        asyncio.run(check_live_read_and_copy(root / "live_read"))
+        check_registry_id_types(root / "registry_types")
         man = kbmod.KnowledgePresetManager(str(root / "kb"), "sid", str(root))
 
         print("================ [1] 一个预设写失败 → 聚合为红且能点名 ================")

@@ -181,7 +181,7 @@ def v0340_cases():
              'return mode !== "unknown" && !document.hidden',
              'return mode !== "unknown"',
              monitor, "浏览器页签进入后台后应停止轮询", baseline=monitor),
-    ] + v0350_cases() + v0360_cases() + v0370_cases() + v0370_followup_cases()
+    ] + v0350_cases() + v0360_cases() + v0370_cases() + v0370_followup_cases() + v0371_cases()
 
 
 def v0350_cases():
@@ -312,7 +312,7 @@ def v0370_followup_cases():
     watcher = "core/log_watcher.py"
     kb = "core/knowledge_base.py"
     callback_warning = 'logger.warning("日志监听：事件回调失败（%s）：%s", etype, type(exc).__name__)'
-    callback_error = '            self.last_error = f"事件回调失败（{etype}）"'
+    callback_error = '            self.last_error = failure'
     kb_guard = 'if kb is None or self._kb_read_health().get("ok") is False:'
     broken_registry = 'return {"active": None, "presets": [], "notice": {"popup_keys": [], "suppress_keys": []}}'
     return [
@@ -320,7 +320,8 @@ def v0370_followup_cases():
              '<div class="s">${esc(s)}</div>', '<div class="s">${s}</div>',
              browser, "概览动态字段必须按字面文本显示", baseline=browser),
         Case("V37L1", "异常回调冒充已交付", watcher,
-             callback_warning + "\n            return False", callback_warning + "\n            return True",
+             callback_warning + '\n            return f"事件回调失败（{etype}）"',
+             callback_warning + "\n            return None",
              callbacks, "回调抛异常不计为已交付", baseline=callbacks),
         Case("V37L2", "异常回调漏记错误次数", watcher,
              "            self.error_count += 1\n" + callback_error, callback_error,
@@ -337,6 +338,34 @@ def v0370_followup_cases():
         Case("V37K4", "知识库页面丢弃专用读取失败提示", HTML,
              "const readFailed = r?.read_health?.ok === false;", "const readFailed = false;",
              browser, "知识库读取故障必须显示失败态", baseline=browser),
+    ]
+
+
+def v0371_cases():
+    from mutation_all import Case
+
+    python = (sys.executable, "-B", "-X", "utf8")
+    files = (*python, "tests/test_v0243_preset_health_aggregate.py")
+    events = (*python, "tests/test_v0248_review_round4.py")
+    kb = "core/knowledge_base.py"
+    return [
+        Case("V371K1", "发现文件损坏后继续使用旧缓存", kb,
+             "        if changed or retry:\n            self.load()",
+             "        _read_knowledge_json(self.file_path, _validate_entry_file)",
+             files, "运行中损坏同进程刷新须失效旧条目并报告读取失败", baseline=files),
+        Case("V371K2", "复制返回失败前仍创建空副本", kb,
+             '            if data is None:\n                return {"ok": False, "error": health.get("error") or "读取失败：源预设文件不存在"}',
+             '            if data is None:\n                self.create(name)\n'
+             '                return {"ok": False, "error": health.get("error") or "读取失败：源预设文件不存在"}',
+             files, "损坏源复制必须失败且不得创建副本文件", baseline=files),
+        Case("V371K3", "允许非字符串预设 ID 通过结构校验", kb,
+             'not isinstance(preset, dict) or not isinstance(preset.get("id"), str)',
+             'not isinstance(preset, dict)',
+             files, "注册表 ID 类型错误必须报告读取失败并备份", baseline=files),
+        Case("V371L1", "忽略播报目标全部失败的返回值", "main.py",
+             "return await self._send_to_targets(targets, chain, require_all=True)",
+             "await self._send_to_targets(targets, chain, require_all=True)",
+             events, "播报目标全失败须记错且不增加已交付", baseline=events),
     ]
 
 

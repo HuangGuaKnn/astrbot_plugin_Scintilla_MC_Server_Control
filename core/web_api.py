@@ -221,9 +221,19 @@ class McControlWebApi:
                 return None
         except Exception:                                             # noqa: BLE001
             pass
-        kb = getattr(self.plugin, "_knowledge", None)
+        current = getattr(self.plugin, "_knowledge", None)
+        active = getattr(getattr(self.plugin, "_kbman", None), "kb", None)
+        kb = active if active is not None else current
+        refresh = getattr(kb, "refresh_from_disk", None)
+        if callable(refresh):
+            refresh()
+        apply_active = getattr(self.plugin, "_apply_active_knowledge", None)
         if kb is None or self._kb_read_health().get("ok") is False:
+            if active is not None and current is active and callable(apply_active):
+                apply_active()
             return None
+        if active is not None and current is not active and callable(apply_active):
+            apply_active()
         return kb
 
     def _kb_read_health(self) -> dict:
@@ -298,10 +308,11 @@ class McControlWebApi:
         return json_response({"ok": True, "choices": choices})
 
     async def get_state(self):
+        man = self._kbman()
+        presets = man.list_presets() if man is not None else None
         kb = self._kb()
         if kb is None:
             return json_response(self._kb_uninit())
-        man = self._kbman()
         payload = {
             "ok": True,
             "state": kb.state.as_dict(),
@@ -319,7 +330,7 @@ class McControlWebApi:
             "state_save_warning": self._state_save_warning(kb),
         }
         if man is not None:
-            payload["presets"] = man.list_presets()
+            payload["presets"] = presets
             payload["active_preset"] = man.reg.get("active")
             payload["notice"] = man.notice()
             # v0.24.3（GPT v0.24.2 复核 N10）：**预设侧那本聚合账也要随 GET 给出去**。
@@ -2216,9 +2227,12 @@ class McControlWebApi:
 
     async def get_presets(self):
         man = self._kbman()
-        if man is None or self._kb_read_health().get("ok") is False:
+        if man is None:
             return json_response(self._kb_uninit())
-        return json_response({"ok": True, **self._presets_payload(man)})
+        payload = self._presets_payload(man)
+        if self._kb_read_health().get("ok") is False:
+            return json_response(self._kb_uninit())
+        return json_response({"ok": True, **payload})
 
     async def switch_preset(self):
         man = self._kbman()
@@ -2265,6 +2279,8 @@ class McControlWebApi:
             name=name,
             copy_from=copy_from,
         )
+        if preset.get("ok") is False:
+            return json_response(preset)
         return json_response({
             "ok": True, **self._presets_payload(man),
             "created": preset,

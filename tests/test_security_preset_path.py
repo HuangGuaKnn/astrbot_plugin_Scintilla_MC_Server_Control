@@ -50,9 +50,9 @@ def test_create_copy_from_only_reads_registered_preset():
             json.dumps({"entries": {"secret": {"content": "do not read"}}}),
             encoding="utf-8",
         )
+        before = set(data_dir.iterdir())
         copied = manager.create("copy", copy_from="../../../secret")
-        copied_data = json.loads(manager.preset_path(copied["id"]).read_text(encoding="utf-8"))
-        assert copied_data.get("entries") == {}, copied_data
+        assert copied.get("ok") is False and set(data_dir.iterdir()) == before, copied
 
 
 def test_malicious_registry_id_is_filtered_before_kb_load():

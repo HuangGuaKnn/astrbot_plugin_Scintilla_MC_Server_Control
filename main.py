@@ -1224,8 +1224,8 @@ class McControlPlugin(Star):
                 return [f"{pid}:{t}" for pid in ids]
         return [t]
 
-    async def _send_to_targets(self, targets, chain) -> bool:
-        """向一组目标会话推送消息；自动补全平台前缀，返回是否至少成功一次。
+    async def _send_to_targets(self, targets, chain, *, require_all: bool = False) -> bool:
+        """向配置的会话推送消息，可要求每个目标都送达。
 
         v0.24.8（2026-10-21 真机 + 设计裁定）：**不做跨会话回退**。
         曾写过一个「全部失败就发给最近交互的会话」的兜底，被否掉了 —— 理由是真实场景：
@@ -1234,9 +1234,11 @@ class McControlPlugin(Star):
         **消息改道比消息丢失更糟**。所以这里只把「全部失败」升级成 ERROR 日志
         （管理员在日志里看得见、能去 WebUI 重选会话），绝不替他决定发给谁。
         """
-        delivered = False
+        delivered = 0
+        total = 0
         attempted: list[str] = []
         for target in targets or []:
+            total += 1
             for umo in self._target_candidates(target):
                 attempted.append(umo)
                 # v0.24.8（GPT 第三轮复核 P2）：入口检查挡不住「发送途中被停用」，
@@ -1244,7 +1246,7 @@ class McControlPlugin(Star):
                 # 宁可少发，也不让停用后的插件继续往会话里灌消息。
                 if _is_terminated(self):
                     self.logger.warning("插件已停用，放弃剩余推送（下一个目标 %s）", umo)
-                    return delivered
+                    return bool(delivered) and not require_all
                 try:
                     ok = await StarTools.send_message(umo, chain)
                 except Exception as e:
@@ -1258,7 +1260,7 @@ class McControlPlugin(Star):
                         "正确形如 aiocqhttp:FriendMessage:123456789）", umo
                     )
                     continue
-                delivered = True
+                delivered += 1
                 break
         if not delivered and attempted:
             # 全部目标都没送出去：这不是「某一条没发成」，而是**播报链路整体失效** ——
@@ -1269,7 +1271,7 @@ class McControlPlugin(Star):
                 "并到 WebUI 重新选择播报会话；插件**不会**把消息改道到其它会话",
                 len(attempted), "、".join(attempted),
             )
-        return delivered
+        return bool(delivered) and (not require_all or delivered == total)
 
     # ================= 配置热更新 =================
 
@@ -4944,8 +4946,8 @@ class McControlPlugin(Star):
 
     # ================= 服务器事件推送 ================
 
-    async def _on_server_event(self, etype: str, player: str, detail: str):
-        """日志监听回调：记录最近事件 + 聊天桥接 + 按配置开关决定是否推送。"""
+    async def _on_server_event(self, etype: str, player: str, detail: str) -> bool | None:
+        """记录事件，返回播报结果。按配置跳过播报时返回 None。"""
         # v0.24.8（GPT 第三轮复核 P2）：停用 / 重载后，回调仍可能从卡顿里
         # 醒来（`stop()` 的 cancel 对已卡死的协程无效）。已终止的实例什么都不该做 ——
         # 连「最近事件」也不该再写（那是已停用插件的状态）。
@@ -5003,4 +5005,4 @@ class McControlPlugin(Star):
         if not targets:
             return
         chain = MessageChain().message(text)
-        await self._send_to_targets(targets, chain)
+        return await self._send_to_targets(targets, chain, require_all=True)

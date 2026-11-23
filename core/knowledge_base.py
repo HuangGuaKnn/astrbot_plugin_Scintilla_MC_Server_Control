@@ -1141,13 +1141,33 @@ class ModKnowledgeBase:
 
     # ================= 基础 =================
 
+    def _file_stamp(self) -> tuple[int, ...] | None:
+        try:
+            stat = self.file_path.stat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return ()
+        return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+
+    def refresh_from_disk(self) -> None:
+        changed = self._file_stamp() != self._loaded_stamp
+        retry = not self._read_health["ok"] and not self._read_health.get("backup")
+        if changed or retry:
+            self.load()
+
     def load(self) -> None:
+        self._loaded_stamp = self._file_stamp()
         data, self._read_health = _read_knowledge_json(self.file_path, _validate_entry_file)
         self._data = data if data is not None else {}
         self._data.setdefault("entries", {})
+        self.disk_entry_count = len(self._data["entries"]) if self._read_health["ok"] else None
         self._data.setdefault("preset_id", self.preset_id)
         self._data.setdefault("deleted", [])  # 墓碑：被删除的 topic（防旧文件继承复活）
         if not self._read_health["ok"]:
+            if self._read_health.get("backup"):
+                # 已隔离的文件在原路径缺失。保留本次失败和对应的备份，等有效文件恢复。
+                self._loaded_stamp = None
             self._index = None
             self._sem = None
             return
@@ -1287,6 +1307,8 @@ class ModKnowledgeBase:
                 encoding="utf-8",
             )
             tmp.replace(self.file_path)
+            self._loaded_stamp = self._file_stamp()
+            self.disk_entry_count = len(self._data["entries"])
             self.last_save_error = ""
         except Exception as e:                       # noqa: BLE001
             ok = False
@@ -1945,11 +1967,11 @@ class KnowledgePresetManager:
         self.rerank_enabled = bool(rerank_enabled)
         self.rerank_fn = None                    # async 重排序调用，由插件注入
         self.reg_path = self.data_dir / self.REG_NAME
+        self.kb: ModKnowledgeBase | None = None
         self.reg: dict = self._load_registry()
         # 统一落盘健康度：**按部件**记账（注册表 / 预设文件），聚合结果 = 全部部件都成功。
         # 每个实例一份，绝不放类属性（那会变成所有实例共享同一本账）。
         self._save_parts: dict[str, tuple[bool, str]] = {}
-        self.kb: ModKnowledgeBase | None = None
         self.reload_active()
 
     def set_search_engine(self, engine: str) -> str:
@@ -1992,6 +2014,14 @@ class KnowledgePresetManager:
     def _load_registry(self) -> dict:
         def validate(data: dict) -> None:
             presets = data.get("presets")
+            if isinstance(presets, list) and any(
+                not isinstance(preset, dict) or not isinstance(preset.get("id"), str)
+                for preset in presets
+            ):
+                raise ValueError("预设注册表中的 ID 必须是字符串")
+            active = data.get("active")
+            if active is not None and not isinstance(active, str):
+                raise ValueError("预设注册表中的活动预设 ID 必须是字符串")
             if not isinstance(presets, list) or not any(
                 isinstance(preset, dict) and self._safe_preset_id(preset.get("id"))
                 for preset in presets
@@ -2305,6 +2335,9 @@ class KnowledgePresetManager:
         return self.data_dir / f"kb_preset_{raw}.json"
 
     def _file_entries(self, pid: str) -> int | None:
+        if self.kb is not None and self.kb.preset_id == pid:
+            self.kb.refresh_from_disk()
+            return self.kb.disk_entry_count
         data, health = _read_knowledge_json(self.preset_path(pid), _validate_entry_file)
         return len((data or {}).get("entries", {})) if health["ok"] else None
 
@@ -2394,23 +2427,18 @@ class KnowledgePresetManager:
         """新建预设（默认不预设指纹）。copy_from 可指定从哪个预设复制条目。"""
         if not self.registry_read_health["ok"]:
             return {"ok": False, "error": self.registry_read_health["error"]}
-        pid = _preset_id()
         entries, deleted = {}, []
         if copy_from:
-            # ``copy_from`` is user-controlled through the WebUI.  Resolve it
-            # through the registry before touching the filesystem; otherwise a
-            # value containing ``../`` could make ``preset_path`` read an
-            # arbitrary JSON file outside the preset data directory.
-            src_preset = self.get(str(copy_from))
-            if src_preset is not None:
-                try:
-                    src = self.preset_path(src_preset.get("id", ""))
-                    if src.exists():
-                        d = json.loads(src.read_text(encoding="utf-8"))
-                        if isinstance(d, dict) and isinstance(d.get("entries"), dict):
-                            entries = d["entries"]
-                except (OSError, ValueError, json.JSONDecodeError):
-                    entries = {}
+            source = self.get(copy_from)
+            if source is None:
+                return {"ok": False, "error": "源预设不存在"}
+            if self.kb is not None and self.kb.preset_id == source["id"]:
+                self.kb.refresh_from_disk()
+            data, health = _read_knowledge_json(self.preset_path(source["id"]), _validate_entry_file)
+            if data is None:
+                return {"ok": False, "error": health.get("error") or "读取失败：源预设文件不存在"}
+            entries = data.get("entries", {})
+        pid = _preset_id()
         # v0.23.5 第三轮：预设**文件**的写入此前没有任何保护 —— 磁盘满 / 只读时
         # 它会直接抛异常冲出 WebAPI；现在记进落盘结果，和注册表一起回报。
         file_ok, file_err = True, ""
