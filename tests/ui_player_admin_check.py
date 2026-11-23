@@ -120,7 +120,10 @@ class Scenario:
             body = route_obj.request.post_data_json
             self.posts.append(body)
             action, player = body["action"], body["player"]
-            command = f"{'pardon' if action == 'unban' else action} {player}"
+            prefix = {"unban": "pardon", "ban_ip": "ban-ip"}.get(action, action)
+            command = f"{prefix} {player}"
+            if action in ("ban", "ban_ip") and body.get("reason"):
+                command += f" {body['reason']}"
             if body.get("preview"):
                 fulfill(route_obj, {"ok": True, "action": action, "player": player, "command": command})
                 return
@@ -260,7 +263,7 @@ def check_no_ip(scenario):
     dom = page.locator("#page_server").evaluate("el => el.outerHTML")
     assert IPV4 in dom, "P9 封禁原因里的真实 IPv4 应显示在界面"
     assert "地址已隐藏" not in dom, "P9 界面不应再出现脱敏占位符"
-    print("[PASS] P9 WebUI 显示真实地址（审计仍脱敏，见后端用例）")
+    print("[PASS] P9 WebUI 回执显示真实地址")
 
 
 def submit(scenario, button, player, command):
@@ -349,29 +352,75 @@ def check_unban(scenario):
     print("[PASS] P12 封禁卡解封预览、提交、未确认与已确认、审计和回读刷新")
 
 
-def check_ban_ip_entry(scenario):
+def check_manual_ban(scenario):
+    """P14：同一入口按目标类型预览，只有确认后才发出封禁。"""
     scenario.open()
     page = scenario.page
-    """P14（v0.29.0）：手动封禁 IP 的入口。
-
-    校验三件事：目标原样带进确认弹窗、理由框对 IP 封禁也要露出来（`ban-ip <ip> [reason]`）、
-    网段写法（`/24`）在本地就被挡下 —— 原版 `ban-ip` 只吃单个地址，发出去只会静默失败。
-    """
     scenario.select("players")
-    page.locator("#sv_ban_ip").fill("192.0.2.9")
-    page.locator("#sv_ban_ip_btn").click()
-    page.locator("#player_dialog[open]").wait_for()
-    assert page.locator("#player_target").inner_text().strip() == "192.0.2.9", \
-        "P14 确认弹窗里的目标应就是这个 IP"
-    assert page.locator("#player_reason_wrap").is_visible(), "P14 IP 封禁同样要能填原因"
-    page.locator("#player_cancel").click()
-    page.locator("#player_dialog").wait_for(state="hidden")
-    page.locator("#sv_ban_ip").fill("192.0.2.0/24")
-    page.locator("#sv_ban_ip_btn").click()
-    assert "不是 IPv4" in page.locator("#sv_ban_ip_hint").inner_text(), \
-        "P14 网段写法应在本地被挡下并说明原因"
-    assert page.locator("#player_dialog").is_hidden(), "P14 非法输入不该弹出确认框"
-    print("[PASS] P14 手动封禁 IP：目标正确、理由可填、网段本地拦下")
+    target_input = page.get_by_role("textbox", name="要封禁的玩家 ID 或 IP 地址")
+    ban_button = page.locator("#sv_ban_ip_btn")
+    dialog = page.locator("#player_dialog")
+    command = page.locator("#player_command")
+
+    for address in (IPV4, IPV6):
+        target_input.fill(address)
+        ban_button.click()
+        expect(command).to_have_text(f"ban-ip {address}")
+        expect(page.locator("#player_target")).to_have_text(address)
+        expect(page.locator("#player_reason")).to_be_visible()
+        assert scenario.posts[-1] == {"action": "ban_ip", "player": address, "reason": "", "preview": True}
+        page.locator("#player_cancel").click()
+        expect(dialog).to_be_hidden()
+    assert all(post["preview"] for post in scenario.posts), "P14 取消封禁 IP 后不得写入"
+
+    before = len(scenario.posts)
+    for invalid in ("", "192.0.2.0/24", "Player Name"):
+        target_input.fill(invalid)
+        ban_button.click()
+        expect(page.locator("#sv_ban_ip_hint")).to_contain_text("请输入有效的玩家 ID 或单个 IPv4 / IPv6 地址")
+        expect(dialog).to_be_hidden()
+        assert len(scenario.posts) == before, "P14 非法输入不得发送预览或写入请求"
+
+    target_input.fill(" Offline_42 ")
+    target_input.press("Enter")
+    expect(page.locator("#player_target")).to_have_text("Offline_42")
+    expect(command).to_have_text("ban Offline_42")
+    page.locator("#player_reason").fill("违反守则")
+    expect(command).to_have_text("ban Offline_42 违反守则")
+    assert all(post["preview"] for post in scenario.posts), "P14 确认前不得写入玩家封禁"
+    page.locator("#player_confirm").click()
+    expect(dialog).to_be_hidden()
+    writes = [post for post in scenario.posts if not post.get("preview")]
+    assert writes == [{
+        "action": "ban", "player": "Offline_42", "reason": "违反守则",
+        "expected_command": "ban Offline_42 违反守则",
+    }], "P14 只应提交一次针对输入的离线玩家 ID 的封禁"
+    print("[PASS] P14 手动封禁支持 IPv4、IPv6 和离线玩家 ID，拒绝非法输入，确认后才写入")
+
+
+def check_ip_ban_audit(scenario):
+    ban = {
+        "ts": "2026-11-23T10:05:12+08:00", "actor": "dashboard-owner", "action": "ban_ip",
+        "state": "ok", "confirmed": True,
+    }
+    scenario.audits = [
+        {**ban, "command": f"ban-ip {IPV4}", "ip_matches": {"state": "partial", "players": ["Alex", "Alex_Alt"]}},
+        {**ban, "command": f"ban-ip {IPV6}", "ip_matches": {"state": "complete", "players": []}},
+        {**ban, "command": "ban-ip 192.0.2.9", "ip_matches": {"state": "unavailable", "players": []}},
+        {**ban, "command": "ban-ip [IP 已隐藏]"},
+    ]
+    scenario.open()
+    scenario.select("audit")
+    rows = scenario.page.locator("#sv_audit .player-row")
+    expect(rows).to_have_count(4)
+    expect(rows.first).to_contain_text("10:05:12")
+    expect(rows.first.locator(".player-audit-command")).to_have_text(f"ban-ip {IPV4}")
+    expect(rows.first).to_contain_text("Alex、Alex_Alt · 部分在线玩家的进服 IP 无法核对")
+    expect(rows.nth(1)).to_contain_text("未找到匹配的在线玩家")
+    expect(rows.nth(2)).to_contain_text("在线名单或进服 IP 无法核对")
+    expect(rows.last).to_contain_text("ban-ip [IP 已隐藏]")
+    expect(rows.last).to_contain_text("未记录")
+    print("[PASS] P25 审计显示封禁时间、真实目标 IP、多个在线玩家 ID 和关联状态")
 
 
 def check_player_ip(scenario):
@@ -452,7 +501,7 @@ def check_ip_search_details(scenario):
         "回环地址（127.0.0.1）", "最后一跳", "封禁会连带影响所有经它进来的连接",
     )):
         raise AssertionError("J2 回环地址须提示影响范围")
-    loopback_ban = rows.first.get_by_role("button", name="在封禁区使用此 IP")
+    loopback_ban = rows.first.get_by_role("button", name="将IP填入封禁名单", exact=True)
     expect(loopback_ban).to_be_enabled()
     expect(rows.first).to_contain_text("来自 logs/2026-11-20-1.log.gz · 最后一次进服 2026-11-20 12:34")
     expect(rows.nth(1), "J7 缺记录文案须显示搜索文件数").to_contain_text("最近 7 个日志文件里没有该玩家的进服记录")
@@ -460,7 +509,7 @@ def check_ip_search_details(scenario):
     rows.nth(1).get_by_role("button", name="重新搜索 IP").press("Enter")
     expect(rows.nth(1)).to_contain_text(IPV4)
     expect(rows.nth(1)).to_contain_text("来自 logs/latest.log · 最后一次进服 2026-11-21 14:07")
-    expect(rows.nth(1).get_by_role("button", name="在封禁区使用此 IP")).to_be_enabled()
+    expect(rows.nth(1).get_by_role("button", name="将IP填入封禁名单", exact=True)).to_be_enabled()
     assert scenario.ip_searches == [{"player": "Steve"}]
     loopback_ban.press("Enter")
     expect(scenario.page.locator("#sv_ban_ip")).to_have_value("127.0.0.1")
@@ -617,11 +666,6 @@ def check_long_ban_list(scenario):
     ]}
     scenario.open()
     page = scenario.page
-    page.evaluate("""() => {
-        Object.defineProperty(navigator, "clipboard", {
-            configurable:true, value:{writeText: async value => { window.copiedIp = value; }},
-        });
-    }""")
     rows = page.locator("#sv_bans .player-row")
     expect(rows).to_have_count(30)
     expect(page.locator("#sv_ban_count")).to_have_text("显示 30 / 30 条")
@@ -635,12 +679,11 @@ def check_long_ban_list(scenario):
     expect(visible.locator("button")).to_have_count(0)
     search.fill(address)
     expect(visible.locator('button[data-action="unban_ip"]')).to_have_attribute("data-player", address)
-    visible.get_by_role("button", name="复制 IP").press("Enter")
-    assert page.evaluate("window.copiedIp") == address, "R5 复制必须指向当前行 IP"
+    expect(visible.locator("button"), "R5 IP 封禁记录只提供解封操作").to_have_count(1)
     search.fill("匹配不到的记录")
     expect(page.locator("#sv_ban_no_matches")).to_be_visible()
 
-    page.locator("#sv_players").get_by_role("button", name="在封禁区使用此 IP").press("Enter")
+    page.locator("#sv_players").get_by_role("button", name="将IP填入封禁名单", exact=True).press("Enter")
     expect(page.locator("#sv_ban_ip")).to_have_value(IPV4)
     expect(page.locator("#sv_ban_ip")).to_be_focused()
     assert scenario.posts == [], "R5 填入地址之前或之后均不得自动发送命令"
@@ -657,7 +700,7 @@ def check_long_ban_list(scenario):
     scenario.bans = {"state": "unreachable", "items": [], "note": "读取失败，请刷新重试"}
     scenario.refresh()
     expect(page.locator("#sv_bans")).to_contain_text("读取失败，请刷新重试")
-    print("[PASS] R5 30 条封禁、搜索和目标、异常只读、复制、选用最近进服 IP、空名单和读失败")
+    print("[PASS] R5 30 条封禁、搜索和目标、异常只读、IP 记录只提供解封、填入最近进服 IP、空名单和读失败")
 
 
 def check_workflow_single_writer(scenario):
@@ -761,9 +804,10 @@ def check_workflow_history(scenario):
 
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
-         "P14": check_ban_ip_entry, "P15": check_player_ip, "P16": check_online_actions,
+         "P14": check_manual_ban, "P15": check_player_ip, "P16": check_online_actions,
          "P18": check_console_notice, "P20": check_single_color_card,
          "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,
+         "P25": check_ip_ban_audit,
          "R5": check_long_ban_list, "J5": check_remote_ip_search, "J7": check_ip_search_details}
 
 

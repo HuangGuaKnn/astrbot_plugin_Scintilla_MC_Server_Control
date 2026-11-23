@@ -113,6 +113,8 @@ def _redact(text: str) -> str:
         if ":" in candidate:
             host, _, port = candidate.rpartition(":")
             alternatives = (candidate,)
+            if candidate.endswith(":"):
+                alternatives += (candidate[:-1],)
             if len(port) <= 5 and port.isdecimal() and int(port) <= 65535:
                 alternatives += (host,)
             for address in alternatives:
@@ -201,10 +203,7 @@ async def _send(plugin, command: str, rcon=None) -> _Reply:
 
 
 def _status(state: str, note: str, raw: str) -> dict:
-    """构造状态字典。**这里刻意不脱敏**：
-    WebUI 是管理员专属页面，服主本来就有 RCON 权限，藏 IP 只会让 ban-ip 难用；
-    聊天工具走的是另一条链路、不经过这里；唯一继续脱敏的是审计文件（_write_audit）。
-    """
+    """构造管理员 WebUI 使用的状态字典，保留服务器原文。"""
     return {
         "state": state,
         "state_label": server_card.STATE_LABEL[state],
@@ -352,6 +351,29 @@ async def get_online(plugin) -> dict:
     elif isinstance(watcher, LogWatcher) or any(record["ip"] for record in details.values()):
         result["ips"] = {name: record["ip"] for name, record in details.items()}
     return result
+
+
+async def _snapshot_ip_matches(plugin, target: str) -> dict:
+    """在写入前核对在线名单和这些玩家最近一次进服的地址。"""
+    roster = await _read_roster(plugin, "list")
+    if roster["state"] not in (server_card.STATE_OK, server_card.STATE_EMPTY):
+        return {"state": "unavailable", "players": []}
+    players = roster["players"]
+    if not players:
+        return {"state": "complete", "players": []}
+
+    # 主动读本地日志，避免玩家刚重连时只看到上一轮的缓存地址。
+    details = await _lookup_player_ips(plugin, players, force=True)
+    known = {
+        name: record["ip"] for name, record in details.items()
+        if record["state"] == "found" and record["ip"] and not record["limited"]
+    }
+    if not known:
+        return {"state": "unavailable", "players": []}
+    return {
+        "state": "complete" if len(known) == len(players) else "partial",
+        "players": [name for name in players if known.get(name) == target],
+    }
 
 
 def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:
@@ -529,6 +551,21 @@ def _audit_path() -> Path:
     return Path(StarTools.get_data_dir("astrbot_plugin_Scintilla_MC_Server_Control")) / "player_audit.jsonl"
 
 
+def _audit_target(row: dict) -> tuple[str, str]:
+    action, player, command = row["action"], row["player"], row["command"]
+    if action in _IP_ACTIONS:
+        try:
+            address = normalize_ip(player)
+        except ValueError:
+            pass  # 兼容旧记录中的 [IP 已隐藏]。
+        else:
+            prefix = f"{_WRITE_PREFIX[action]} {address}"
+            if command == prefix or command.startswith(prefix + " "):
+                return address, prefix + _redact(command[len(prefix):])
+            return address, _redact(command)
+    return _redact(player), _redact(command)
+
+
 def _write_audit(stream, actor: str, result: dict) -> None:
     ts = datetime.now().astimezone().isoformat(timespec="seconds")
     actor = _redact(actor)
@@ -544,18 +581,19 @@ def _write_audit(stream, actor: str, result: dict) -> None:
             "raw_excerpt": _redact(result["raw"])[:200],
         }
     else:
+        player, command = _audit_target(result)
         record = {
             "ts": ts,
             "actor": actor,
             "action": result["action"],
-            "player": _redact(result["player"]),
-            "command": _redact(result["command"]),
+            "player": player,
+            "command": command,
             "state": result["state"],
             "confirmed": result["confirmed"],
-            # 审计是长期留档、可能被导出分享的文件 —— 它这一份**继续脱敏**，
-            # 与 WebUI 实时显示（真 IP，管理员要用）刻意不同（v0.28.0 口径）。
             "raw_excerpt": _redact(result["raw"])[:200],
         }
+        if "ip_matches" in result:
+            record["ip_matches"] = result["ip_matches"]
     stream.write(json.dumps(record, ensure_ascii=False) + "\n")
     stream.flush()
 
@@ -573,10 +611,18 @@ def get_audit(limit: int = 20) -> list[dict]:
                     continue
                 if not all(isinstance(row.get(field), str) for field in _AUDIT_FIELDS if field != "confirmed"):
                     continue
-                rows.append({
-                    field: row[field] if field == "confirmed" else _redact(row[field])
-                    for field in _AUDIT_FIELDS
-                })
+                record = {field: row[field] for field in _AUDIT_FIELDS}
+                record["player"], record["command"] = _audit_target(row)
+                record["actor"] = _redact(row["actor"])
+                record["raw_excerpt"] = _redact(row["raw_excerpt"])
+                matches = row.get("ip_matches")
+                if row["action"] == "ban_ip" and isinstance(matches, dict):
+                    state, names = matches.get("state"), matches.get("players")
+                    if (state in ("complete", "partial", "unavailable") and isinstance(names, list)
+                            and all(isinstance(name, str) for name in names)
+                            and _valid_names(names, len(names))):
+                        record["ip_matches"] = {"state": state, "players": names}
+                rows.append(record)
     except FileNotFoundError:
         pass
     return list(reversed(rows))
@@ -597,7 +643,6 @@ async def _apply_action(plugin, result: dict) -> None:
         result.update(_status(server_card.STATE_UNREACHABLE, note, reply.raw))
         return
 
-    # WebUI 回执给真实原文（含 IP）：管理员要用它做 ban-ip 判断；审计里那一份仍脱敏
     result["raw"] = reply.raw
     readback = await _read_roster(plugin, _READBACK_COMMAND[action], reply.rcon)
     result["readback"] = readback
@@ -650,6 +695,14 @@ async def run_action(
             result.update(_status(server_card.STATE_UNRECOGNIZED, "审计文件不可写，操作未发送", ""))
             return result
         try:
+            if action == "ban_ip":
+                result["ip_matches"] = {"state": "unavailable", "players": []}
+                try:
+                    result["ip_matches"] = await asyncio.wait_for(
+                        _snapshot_ip_matches(plugin, normalize_ip(player)), timeout=8,
+                    )
+                except (asyncio.TimeoutError, OSError):
+                    pass  # 关联未能完成，继续封禁并记录「无法核对」。
             await _apply_action(plugin, result)
         except asyncio.CancelledError:
             result.update(_status(server_card.STATE_UNREACHABLE, "请求中断，操作结果未确认", result["raw"]))

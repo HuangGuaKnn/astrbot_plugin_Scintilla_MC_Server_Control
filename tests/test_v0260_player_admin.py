@@ -1,6 +1,7 @@
 """v0.26.0 玩家管理契约。使用假 RCON 和真实 Web API 请求上下文。"""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import tempfile
@@ -674,11 +675,7 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertGuarded(plugin, "kick Steve test reason", "list")
 
     async def test_webui_shows_real_ip_while_audit_stays_redacted(self):
-        """v0.28.0 口径反转：WebUI 给真 IP，审计继续脱敏。
-
-        为什么这么分：WebUI 是管理员专属页面（服主本来就有 RCON 权限，藏 IP 只会让
-        ban-ip 难用）；而审计是长期留档、可能被导出分享的文件，且聊天工具也不经过这里。
-        """
+        """管理员能看实时回执原文，非操作目标的地址在审计里脱敏。"""
         sentinel = "192.0.2.25"
         address_v6 = "2001:db8::25"
         raw = f"No player was found ({sentinel}, [{address_v6}]:25600)"
@@ -694,20 +691,87 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(address_v6, audit, "审计文件必须继续脱敏")
         self.assertIn("[IP 已隐藏]", audit)
 
-    async def test_t_audit_player_redacts_target_and_command_on_disk(self):
-        target = "192.0.2.9"
-        address_v6 = "2001:db8::42"
-        command = f"ban-ip {target} source {address_v6}"
-        raw = f"Banned IP address {target}"
-        plugin = FakePlugin({command: raw, "banlist ips": f"There are 1 bans: {target} was banned by Server"})
-        result = await player_admin.run_action(plugin, "ban_ip", target, f"source {address_v6}", actor=ADMIN)
-        self.assertEqual((result["player"], result["command"], result["raw"]), (target, command, raw))
+    async def test_ip_audit_records_target_and_all_matching_online_ids(self):
+        target = "2001:db8::42"
+        alternate = "2001:0db8:0:0:0:0:0:42"
+        other_ip = "192.0.2.25"
+        reason = f"source {other_ip}"
+        command = f"ban-ip {target} {reason}"
+        logs = self.path / "logs"
+        logs.mkdir()
+        (logs / "latest.log").write_text("".join(
+            f"[12:00:00] [Server thread/INFO]: {name}[/{ip}:52031] logged in with entity id 1\n"
+            for name, ip in (
+                ("Steve", f"[{target}]"), ("alt_42", f"[{alternate}]"),
+                ("Alex", other_ip), ("Offline", f"[{target}]"),
+            )
+        ), encoding="utf-8")
+        plugin = FakePlugin({
+            "list": "There are 4 of a max of 20 players online: Steve, Alt_42, Alex, NoLogin",
+            command: f"Banned IP {target}: {reason}",
+            "banlist ips": f"There are 1 bans: {target} was banned by Server: test",
+        }, server_dir=str(self.path))
+        body = {"action": "ban_ip", "player": alternate, "reason": reason}
+        code, preview = await call(plugin, "POST", "action", body={**body, "preview": True})
+        self.assertEqual((code, preview["command"]), (200, command))
+        self.assertEqual(plugin.events, [])
+        self.assertFalse(self.audit.exists())
+
+        code, result = await call(plugin, "POST", "action", body={**body, "expected_command": command})
+        self.assertEqual((code, result["confirmed"]), (200, True))
+        self.assertGuarded(plugin, "list", command, "banlist ips")
         disk = self.audit.read_text(encoding="utf-8")
         row, = map(json.loads, disk.splitlines())
-        for address in (target, address_v6):
-            self.assertNotIn(address, disk, "T-audit 玩家 JSONL 禁止在目标或命令写入明文地址")
-        self.assertEqual(row["player"], "[IP 已隐藏]")
-        self.assertEqual(row["command"], "ban-ip [IP 已隐藏] source [IP 已隐藏]")
+        self.assertEqual(row["player"], target)
+        self.assertEqual(row["command"], f"ban-ip {target} source [IP 已隐藏]")
+        self.assertEqual(row["ip_matches"], {"state": "partial", "players": ["Steve", "Alt_42"]})
+        self.assertNotIn(other_ip, disk, "理由及回执里的其他地址应脱敏")
+        self.assertNotIn(target, row["raw_excerpt"], "真实目标已在结构化字段记录")
+        self.assertTrue(datetime.fromisoformat(row["ts"]).tzinfo)
+        code, audit = await call(plugin, "GET", "audit")
+        self.assertEqual((code, audit["items"]), (200, [row]))
+        code, audit = await call(plugin, "GET", "audit", username=OTHER)
+        self.assertEqual(code, 403)
+        self.assertNotIn("items", audit)
+
+    async def test_ip_audit_distinguishes_empty_roster_unavailable_and_timeout(self):
+        target = "192.0.2.9"
+        command = f"ban-ip {target}"
+        for reply, expected, timeout in (
+            (EMPTY, "complete", False),
+            ("未知的在线名单", "unavailable", False),
+            (ONLINE, "unavailable", False),  # 异地模式没有登录日志。
+            (ONLINE, "unavailable", True),
+        ):
+            with self.subTest(reply=reply, timeout=timeout):
+                plugin = FakePlugin({
+                    "list": reply, command: f"Banned IP {target}: test",
+                    "banlist ips": f"There are 1 bans: {target} was banned by Server: test",
+                })
+                with patch.object(player_admin, "_snapshot_ip_matches",
+                                  wraps=player_admin._snapshot_ip_matches,
+                                  side_effect=asyncio.TimeoutError if timeout else None):
+                    result = await player_admin.run_action(plugin, "ban_ip", target, actor=ADMIN)
+                self.assertTrue(result["confirmed"], "关联失败时应继续执行并回读封禁")
+                self.assertEqual(player_admin.get_audit(1)[0]["ip_matches"], {"state": expected, "players": []})
+
+    async def test_ip_audit_keeps_legacy_rows_and_records_pardon_target(self):
+        old = {
+            "ts": "2026-11-22T09:00:00+08:00", "actor": ADMIN, "action": "ban_ip",
+            "player": "[IP 已隐藏]", "command": "ban-ip [IP 已隐藏]",
+            "state": "ok", "confirmed": True, "raw_excerpt": "Banned IP [IP 已隐藏]",
+        }
+        self.audit.write_text(json.dumps(old, ensure_ascii=False) + "\n", encoding="utf-8")
+        target = "192.0.2.9"
+        command = f"pardon-ip {target}"
+        plugin = FakePlugin({command: f"Unbanned IP {target}", "banlist ips": "There are no IP bans"})
+        result = await player_admin.run_action(plugin, "unban_ip", target)
+        self.assertTrue(result["confirmed"])
+        self.assertGuarded(plugin, command, "banlist ips")
+        latest, legacy = player_admin.get_audit()
+        self.assertEqual(legacy, old)
+        self.assertEqual((latest["player"], latest["command"]), (target, command))
+        self.assertNotIn("ip_matches", latest)
 
     async def test_write_and_readback_respect_version_guard_denial(self):
         plugin = FakePlugin({"pardon Steve": "Unbanned Steve", "banlist players": NO_BANS})
