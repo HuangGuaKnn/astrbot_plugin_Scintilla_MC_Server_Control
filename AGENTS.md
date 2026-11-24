@@ -89,11 +89,14 @@ $py = "C:\Users\10316\AppData\Local\AstrBot\backend\python\python.exe"
 3. git push 分支
 4. git tag -a vX.Y.Z（预发布写 vX.Y.Z-rc.N —— workflow 会自动标 pre-release）
 5. git push origin vX.Y.Z  → 触发 release workflow
-6. 若发错了：先删 Release，再删 tag（顺序不能反）
+6. git push origin main:main   ← 把默认分支快进到 Release 提交（少这步插件市场不认）
+7. 若发错了：先删 Release，再删 tag（顺序不能反）
 ```
 
 - `metadata.yaml` 的 `version` 只写 `vX.Y.Z`，**预发布后缀只出现在 tag 上**；
-- roadmap 的「已排期」版本必须严格晚于当前版本（门禁会查）。
+- roadmap 的「已排期」版本必须严格晚于当前版本（门禁会查）；
+- **插件市场只盯默认分支**（见下面坑表）：tag / Release 发得再漂亮，`main` 不动，市场就还是旧版本。
+  市场打包时读的是**默认分支 HEAD 上的 `metadata.yaml`**。
 
 ---
 
@@ -109,6 +112,8 @@ $py = "C:\Users\10316\AppData\Local\AstrBot\backend\python\python.exe"
 | unittest 省略长字符串 | 变异按 failure 文本匹配会失灵 | 用 `raise AssertionError("marker")` 显式给消息 |
 | 单行锚点 `str.replace(..., 1)` | 打到了同名代码的另一处 | 锚点带上文，或按行号操作 |
 | 部署了没重载 | 改的文件是新的，行为还是旧的 | 复制完必须 reload 插件 |
+| 发版只推 tag、忘了推 `main` | GitHub 上 v0.25.0 的 Release 好好挂着，**AstrBot 插件市场仍显示 0.24.12**（main 停在 8 天前的 v0.24.12 提交上） | 发版后 `git push origin main:main`；市场只读默认分支 HEAD 的 `metadata.yaml`，不看 tag/Release（2026-11-24 在五个插件上核对：市场 `commit_sha` 全部 == 各自默认分支 HEAD） |
+| 想「重提同一个版本号」让市场刷新 | 市场同一版本号只能上架一次，zip 冻结在索尔特家 S3 | 必须 bump 版本号（当时发 v0.23.6 绕过） |
 
 ---
 
