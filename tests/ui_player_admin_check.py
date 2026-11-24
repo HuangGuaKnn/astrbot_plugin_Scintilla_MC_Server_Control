@@ -683,19 +683,45 @@ def check_invalid_ip_bans(scenario):
 def check_long_ban_list(scenario):
     scenario.online = {**ONLINE_OK, "ips": {"Alex": IPV4}}
     address, malformed = "198.51.100.42", "198.51.100.0/24"
-    scenario.bans = {"state": "ok", "items": [
+    items = [
         *[{**BAN, "name": f"Player_{n:02d}", "reason": f"违规记录 {n:02d}"} for n in range(28)],
         {**BAN, "kind": "ip", "name": address},
         {**BAN, "kind": "ip", "name": malformed, "removable": False, "note": "格式异常，需查看原记录"},
-    ]}
+    ]
+    scenario.bans = {"state": "ok", "items": items}
     scenario.open()
     page = scenario.page
     rows = page.locator("#sv_bans .player-row")
-    expect(rows).to_have_count(30)
-    expect(page.locator("#sv_ban_count")).to_have_text("显示 30 / 30 条")
     search = page.locator("#sv_ban_search")
+    pager = page.locator("#sv_ban_pagination")
+    page_number = pager.locator("#sv_ban_page")
+    prev_page = pager.get_by_role("button", name="上一页")
+    next_page = pager.get_by_role("button", name="下一页")
+    expect(rows, "R5 每页最多渲染 5 条").to_have_count(5)
+    expect(page.locator("#sv_ban_count")).to_have_text("共 30 条")
+    expect(page_number).to_have_text("第 1 / 6 页")
+    expect(prev_page).to_be_disabled()
+    next_page.press("Enter")
+    expect(page_number).to_have_text("第 2 / 6 页")
+    expect(rows.first).to_contain_text("Player_05")
+    prev_page.click()
+    expect(rows.first).to_contain_text("Player_00")
+    for _ in range(5):
+        next_page.click()
+    expect(page_number).to_have_text("第 6 / 6 页")
+    expect(next_page).to_be_disabled()
+    expect(rows.last).to_contain_text(malformed)
+
+    search.fill("违规记录 2")
+    expect(page.locator("#sv_ban_count"), "R5 搜索必须在整份名单上分页").to_have_text("匹配 8 / 30 条")
+    expect(page_number).to_have_text("第 1 / 2 页")
+    expect(rows.first).to_contain_text("Player_20")
+    next_page.click()
+    expect(rows).to_have_count(3)
+    expect(rows.last).to_contain_text("Player_27")
     search.fill("违规记录 27")
-    expect(page.locator("#sv_ban_count")).to_have_text("显示 1 / 30 条")
+    expect(page.locator("#sv_ban_count")).to_have_text("匹配 1 / 30 条")
+    expect(pager).to_be_hidden()
     visible = page.locator("#sv_bans .player-row:visible")
     expect(visible.locator('button[data-action="unban"]')).to_have_attribute("data-player", "Player_27")
     search.fill(malformed)
@@ -706,6 +732,8 @@ def check_long_ban_list(scenario):
     expect(visible.locator("button"), "R5 IP 封禁记录只提供解封操作").to_have_count(1)
     search.fill("匹配不到的记录")
     expect(page.locator("#sv_ban_no_matches")).to_be_visible()
+    expect(rows).to_have_count(0)
+    expect(pager).to_be_hidden()
 
     page.locator("#sv_players").get_by_role("button", name="将IP填入封禁名单", exact=True).press("Enter")
     expect(page.locator("#sv_ban_ip")).to_have_value(IPV4)
@@ -717,14 +745,24 @@ def check_long_ban_list(scenario):
     assert scenario.posts[0]["preview"] and scenario.posts[0]["player"] == IPV4
     page.locator("#player_cancel").press("Enter")
 
+    search.fill("")
+    expect(page_number).to_have_text("第 1 / 6 页")
+    for _ in range(5):
+        next_page.click()
+    scenario.bans = {"state": "ok", "items": items[:7]}
+    scenario.refresh()
+    expect(page_number).to_have_text("第 2 / 2 页")
+    expect(rows).to_have_count(2)
+    expect(rows.first).to_contain_text("Player_05")
     scenario.bans = {"state": "empty", "items": []}
     scenario.refresh()
     expect(page.locator("#sv_bans")).to_contain_text("当前没有封禁记录")
     expect(page.locator("#sv_ban_no_matches")).to_be_hidden()
+    expect(pager).to_be_hidden()
     scenario.bans = {"state": "unreachable", "items": [], "note": "读取失败，请刷新重试"}
     scenario.refresh()
     expect(page.locator("#sv_bans")).to_contain_text("读取失败，请刷新重试")
-    print("[PASS] R5 30 条封禁、搜索和目标、异常只读、IP 记录只提供解封、填入最近进服 IP、空名单和读失败")
+    print("[PASS] R5 每页 5 条、全表搜索、名单缩短时回退页码、IP 操作、空名单和读失败")
 
 
 def check_workflow_single_writer(scenario):

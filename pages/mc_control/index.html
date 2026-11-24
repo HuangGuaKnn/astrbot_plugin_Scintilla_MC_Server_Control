@@ -490,12 +490,12 @@ summary:hover{text-decoration:underline}
 .player-row .player-actions{margin-left:auto}
 .player-ban-info{display:flex;flex:1 0 210px;flex-wrap:wrap;gap:4px 14px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
 .player-ban-info .muted{margin-right:5px}
-.ban-search-row{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--border)}
+.ban-search-row:not([hidden]){display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--border)}
 .ban-search-row input{width:min(100%,320px);padding:8px 11px;border:1px solid var(--border);
   border-radius:8px;background:var(--panel2);color:var(--text);font-size:12.5px}
+.ban-pagination:not([hidden]){display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:12px}
 #sv_bans .player-row{padding:10px 8px;border-radius:6px}
 #sv_bans .player-row:hover{background:var(--panel2)}
-#sv_bans .player-row[hidden]{display:none}
 .player-ban-target{display:flex;align-items:center;gap:8px;min-width:min(100%,172px);overflow-wrap:anywhere}
 .player-ban-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto}
 .player-ban-actions .player-actions{margin-left:0}
@@ -1174,8 +1174,16 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
         <input id="sv_ban_search" type="search" placeholder="搜索玩家、IP 或原因" aria-label="搜索封禁记录">
         <span class="muted" id="sv_ban_count" role="status"></span>
       </div>
-      <div id="sv_bans"></div>
+      <div id="sv_bans">
+        <div id="sv_ban_notice"></div>
+        <div id="sv_ban_rows"></div>
+      </div>
       <p id="sv_ban_no_matches" class="muted" hidden>没有符合搜索条件的封禁记录。</p>
+      <nav id="sv_ban_pagination" class="ban-pagination" aria-label="封禁名单分页" hidden>
+        <button class="btn sm" id="sv_ban_prev" type="button" aria-controls="sv_ban_rows">上一页</button>
+        <span class="muted" id="sv_ban_page" role="status"></span>
+        <button class="btn sm" id="sv_ban_next" type="button" aria-controls="sv_ban_rows">下一页</button>
+      </nav>
       <div class="player-result" id="sv_ban_result" role="status" aria-live="polite"></div>
     </section>
   </section>
@@ -2783,6 +2791,9 @@ const PLAYER_ACTIONS = {
 const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS)
   .filter(action => action !== "unban" && action !== "unban_ip" && action !== "ban_ip");
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
+const BAN_PAGE_SIZE = 5;
+let banItems = [];
+let banPage = 1;
 // v0.28.0：WebUI 是管理员专属页面，**不再脱敏** —— 服主要靠真实 IP 判断封哪个地址。
 // 聊天工具（进群）的输出走独立链路，由后端处理。
 const escServer = value => esc(value);
@@ -2902,49 +2913,23 @@ function playerDateLabel(value){
   return playerDate(value)?.toLocaleString() || value || "未知";
 }
 
-function filterPlayerBans(){
+function renderPlayerBanPage(){
   const query = $("sv_ban_search").value.trim().toLowerCase();
-  const rows = $("sv_bans").querySelectorAll(".player-row");
-  let visible = 0;
-  for(const row of rows){
-    row.hidden = !row.textContent.toLowerCase().includes(query);
-    if(!row.hidden) visible++;
-  }
-  $("sv_ban_count").textContent = `显示 ${visible} / ${rows.length} 条`;
-  $("sv_ban_no_matches").hidden = !rows.length || visible > 0;
-}
-
-function renderPlayerBans(bans, admin){
-  $("sv_ban_card").hidden = !admin;
-  $("sv_ban_search_row").hidden = !admin || !bans?.items?.length;
-  $("sv_ban_no_matches").hidden = true;
-  const host = $("sv_bans");
-  if(!admin){
-    host.replaceChildren();
-    $("sv_ban_result").replaceChildren();
-    $("sv_player_result").replaceChildren();
-    return;
-  }
-  const items = Array.isArray(bans.items) ? bans.items : [];
-  const stateOk = ["ok", "empty"].includes(bans.state);
-  const ipHead = banReadbackStatus(bans.ip_readback, "IP 封禁回包原文", "IP 封禁名单未按预期解析");
-  if(!stateOk && items.length === 0){
-    host.innerHTML = `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
-      <span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>
-      ${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>${ipHead}`;
-    return;
-  }
-  const notes = [
-    // v0.26.1：回包认不出但名单来自文件时，必须说清「名单是哪来的」——
-    // 用户有权知道这一屏是 RCON 亲口说的，还是从服务端文件里读的。
-    !stateOk && bans.roster_source && bans.roster_source !== "banlist players"
-      ? `名单来源：${bans.roster_source}（RCON 回包未按预期解析）` : "",
-    bans.detail_note,
-    bans.ip_note,
-    Number(bans.mismatch_count) > 0 ? `与文件记录不一致（${Number(bans.mismatch_count)} 条）` : "",
-  ].filter(Boolean).map(note => `<div class="player-warning">${escServer(note)}</div>`).join("");
-  const head = banReadbackStatus(bans, "服务器原文", "封禁名单未按预期解析") + ipHead;
-  const rows = items.map(item => {
+  const matches = query ? banItems.filter(item =>
+    [item.name, item.reason, item.source, item.created, item.expires, item.note]
+      .some(value => String(value ?? "").toLowerCase().includes(query))
+  ) : banItems;
+  const pageCount = Math.max(1, Math.ceil(matches.length / BAN_PAGE_SIZE));
+  banPage = Math.max(1, Math.min(banPage, pageCount));
+  const start = (banPage - 1) * BAN_PAGE_SIZE;
+  $("sv_ban_search_row").hidden = banItems.length === 0;
+  $("sv_ban_count").textContent = query ? `匹配 ${matches.length} / ${banItems.length} 条` : `共 ${banItems.length} 条`;
+  $("sv_ban_no_matches").hidden = banItems.length === 0 || matches.length > 0;
+  $("sv_ban_pagination").hidden = pageCount === 1;
+  $("sv_ban_page").textContent = `第 ${banPage} / ${pageCount} 页`;
+  $("sv_ban_prev").disabled = banPage === 1;
+  $("sv_ban_next").disabled = banPage === pageCount;
+  $("sv_ban_rows").innerHTML = matches.slice(start, start + BAN_PAGE_SIZE).map(item => {
     const expiry = playerDate(item.expires);
     const expiryLabel = item.expires === "forever" ? "永久" : playerDateLabel(item.expires);
     const expired = item.expired === true || (expiry && expiry.getTime() <= Date.now());
@@ -2967,8 +2952,36 @@ function renderPlayerBans(bans, admin){
       <div class="player-ban-info">${fields}${end}</div>
       <div class="player-ban-actions">${actionCell}</div></div>`;
   }).join("");
-  host.innerHTML = head + notes + (rows || `<span class="muted">当前没有封禁记录</span>`);
-  filterPlayerBans();
+}
+
+function renderPlayerBans(bans, admin){
+  $("sv_ban_card").hidden = !admin;
+  banItems = admin && Array.isArray(bans.items) ? bans.items : [];
+  renderPlayerBanPage();
+  const notice = $("sv_ban_notice");
+  if(!admin){
+    notice.replaceChildren();
+    $("sv_ban_result").replaceChildren();
+    $("sv_player_result").replaceChildren();
+    return;
+  }
+  const stateOk = ["ok", "empty"].includes(bans.state);
+  const ipHead = banReadbackStatus(bans.ip_readback, "IP 封禁回包原文", "IP 封禁名单未按预期解析");
+  if(!stateOk && banItems.length === 0){
+    notice.innerHTML = `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
+      <span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>
+      ${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>${ipHead}`;
+    return;
+  }
+  const notes = [
+    !stateOk && bans.roster_source && bans.roster_source !== "banlist players"
+      ? `名单来源：${bans.roster_source}（RCON 回包未按预期解析）` : "",
+    bans.detail_note,
+    bans.ip_note,
+    Number(bans.mismatch_count) > 0 ? `与文件记录不一致（${Number(bans.mismatch_count)} 条）` : "",
+  ].filter(Boolean).map(note => `<div class="player-warning">${escServer(note)}</div>`).join("");
+  const head = banReadbackStatus(bans, "服务器原文", "封禁名单未按预期解析") + ipHead;
+  notice.innerHTML = head + notes + (banItems.length ? "" : `<span class="muted">当前没有封禁记录</span>`);
 }
 
 function renderPlayerAudit(audit, admin, bans){
@@ -3017,7 +3030,7 @@ function renderPlayerActionResult(host, result){
 }
 
 function disablePlayerButtons(){
-  document.querySelectorAll("#sv_players [data-action], #sv_bans [data-action]").forEach(button => {
+  document.querySelectorAll("#sv_players [data-action], #sv_bans [data-action], #sv_ban_pagination button").forEach(button => {
     button.disabled = true;
   });
 }
@@ -3130,7 +3143,16 @@ function bindPlayerAdmin(){
   banTarget.addEventListener("keydown", event => {
     if(event.key === "Enter"){ event.preventDefault(); banButton.click(); }
   });
-  $("sv_ban_search").addEventListener("input", filterPlayerBans);
+  $("sv_ban_search").addEventListener("input", () => {
+    banPage = 1;
+    if(!loadServer._pending) renderPlayerBanPage();
+  });
+  for(const [id, step] of [["sv_ban_prev", -1], ["sv_ban_next", 1]]){
+    $(id).addEventListener("click", () => {
+      banPage += step;
+      renderPlayerBanPage();
+    });
+  }
   $("sv_players").addEventListener("click", async event => {
     const search = event.target.closest("button[data-ip-search]");
     if(search && !search.disabled){
