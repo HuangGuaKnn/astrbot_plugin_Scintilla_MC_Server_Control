@@ -69,6 +69,7 @@ from test_v0248_collect_settings import _extract_function  # noqa: E402
 
 add_sys_paths()
 from astrbot_plugin_Scintilla_MC_Server_Control.core import strict_bool as sb  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 PAGE = PLUGIN_DIR / "pages" / "mc_control" / "index.html"
 
@@ -204,7 +205,7 @@ def run_node(bool_src: str, cells: list[dict], node: str) -> list:
         data.write_text(json.dumps(cells, ensure_ascii=False), encoding="utf-8")
         r = subprocess.run([node, str(js), str(src), str(data)],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120)
+                           errors="replace", timeout=120, **no_window_kw())
     if r.returncode != 0:
         raise AssertionError("node 跑 parseCfgBool 失败：" + (r.stderr or r.stdout or "")[-400:])
     return json.loads(r.stdout)
@@ -261,7 +262,7 @@ def run_render(html: str, cells: list[dict], node: str) -> list:
         data.write_text(json.dumps(cells, ensure_ascii=False), encoding="utf-8")
         r = subprocess.run([node, str(js), str(b), str(lp), str(data)],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120)
+                           errors="replace", timeout=120, **no_window_kw())
     if r.returncode != 0:
         raise AssertionError("node 跑渲染循环失败：" + (r.stderr or r.stdout or "")[-400:])
     return json.loads(r.stdout)

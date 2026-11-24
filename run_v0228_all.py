@@ -1,4 +1,7 @@
 import subprocess, pathlib, json, os
+import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tests"))
+from _no_window import no_window_kw  # noqa: E402
 py = str(pathlib.Path(os.environ.get("LOCALAPPDATA", pathlib.Path.home()/"AppData"/"Local"))/"AstrBot"/"backend"/"python"/"python.exe")
 
 
@@ -7,7 +10,7 @@ def run(pat, out_name):
     for f in sorted(pathlib.Path('tests').glob(pat)):
         try:
             p = subprocess.run([py, str(f)], capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=180)
+                               encoding='utf-8', errors='replace', timeout=180, **no_window_kw())
             exit_code = p.returncode
             tail = (p.stdout + p.stderr)[-1500:]
         except subprocess.TimeoutExpired:

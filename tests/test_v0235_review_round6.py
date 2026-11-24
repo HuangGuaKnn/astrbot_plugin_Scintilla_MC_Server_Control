@@ -51,6 +51,7 @@ sys.path.insert(0, str(PLUGIN))
 sys.path.insert(0, str(PLUGIN / "tests"))
 import _ui_manifest as UM  # noqa: E402
 import run_release_verify as RV  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 KB_SRC = io.open(PLUGIN / "core" / "knowledge_base.py", encoding="utf-8").read()
 LW_SRC = io.open(PLUGIN / "core" / "log_watcher.py", encoding="utf-8").read()
@@ -386,14 +387,14 @@ def part_f() -> None:
     r1 = subprocess.run([sys.executable, str(PLUGIN / "run_release_verify.py"),
                          "--plan", "--ui-only"],
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", cwd=str(PLUGIN))
+                        errors="replace", cwd=str(PLUGIN), **no_window_kw())
     check("行为：--plan --ui-only 不再打印静态检查与回归清单",
           "静态检查" not in r1.stdout and "回归" not in r1.stdout
           and "个用例" in r1.stdout, r1.stdout.strip()[:120])
     r2 = subprocess.run([sys.executable, str(PLUGIN / "run_release_verify.py"),
                          "--plan", "--no-ui"],
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", cwd=str(PLUGIN))
+                        errors="replace", cwd=str(PLUGIN), **no_window_kw())
     check("行为：--plan --no-ui 不再列出 UI 用例",
           "个用例" not in r2.stdout and "回归" in r2.stdout, r2.stdout.strip()[:120])
 

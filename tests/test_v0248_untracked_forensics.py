@@ -68,6 +68,7 @@ add_sys_paths()
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 import run_release_verify as RV  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 PASSED = [0]
 FAILED: list[str] = []
@@ -84,7 +85,7 @@ def check(desc: str, ok: bool, extra: str = "") -> None:
 
 def _git(repo: Path, *args: str):
     return subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
-                          text=True, encoding="utf-8", errors="replace")
+                          text=True, encoding="utf-8", errors="replace", **no_window_kw())
 
 
 # ============================================================ 一、形状判定
@@ -202,7 +203,7 @@ def _archive_files(repo: Path) -> list[str]:
     import io as _io
     import tarfile
     r = subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=str(repo),
-                       capture_output=True)
+                       capture_output=True, **no_window_kw())
     tf = tarfile.open(fileobj=_io.BytesIO(r.stdout), encoding="utf-8", errors="replace")
     dirs = {m.name for m in tf.getmembers() if not m.isfile()}
     return [n for n in tf.getnames() if n not in dirs]

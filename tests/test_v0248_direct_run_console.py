@@ -36,6 +36,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 add_sys_paths()
 
@@ -61,7 +62,7 @@ def _clean_env() -> dict:
 
 def _run(code: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-c", code], cwd=str(PLUGIN_DIR),
-                          capture_output=True, env=_clean_env())
+                          capture_output=True, env=_clean_env(), **no_window_kw())
 
 
 # ============================================================ 一、覆盖清单

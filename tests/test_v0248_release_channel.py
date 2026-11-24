@@ -31,6 +31,7 @@ PLUGIN = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN))
 
 import run_release_channel as rc  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 _PASS = 0
 _FAIL = 0
@@ -51,7 +52,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def run_cli(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(PLUGIN / "run_release_channel.py"), *args],
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=60)
+                          errors="replace", timeout=60, **no_window_kw())
 
 
 def part_channel() -> None:

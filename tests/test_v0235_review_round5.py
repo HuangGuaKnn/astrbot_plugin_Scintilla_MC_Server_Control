@@ -53,6 +53,7 @@ PLUGIN = PLUGIN_DIR
 ROOT = PLUGIN          # 仓库根 = 插件目录（run_release_verify.py / .github 都在这里）
 sys.path.insert(0, str(PLUGIN))
 import run_release_verify as RV  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 RELEASE_VERIFY_SRC = io.open(ROOT / "run_release_verify.py", encoding="utf-8").read()
 
@@ -598,7 +599,7 @@ def part_e() -> None:
     def _run(args, timeout=180):
         return subprocess.run([RV.PY, str(PLUGIN / "run_release_verify.py")] + args,
                               cwd=str(PLUGIN), capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+                              encoding="utf-8", errors="replace", timeout=timeout, **no_window_kw())
 
     r = _run(["--guard"])
     check("--guard 真跑：清单干净即退出码 0", r.returncode == 0, r.stdout[-300:])

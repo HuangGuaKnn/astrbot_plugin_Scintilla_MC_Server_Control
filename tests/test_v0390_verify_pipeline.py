@@ -1,10 +1,14 @@
 """验证流水线的选区、并行、还原与墙钟账单。"""
+import ast
 import contextlib
 import io
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from threading import Barrier
@@ -14,6 +18,8 @@ import mutation_all as M
 
 sys.path.insert(0, str(M.ROOT))
 import run_release_verify as V
+
+import _no_window as NO_WINDOW
 
 
 def fixture_case(path, number):
@@ -135,6 +141,126 @@ class VerifyPipeline(unittest.TestCase):
         self.assertIn("3/4 通过", output)
         self.assertIn("[FAIL] tests/bad.py", output)
         self.assert_bill(output, {"③ WebUI 契约类"})
+
+
+# ---------------------------------------------------------------- 不弹黑框（C1~C3）
+
+#: 仓库里所有可能拉子进程的源码：根脚本 + tests/ + 插件本体。
+def harness_sources():
+    for pattern in ("*.py", "tests/*.py", "core/**/*.py", "pages/**/*.py"):
+        for path in sorted(M.ROOT.glob(pattern)):
+            if path.name.startswith(".") or "__pycache__" in path.parts:
+                continue
+            yield path
+
+
+#: 判「这是一次子进程创建」：`subprocess.run/Popen/call/check_output/check_call(...)`。
+SPAWN_CALLS = frozenset({"run", "Popen", "call", "check_output", "check_call"})
+
+
+def spawn_sites(tree):
+    for node in ast.walk(tree):
+        func = getattr(node, "func", None)
+        if (isinstance(node, ast.Call) and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name) and func.value.id == "subprocess"
+                and func.attr in SPAWN_CALLS):
+            yield node
+
+
+def wears_no_window_hat(node) -> bool:
+    """显式声明 creationflags（或展开 no_window_kw()）才算戴了帽子。
+
+    只看「显式」：默认值在不同父进程下行为不一样（有控制台的父进程不弹、没有的每调一次
+    弹一个），指望继承就是 2026-11-24 那场满屏黑框的成因。
+    """
+    return any(k.arg == "creationflags" or "no_window_kw" in ast.unparse(k.value) for k in node.keywords)
+
+
+def visible_python_consoles() -> list[tuple[int, str]]:
+    """当前**可见**的控制台窗口里，标题带 python 的那些（(hwnd, title)）。"""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[tuple[int, str]] = []
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            name = ctypes.create_unicode_buffer(260)
+            user32.GetClassNameW(hwnd, name, 260)
+            title = ctypes.create_unicode_buffer(400)
+            user32.GetWindowTextW(hwnd, title, 400)
+            if "Console" in name.value and "python" in title.value.lower():
+                found.append((hwnd, title.value))
+        return True
+
+    user32.EnumWindows(callback_type(visit), 0)
+    return found
+
+
+#: 中间人：自己**没有控制台**（DETACHED_PROCESS），再按收到的 flags 拉一个孙子进程。
+#: 复刻的就是「AstrBot 计划任务 / CI runner 拉流水线」的处境 —— 孙子弹不弹，全看帽子。
+_PROBE = (
+    "import subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(40)'], creationflags=int(sys.argv[1]))\n"
+    "time.sleep(40)\n"
+)
+
+
+class NoConsoleWindow(unittest.TestCase):
+    """C1~C3：流水线拉起的每一个子进程都不许弹黑框。
+
+    缘起（2026-11-24，主人反馈）：跑一次门禁，python 黑框像潮水一样往外冒 ——
+    回归 110 件 + UI 18 件 + 变异 165 条里每条一次子进程，每个都新建一个可见控制台窗口。
+    判据分三层：C1 扫源码（漏一处就红），C2 先证明这把尺子量得出窗口，C3 再量帽子管用。
+    """
+
+    def test_c1_every_spawn_declares_creationflags(self):
+        offenders = []
+        for path in harness_sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in spawn_sites(tree):
+                if not wears_no_window_hat(node):
+                    offenders.append(f"{path.relative_to(M.ROOT)}:{node.lineno} subprocess.{node.func.attr}()")
+        self.assertEqual(offenders, [],
+                         "子进程没显式声明 creationflags（Windows 上会弹黑框，见 tests/_no_window.py）：\n"
+                         + "\n".join(offenders))
+
+    def _probe_windows(self, child_flags: int) -> tuple[list, list]:
+        """在「没有控制台的父进程」下起一个孙子进程，返回（起前窗口, 起后窗口）。"""
+        before = visible_python_consoles()
+        middle = subprocess.Popen([sys.executable, "-c", _PROBE, str(child_flags)],
+                                  creationflags=subprocess.DETACHED_PROCESS)   # 显式：故意无控制台
+        try:
+            deadline = time.monotonic() + 8
+            after = before
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                after = visible_python_consoles()
+                if len(after) != len(before):
+                    break
+        finally:
+            V.kill_tree(middle)
+            with contextlib.suppress(Exception):        # 收尸：不留 ResourceWarning
+                middle.wait(timeout=10)
+        return before, after
+
+    def test_c2_probe_sees_an_undeclared_console(self):
+        """量尺自检：没有帽子的孙子进程，必须能量到它新开出来的窗口。"""
+        if os.name != "nt":
+            self.skipTest("黑框是 Windows 概念")
+        before, after = self._probe_windows(0)
+        self.assertGreater(len(after), len(before),
+                           "量尺是坏的：没戴帽子的子进程都没能量到窗口，C3 就等于恒真")
+
+    def test_c3_no_window_flag_suppresses_the_console(self):
+        if os.name != "nt":
+            self.skipTest("黑框是 Windows 概念")
+        before, after = self._probe_windows(int(NO_WINDOW.CREATE_NO_WINDOW))
+        self.assertEqual([t for _, t in after if t not in [x for _, x in before]], [],
+                         "戴了 CREATE_NO_WINDOW 还弹窗 —— 说明帽子没送到子进程手上")
+
 
 
 if __name__ == "__main__":

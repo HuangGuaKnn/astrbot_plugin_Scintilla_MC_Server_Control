@@ -21,6 +21,7 @@ from time import perf_counter
 
 from verify_timing import print_bill
 from verify_process import kill_tree
+from _no_window import no_window_kw  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,7 +130,7 @@ def pid_lock(source: Path):
 
 
 def git(source: Path, *args: str) -> bytes:
-    return subprocess.check_output(["git", "-C", str(source), *args])
+    return subprocess.check_output(["git", "-C", str(source), *args], **no_window_kw())
 
 
 def changed_files(source: Path, ref: str) -> set[str]:
@@ -227,7 +228,7 @@ def anchor(raw: bytes, case: Case) -> tuple[int, bytes, bytes]:
 def run_test(root: Path, command, env):
     with subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, encoding="utf-8", errors="replace",
-                          start_new_session=os.name != "nt") as proc:
+                          start_new_session=os.name != "nt", **no_window_kw()) as proc:
         try:
             stdout, stderr = proc.communicate(timeout=300)
         except BaseException:

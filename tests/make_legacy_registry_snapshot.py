@@ -69,6 +69,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from _no_window import no_window_kw  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -154,7 +155,7 @@ class _Jar:
             r = subprocess.run(
                 ["java", "-jar", str(CFR), str(cls_file), "--silent", "true"],
                 capture_output=True, text=True, errors="replace",
-            )
+             **no_window_kw())
             text = r.stdout or ""
         self._cache[cls] = text
         return text

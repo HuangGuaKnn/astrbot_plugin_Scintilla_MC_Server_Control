@@ -37,6 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _paths import add_sys_paths  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 FAIL: list[str] = []
 SKIP: list[str] = []
@@ -392,7 +393,7 @@ def part_matrix():
     r = subprocess.run([sys.executable, str(EXTRACTOR), "--check"],
                        cwd=str(ROOT), capture_output=True, text=True,
                        encoding="utf-8", errors="replace",
-                       env={**os.environ, "MC_MATRIX_DIR": matrix})
+                       env={**os.environ, "MC_MATRIX_DIR": matrix}, **no_window_kw())
     check("★靶场层：快照与真 jar 重算逐条一致（--check）", r.returncode == 0,
           (r.stdout or "")[-400:] + (r.stderr or "")[-400:])
     print((r.stdout or "").strip())

@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _no_window import no_window_kw  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PAGE = ROOT / "pages" / "mc_control" / "index.html"
@@ -172,7 +173,7 @@ def main() -> int:
         fnsrc.write_text(fn_src, encoding="utf-8")
         r = subprocess.run([node, str(js), str(PAGE), str(fnsrc)],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=60)
+                           errors="replace", timeout=60, **no_window_kw())
 
     if r.returncode != 0:
         check("node 跑通 collectSettings()", False,

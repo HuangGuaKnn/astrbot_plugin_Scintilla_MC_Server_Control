@@ -52,6 +52,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.core.knowledge_base import (  # 
 PLUGIN = PLUGIN_DIR
 sys.path.insert(0, str(PLUGIN))
 import run_release_verify as RV  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 try:
     import numpy as np
@@ -357,7 +358,7 @@ def part_d() -> None:
     env.pop("PYTHONUTF8", None)          # 复刻「没有 UTF-8 强制」的 GBK 机器
     env["PYTHONIOENCODING"] = "gbk"
     r = subprocess.run([RV.PY, str(PLUGIN / "run_release_verify.py"), "--list-ui"],
-                       capture_output=True, env=env, cwd=str(PLUGIN))
+                       capture_output=True, env=env, cwd=str(PLUGIN), **no_window_kw())
     text = r.stdout.decode("utf-8", errors="replace")
     check("★GBK 环境：runner 自身输出仍是 UTF-8（reconfigure 显式 encoding 生效）",
           r.returncode == 0 and "硬门禁" in text,

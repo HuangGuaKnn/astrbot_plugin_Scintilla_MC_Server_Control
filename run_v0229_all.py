@@ -11,6 +11,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "tests"))
+from _no_window import no_window_kw  # noqa: E402
+
 
 # 解释器选择：测试依赖 AstrBot 运行时（UI 用例还要真实 Edge）。
 # 用系统 Python 直接跑会因缺依赖而失败 —— 优先挑 AstrBot 自带解释器。
@@ -57,7 +60,7 @@ def run_group(pattern: str, title: str):
     for f in files:
         t0 = time.time()
         r = subprocess.run([PY, str(f)], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", cwd=str(ROOT))
+                           encoding="utf-8", errors="replace", cwd=str(ROOT), **no_window_kw())
         cost = time.time() - t0
         ok = r.returncode == 0
         print(f"[{'PASS' if ok else 'FAIL'}] {f.name}  ({cost:.1f}s)")

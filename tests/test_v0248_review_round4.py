@@ -50,6 +50,7 @@ from astrbot_plugin_Scintilla_MC_Server_Control.main import (                   
     McControlPlugin,
     StarTools,
 )
+from _no_window import no_window_kw  # noqa: E402
 
 FAILED: list[str] = []
 PASSED = [0]
@@ -549,7 +550,7 @@ def part_p9_root_log_ignored_by_git() -> None:
     try:
         probe.write_text("C:\\Users\\<账户>\\.astrbot\\data 本机绝对路径\r\n", encoding="utf-8")
         r = subprocess.run(["git", "check-ignore", "-q", probe.name],
-                           cwd=str(PLUGIN_DIR), capture_output=True)
+                           cwd=str(PLUGIN_DIR), capture_output=True, **no_window_kw())
         check("★仓库根目录任意 .log 都被忽略（兜底 /*.log，而不是按名字一条条补）",
               r.returncode == 0,
               f"git check-ignore rc={r.returncode}：这个名字没被兜住，`git add -A` 会把它带走")

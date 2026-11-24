@@ -61,6 +61,7 @@ from _ui_manifest import (  # noqa: E402
 )
 from verify_timing import print_bill  # noqa: E402
 from verify_process import kill_tree  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 #: `--ui-set=` 的取值 → 实际要跑的 UI 用例（唯一一处「集合怎么算」）
 UI_SETS = {
@@ -159,7 +160,7 @@ def run_file(rel: str, timeout: float, env_extra: dict | None = None):
     with TemporaryDirectory(prefix="scintilla-verify-") as temp:
         env.update(TMP=temp, TEMP=temp, TMPDIR=temp, ASTRBOT_ROOT=str(Path(temp) / "astrbot"),
                    PYTHONDONTWRITEBYTECODE="1")
-        proc = subprocess.Popen([PY, str(ROOT / rel)], **kwargs)
+        proc = subprocess.Popen([PY, str(ROOT / rel)], **kwargs, **no_window_kw())
         try:
             out, _ = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -329,7 +330,7 @@ def check_untracked_forensics(root: Path | None = None) -> list:
 
     def _git(*args: str):
         return subprocess.run(["git", *args], cwd=str(base), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace")
+                              text=True, encoding="utf-8", errors="replace", **no_window_kw())
 
     try:
         others = _git("ls-files", "--others", "--exclude-standard")
@@ -405,7 +406,7 @@ def check_export_ignore(strict: bool = False) -> list:
         return env_missing("没有 .gitattributes —— 发布包会带上测试与内部文档")
     try:
         r = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
-                           cwd=str(ROOT), capture_output=True)   # 二进制，别加 text=True
+                           cwd=str(ROOT), capture_output=True, **no_window_kw())   # 二进制，别加 text=True
     except Exception:                                            # noqa: BLE001
         return env_missing("没有 git（或不是仓库）—— 跳过发布包卫生实测")
     if r.returncode != 0:
@@ -581,12 +582,12 @@ def check_export_ignore(strict: bool = False) -> list:
     try:
         st = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
                             capture_output=True, text=True, encoding="utf-8",
-                            errors="replace")
+                            errors="replace", **no_window_kw())
         dirty = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
         if st.returncode == 0 and dirty:
             head = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                                   cwd=str(ROOT), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace").stdout.strip()
+                                  encoding="utf-8", errors="replace", **no_window_kw()).stdout.strip()
             print(f"[NOTE] 本次实测的是 HEAD({head}) 的归档 —— 工作区还有 "
                   f"{len(dirty)} 处未提交改动，**不在这份名单里**；"
                   "要让它们进包，得先提交再复跑。")
@@ -612,7 +613,7 @@ def static_checks(strict_env: bool = False) -> list[str]:
     r = subprocess.run([PY, "-m", "compileall", "-q", "main.py", "core", "pages", "tests",
                         "run_release_verify.py", "run_v0230_all.py"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       cwd=str(ROOT))
+                       cwd=str(ROOT), **no_window_kw())
     ok = r.returncode == 0
     print(f"[{'PASS' if ok else 'FAIL'}] compileall（{len(py_files)} 个 .py）")
     if not ok:

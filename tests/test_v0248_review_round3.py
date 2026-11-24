@@ -41,6 +41,7 @@ require_app()
 from astrbot_plugin_Scintilla_MC_Server_Control.core import log_watcher as lw  # noqa: E402
 from astrbot_plugin_Scintilla_MC_Server_Control.core import strict_bool as sb  # noqa: E402
 from astrbot_plugin_Scintilla_MC_Server_Control.core import web_api as wa  # noqa: E402
+from _no_window import no_window_kw  # noqa: E402
 
 FAILED: list[str] = []
 PASSED = [0]
@@ -331,7 +332,7 @@ def part_p7_root_hygiene() -> None:
     out = buf.getvalue()
 
     raw = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
-                         cwd=str(PLUGIN_DIR), capture_output=True).stdout
+                         cwd=str(PLUGIN_DIR), capture_output=True, **no_window_kw()).stdout
     tf = _tarfile.open(fileobj=_io.BytesIO(raw), encoding="utf-8", errors="replace")
     real = sum(1 for m in tf.getmembers() if m.isfile())
     ndir = sum(1 for m in tf.getmembers() if not m.isfile())
