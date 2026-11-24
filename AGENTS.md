@@ -10,9 +10,11 @@
 AstrBot 插件：把 Minecraft 服务器的状态、玩家管理、RCON 终端、审计搬进 WebUI。
 支持本地服务端与异地 RCON 两种模式，兼容 1.7.10 至 1.21 多个世代。
 
-- 仓库根：`C:\Users\10316\Documents\ChatGPT\Astrbot minecraft\astrbot_plugin_Scintilla_MC_Server_Control`
-- 部署目录：`C:\Users\10316\.astrbot\data\plugins\astrbot_plugin_Scintilla_MC_Server_Control`
-- Python：`C:\Users\10316\AppData\Local\AstrBot\backend\python\python.exe`
+- 仓库根：本目录（脚本一律用 `__file__` 定位，克隆到哪都能跑）
+- 部署目录：`<AstrBot 数据目录>/plugins/astrbot_plugin_Scintilla_MC_Server_Control`
+- Python：`<AstrBot 安装目录>/backend/python/python.exe`
+- 本机真实路径写在 `docs/_internal/STATUS.md`（那份不进仓库，守卫 `test_v0240_no_local_paths.py`
+  也不扫它）—— **仓库内任何文件都不许出现本机路径**，这是个会响的警报，别写死。
 
 ---
 
@@ -57,7 +59,7 @@ AstrBot 插件：把 Minecraft 服务器的状态、玩家管理、RCON 终端�
 ## 4. 验证三件套
 
 ```powershell
-$py = "C:\Users\10316\AppData\Local\AstrBot\backend\python\python.exe"
+$py = "<AstrBot 安装目录>\backend\python\python.exe"   # 本机实际值见 docs/_internal/STATUS.md
 & $py -B -X utf8 tests\mutation_all.py             # 变异（四路并行，≈5.5 min）
 & $py -B -X utf8 run_release_verify.py             # Edge 门禁（≈3 min）
 & $py -B -X utf8 run_release_verify.py --bundled   # Chromium 门禁（≈3 min）

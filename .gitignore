@@ -61,3 +61,8 @@ docs/CONSULT_*.md
 docs/*.diff
 docs/*实施单*.md
 docs/_internal/
+
+# ---- 变异锁（v0.25.1 补）----
+# 踩过的坑：`tests/.mutation.lock` 被误提交进过仓库，而每轮变异都会改写它 →
+# 于是工作区永远显示「有改动」，法证判据也跟着吵。它本来就是运行期产物，不该入库。
+tests/.mutation.lock
