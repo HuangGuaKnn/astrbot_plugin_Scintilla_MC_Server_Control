@@ -47,7 +47,7 @@ _LAN_IPV4 = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.
 #: 只认这种，不单独抓「看起来像 IP 的串」—— 理由里可能就写着别人的 IP。
 _IP_ENTRY = re.compile(r"(?P<ip>[0-9A-Fa-f:.]+)\s+was banned by\s+(?P<src>[^:]+):\s*(?P<reason>.*)", re.I)
 _BAN_COUNT = re.compile(r"There are\s+(\d+)\b", re.I)
-_NO_BANS = re.compile(r"There are no (?:IP )?bans?|total banned IPs:\s*$", re.I)
+_NO_BANS = re.compile(r"There are no (?:IP )?bans?|There are (?:0 )?total banned IPs:\s*", re.I)
 
 
 def normalize_ip(text: str) -> str:
@@ -74,7 +74,7 @@ def _parse_ip_bans(text: str) -> list[str] | None:
     clean = server_card.strip_color_codes(text or "").strip()
     if not clean:
         return None
-    if _NO_BANS.search(clean):
+    if _NO_BANS.fullmatch(clean):
         return []
     # 先取声明数量，再把「There are N bans:」这类前缀剥掉再扫 IP。
     # 不剥的话，IP 字符类 `[0-9A-Fa-f:.]+` 会把前缀末尾那个**冒号**吞进候选
@@ -101,6 +101,8 @@ _IPV4 = re.compile(r"(?<!\d)\d+(?:\.\d+){3}")
 _IP_CANDIDATE = re.compile(r"(?<![\w:])[a-fA-F0-9:.]+(?:%[A-Za-z0-9_.-]+)?(?![\w:])")
 _LEGACY_BANS = re.compile(r"There are (\d+) total banned players:\s*(.*)", re.DOTALL)
 _MODERN_BANS = re.compile(r"There are (\d+) ban(?:s|\(s\)):\s*(.*)", re.DOTALL)
+_BAN_ENTRY_NAME = re.compile(r"([A-Za-z0-9_]{1,16}) was banned by ")
+_BAN_ENTRY_IP = re.compile(r"([0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.-]+)?) was banned by ")
 _BAN_ENTRY = re.compile(r"([A-Za-z0-9_]{1,16}) was banned by [^:\r\n]+: [^\r\n]*")
 _WHITELIST = re.compile(
     r"There are (\d+)(?: \(out of \d+ seen\))? whitelisted player(?:s|\(s\)):\s*(.*)",
@@ -296,6 +298,8 @@ async def _read_roster(plugin, command: str, rcon=None) -> dict:
     result = {"command": command, "players": players or [], **_status(state, note, reply.raw)}
     if command == "list":
         result.update(online=online["online"] if online else None, max=online["max"] if online else None)
+    elif command in ("banlist players", "banlist ips"):
+        result["boundary_confirmed"] = complete and reply.verdict.boundary_confirmed is True
     return result
 
 
@@ -410,6 +414,63 @@ def _ban_details(plugin) -> tuple[dict[str, dict] | None, str]:
     return details, ""
 
 
+def _verify_glued_roster(listed: dict, records) -> None:
+    """本地条目能完整重建黏连回包时，补上回包中的顺序和状态。"""
+    if listed["state"] != server_card.STATE_UNRECOGNIZED or listed.get("boundary_confirmed") is not True:
+        return
+    raw = listed["raw"]
+    match = _MODERN_BANS.fullmatch(server_card.strip_color_codes(raw).strip())
+    if not match or int(match[1]) < 2 or records is None or len(records) != int(match[1]):
+        return
+
+    is_ip = listed["command"] == "banlist ips"
+    field, entry_pattern, filename = (
+        ("ip", _BAN_ENTRY_IP, "banned-ips.json") if is_ip
+        else ("name", _BAN_ENTRY_NAME, "banned-players.json")
+    )
+    details = {}
+    for record in records:
+        value = record.get(field) if isinstance(record, dict) else None
+        if not isinstance(value, str):
+            return
+        try:
+            key = normalize_ip(value) if is_ip else value.casefold()
+        except ValueError:
+            return
+        if key in details:
+            return
+        details[key] = record
+
+    body = match[2]
+    offset = 0
+    names = []
+    while details:
+        entry = entry_pattern.match(body, offset)
+        if not entry:
+            return
+        name = entry[1]
+        try:
+            name_key = normalize_ip(name) if is_ip else name.casefold()
+        except ValueError:
+            return
+        record = details.pop(name_key, None)
+        if record is None:
+            return
+        source, reason = record.get("source"), record.get("reason")
+        if not isinstance(source, str) or not isinstance(reason, str):
+            return
+        expected = server_card.strip_color_codes(f"{name} was banned by {source}: {reason}")
+        if not body.startswith(expected, offset):
+            return
+        names.append(name_key if is_ip else name)
+        offset += len(expected)
+        while offset < len(body) and body[offset].isspace():
+            offset += 1
+    if offset == len(body):
+        listed.update(_status(server_card.STATE_OK, f"回包与本地 {filename} 一致", raw),
+                      players=names, roster_source=filename)
+
+
 def _ip_bans(plugin) -> tuple[list | None, str]:
     """读 `banned-ips.json` —— IP 封禁的权威名单。
 
@@ -439,8 +500,10 @@ def _ip_bans(plugin) -> tuple[list | None, str]:
 
 async def _append_ip_bans(plugin, result: dict) -> None:
     """把 IP 封禁名单并进 `get_bans` 的结果。以文件为准，回包只作交叉验证。"""
-    records, detail_note = _ip_bans(plugin)
     listed = await _read_roster(plugin, "banlist ips")
+    records, detail_note = _ip_bans(plugin)
+    _verify_glued_roster(listed, records)
+    result["ip_readback"] = listed
     from_reply = list(listed.get("players") or [])
     from_file = bool(records)
     if from_file:
@@ -477,12 +540,17 @@ async def _append_ip_bans(plugin, result: dict) -> None:
         result["items"].append(item)
     if malformed:
         detail_note = f"{malformed} 条记录格式异常，已保留原记录，不能在这里解封"
-    if from_file and from_reply:
-        # 文件与回包不一致时以文件为准；合法 IP 用同一规范化形式比较。
-        diff = set(from_reply) - valid_ips
-        if diff:
-            detail_note = (detail_note + "；" if detail_note else "") + \
-                f"RCON 回包里有 {len(diff)} 个地址不在文件中"
+    if from_file:
+        notes = [detail_note] if detail_note else []
+        if listed["state"] in (server_card.STATE_OK, server_card.STATE_EMPTY):
+            reply_ips = set(from_reply)
+            if reply_ips - valid_ips:
+                notes.append(f"RCON 回包里有 {len(reply_ips - valid_ips)} 个地址不在文件中")
+            if valid_ips - reply_ips:
+                notes.append(f"本地文件中有 {len(valid_ips - reply_ips)} 个地址未出现在 RCON 回包中")
+        else:
+            notes.append("IP 名单来源：banned-ips.json")
+        detail_note = "；".join(notes)
     result["ip_count"] = len(records)
     result["ip_source"] = source
     if detail_note:
@@ -506,14 +574,15 @@ async def _player_bans(plugin) -> dict:
 
     现在改为：**回包认不出但文件可读时，名单改用文件里的记录**。
     文件是确定性数据（不需要猜边界），因此每一条都能单独解封；
-    但 ``state`` 仍如实保持「回执认不出」，并在 note 里写清名单来自哪里 ——
-    不粉饰，也不让人对着一段原文干瞪眼。
+    仅在文件和完整回包逐条一致时确认回包，其他情况保留原回包状态。
     """
     listed = await _read_roster(plugin, "banlist players")
+    details, detail_note = _ban_details(plugin)
+    _verify_glued_roster(listed, details.values() if details is not None else None)
     result = {key: listed[key] for key in ("state", "state_label", "note", "raw")}
-    result.update(items=[], detail_note="", mismatch_count=0, roster_source="banlist players")
+    result.update(items=[], detail_note=detail_note, mismatch_count=0,
+                  roster_source=listed.get("roster_source", "banlist players"))
 
-    details, result["detail_note"] = _ban_details(plugin)
     if listed["state"] == server_card.STATE_OK:
         names = list(listed["players"])
         if details is not None:
@@ -661,6 +730,14 @@ async def _apply_action(plugin, result: dict) -> None:
         result.update(_status(state, note, reply.raw))
         return
 
+    if (readback["state"] == server_card.STATE_UNRECOGNIZED and readback.get("boundary_confirmed") is True
+            and (action in ("ban", "unban") or action in _IP_ACTIONS)):
+        if action in _IP_ACTIONS:
+            records, _ = _ip_bans(plugin)
+        else:
+            details, _ = _ban_details(plugin)
+            records = details.values() if details is not None else None
+        _verify_glued_roster(readback, records)
     if readback["state"] not in (server_card.STATE_OK, server_card.STATE_EMPTY):
         result.update(_status(readback["state"], f"已发出但未确认：{readback['note']}", reply.raw))
         return
@@ -678,7 +755,10 @@ async def _apply_action(plugin, result: dict) -> None:
         result.update(_status(server_card.STATE_UNRECOGNIZED, "已发出但未确认：回读名单未证实操作生效", reply.raw))
         return
 
-    result.update(_status(server_card.STATE_OK, "已回读确认", reply.raw), ok=True, confirmed=True)
+    note = "已回读确认"
+    if readback.get("roster_source"):
+        note += f"（{readback['note']}）"
+    result.update(_status(server_card.STATE_OK, note, reply.raw), ok=True, confirmed=True)
 
 
 async def run_action(

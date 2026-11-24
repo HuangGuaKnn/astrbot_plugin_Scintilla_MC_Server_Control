@@ -325,6 +325,30 @@ def check_ban_rendering(scenario):
     print("[PASS] P11 永久、本地到期和过期显示准确，缺详情及文件差异有说明")
 
 
+def check_verified_banlist(scenario):
+    scenario.bans.update(
+        state="ok", note="回包与本地 banned-players.json 一致", roster_source="banned-players.json",
+        ip_readback={"state": "ok", "note": "回包与本地 banned-ips.json 一致", "roster_source": "banned-ips.json"},
+    )
+    scenario.open()
+    panel = scenario.page.locator("#sv_bans")
+    expect(panel.get_by_text("已确认", exact=True), "G1 玩家和 IP 面板均须显示已确认").to_have_count(2)
+    for filename in ("banned-players.json", "banned-ips.json"):
+        expect(panel.get_by_text(f"回包与本地 {filename} 一致", exact=True)).to_be_visible()
+
+    marker = '<b data-fixture="ban-readback">原因</b>'
+    scenario.bans.update(
+        state="unrecognized", state_label="回执认不出", note="名单改用 banned-players.json", raw=marker,
+        ip_readback={"state": "unrecognized", "state_label": "回执认不出", "note": "IP 回包无法核对", "raw": marker},
+    )
+    scenario.refresh()
+    expect(panel.get_by_text("回执认不出", exact=True)).to_have_count(2)
+    expect(panel.locator(".bc-out").filter(has_text=marker)).to_have_count(2)
+    expect(panel.locator("[data-fixture]")).to_have_count(0)
+    expect(panel.get_by_text("已确认", exact=True)).to_have_count(0)
+    print("[PASS] G1 玩家/IP 面板显示核对依据、失败状态与转义原文")
+
+
 def check_unban(scenario):
     scenario.open()
     page = scenario.page
@@ -804,6 +828,7 @@ def check_workflow_history(scenario):
 
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
+         "G1": check_verified_banlist,
          "P14": check_manual_ban, "P15": check_player_ip, "P16": check_online_actions,
          "P18": check_console_notice, "P20": check_single_color_card,
          "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,

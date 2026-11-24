@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import io
 import json
 import tempfile
@@ -34,6 +35,21 @@ NO_BANS = "There are no bans"
 WL_ADD = "There are 1 whitelisted player(s): Steve"
 WL_EMPTY = "There are no whitelisted players"
 UNKNOWN = 'Unknown command. Type "/help" for help.'
+LIVE_PLAYER_BANS = (
+    ("There are 1 bans:1 was banned by Recon: Banned by an operator.", ["1"]),
+    ("There are 2 bans:1 was banned by Recon: Banned by an operator."
+     "2 was banned by Recon: Banned by an operator.", ["1", "2"]),
+    ("There are 3 bans:33a was banned by Recon: Banned by an operator."
+     "1 was banned by Recon: Banned by an operator.2 was banned by Recon: Banned by an operator.", ["33a", "1", "2"]),
+)
+LIVE_IP_BANS = (
+    ("There are 1 bans:203.0.113.211 was banned by Recon: Banned by an operator.", ["203.0.113.211"]),
+    ("There are 2 bans:203.0.113.211 was banned by Recon: Banned by an operator."
+     "198.51.100.212 was banned by Recon: Banned by an operator.", ["203.0.113.211", "198.51.100.212"]),
+    ("There are 3 bans:192.0.2.213 was banned by Recon: Banned by an operator."
+     "203.0.113.211 was banned by Recon: Banned by an operator."
+     "198.51.100.212 was banned by Recon: Banned by an operator.", ["192.0.2.213", "203.0.113.211", "198.51.100.212"]),
+)
 
 
 class FakePlugin:
@@ -476,6 +492,125 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["readback"]["raw"], readback)
                 self.assertGuarded(plugin, cmd, "banlist players")
 
+    async def test_glued_readback_confirms_player_ban_and_unban(self):
+        reason = "Banned by an operator."
+        other_reason = "审核备注：12 was banned by Recon: previous decision"
+        # 文件顺序可以与回包不同，原因内也可以含有类似下一条记录的文字。
+        entries = [{"name": "2", "source": "Recon", "reason": reason},
+                   {"name": "1", "source": "Recon", "reason": other_reason}]
+        (self.path / "banned-players.json").write_text(
+            json.dumps(entries, ensure_ascii=False), encoding="utf-8",
+        )
+        glued = f"There are 2 bans:1 was banned by Recon: {other_reason}2 was banned by Recon: {reason}"
+        for action, target, command, reply in (
+            ("ban", "2", "ban 2", f"Banned 2: {reason}"),
+            ("unban", "3", "pardon 3", "Unbanned 3"),
+        ):
+            with self.subTest(action=action):
+                plugin = FakePlugin({command: reply, "banlist players": glued}, server_dir=str(self.path))
+                result = await player_admin.run_action(plugin, action, target)
+                self.assertTrue(result["confirmed"], "连续封禁或解封后，吻合的本地名单须确认黏连回包")
+                self.assertEqual(result["readback"]["raw"], glued)
+                self.assertEqual(result["readback"]["players"], ["1", "2"])
+                self.assertEqual(result["readback"]["roster_source"], "banned-players.json")
+                self.assertGuarded(plugin, command, "banlist players")
+
+    async def test_glued_readback_rejects_unverified_player_bans(self):
+        entries = [{"name": "1", "source": "Recon", "reason": "first"},
+                   {"name": "2", "source": "Recon", "reason": "second"}]
+        glued = "There are 2 bans:1 was banned by Recon: first2 was banned by Recon: second"
+        file = self.path / "banned-players.json"
+        for label, records, raw, boundary in (
+            ("file missing", None, glued, True),
+            ("same count, different reason", [entries[0], {**entries[1], "reason": "former"}], glued, True),
+            ("same count, different player", [entries[0], {**entries[1], "name": "12"}], glued, True),
+            ("different count", entries[:1], glued, True),
+            ("extra response text", entries, glued + " extra text", True),
+            ("unconfirmed boundary", entries, glued, False),
+        ):
+            with self.subTest(label=label):
+                if records is not None:
+                    file.write_text(json.dumps(records), encoding="utf-8")
+                plugin = FakePlugin({"ban 2": "Banned 2: second", "banlist players": raw},
+                                    server_dir=str(self.path))
+                plugin.last_boundary_confirmed = boundary
+                result = await player_admin.run_action(plugin, "ban", "2")
+                self.assertFalse(result["confirmed"], "本地名单跑偏或回包边界未确认时不得确认")
+                self.assertEqual(result["readback"]["players"], [])
+                self.assertEqual(result["readback"]["raw"], raw)
+
+    async def test_live_banlist_samples_confirm_only_corroborated_panels(self):
+        for kind, field, samples in (("players", "name", LIVE_PLAYER_BANS), ("ips", "ip", LIVE_IP_BANS)):
+            filename = f"banned-{kind}.json"
+            path = self.path / filename
+            for raw, names in samples:
+                with self.subTest(kind=kind, count=len(names)):
+                    records = [{field: name, "source": "Recon", "reason": "Banned by an operator."}
+                               for name in reversed(names)]
+                    path.write_text(json.dumps(records), encoding="utf-8")
+                    plugin = FakePlugin({"banlist players": NO_BANS, "banlist ips": NO_BANS,
+                                         f"banlist {kind}": raw}, server_dir=str(self.path))
+                    panel = await player_admin.get_bans(plugin)
+                    readback = panel if kind == "players" else panel["ip_readback"]
+                    self.assertEqual(readback["state"], "ok", "真机黏连样本与文件一致时面板须确认")
+                    self.assertEqual(readback["raw"], raw)
+                    items = [item["name"] for item in panel["items"] if (item.get("kind") == "ip") == (kind == "ips")]
+                    self.assertEqual(items, names if kind == "players" else list(reversed(names)))
+                    if len(names) > 1:
+                        self.assertEqual(readback["roster_source"], filename)
+                        self.assertEqual(readback["note"], f"回包与本地 {filename} 一致")
+                        plugin.last_boundary_confirmed = False
+                        uncertain = await player_admin.get_bans(plugin)
+                        readback = uncertain if kind == "players" else uncertain["ip_readback"]
+                        self.assertEqual(readback["state"], "unrecognized", "未确认边界的面板回包不得用文件确认")
+                        plugin.last_boundary_confirmed = True
+                        records[-1]["reason"] = "Banned by an operator!"
+                        path.write_text(json.dumps(records), encoding="utf-8")
+                    else:
+                        plugin.replies[f"banlist {kind}"] = raw.replace("There are 1 bans", "There are 2 bans")
+                    rejected = await player_admin.get_bans(plugin)
+                    readback = rejected if kind == "players" else rejected["ip_readback"]
+                    self.assertEqual(readback["state"], "unrecognized", "真机样本与文件不一致时面板须保留失败态")
+                    self.assertEqual(readback["raw"], plugin.replies[f"banlist {kind}"])
+                    if kind == "ips":
+                        self.assertEqual(rejected["ip_source"], filename)
+                        self.assertIn("名单来源", rejected["ip_note"])
+                        self.assertNotIn("不在文件中", rejected["ip_note"])
+                    else:
+                        self.assertIn("无法可靠切分", readback["note"])
+            path.unlink()
+
+    async def test_live_glued_ip_readback_confirms_ban_and_unban(self):
+        for action, verb, count, target in (
+            ("ban_ip", "ban-ip", 3, "192.0.2.213"),
+            ("unban_ip", "pardon-ip", 2, "192.0.2.213"),
+        ):
+            with self.subTest(action=action):
+                raw, addresses = LIVE_IP_BANS[count - 1]
+                entries = [{"ip": ip, "source": "Recon", "reason": "Banned by an operator."} for ip in addresses]
+                (self.path / "banned-ips.json").write_text(json.dumps(entries), encoding="utf-8")
+                command = f"{verb} {target}"
+                reply = f"{'Banned' if action == 'ban_ip' else 'Unbanned'} IP {target}"
+                plugin = FakePlugin({"list": EMPTY, command: reply, "banlist ips": raw}, server_dir=str(self.path))
+                result = await player_admin.run_action(plugin, action, target)
+                self.assertTrue(result["confirmed"], "IP 封禁和解封的黏连回读均须核对本地文件")
+                self.assertEqual(result["readback"]["players"], addresses)
+                self.assertEqual(result["readback"]["raw"], raw)
+                self.assertIn("回包与本地 banned-ips.json 一致", result["note"])
+
+    def test_glued_roster_uses_one_verifier_in_all_three_paths(self):
+        tree = ast.parse(Path(player_admin.__file__).read_text(encoding="utf-8"))
+        functions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        definitions = [node.name for node in functions if node.name.startswith("_verify_glued_")]
+        self.assertEqual(definitions, ["_verify_glued_roster"])
+        callers = {
+            node.name for node in functions
+            if any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                   and child.func.id == definitions[0] for child in ast.walk(node))
+        }
+        self.assertEqual(callers, {"_player_bans", "_append_ip_bans", "_apply_action"},
+                         "三处回读必须共用同一个黏连核对函数")
+
     async def test_p05_whitelist_requires_membership_readback(self):
         cases = (
             ("add", "Added Steve to the whitelist", WL_ADD, True),
@@ -633,7 +768,7 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
             json.dump([
                 {"name": "demoplayer", "reason": "演示用：看看封禁名单块",
                  "created": "2026-11-17 18:17:26 +0800", "source": "Recon", "expires": "forever"},
-                {"name": "123", "reason": "Banned by an operator.",
+                {"name": "123", "reason": "Banned by an operator!",
                  "created": "2026-11-17 18:20:44 +0800", "source": "Server", "expires": "forever"},
             ], out, ensure_ascii=False)
         plugin = FakePlugin({"banlist players": glued}, server_dir=str(self.path))
@@ -644,7 +779,7 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["name"] for item in result["items"]], ["demoplayer", "123"])
         self.assertTrue(all(item["removable"] for item in result["items"]))
         self.assertTrue(all(item["detail_available"] for item in result["items"]))
-        self.assertEqual(result["items"][1]["reason"], "Banned by an operator.")
+        self.assertEqual(result["items"][1]["reason"], "Banned by an operator!")
 
     async def test_bans_without_readable_file_still_refuse_to_guess(self):
         """回包认不出、文件也读不到 → 依然不许猜（条目必须空着，只留原文）。"""
@@ -831,6 +966,12 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             player_admin._parse_ip_bans("There are 2 bans:10.0.0.1 was banned by Recon: a"),
             "声明数量与条目数不符时须判认不出")
+        self.assertIsNone(
+            player_admin._parse_ip_bans("There are 2 bans:10.0.0.1 was banned by Recon: There are no bans"),
+            "IP 封禁原因中的空名单字样不得当成空服")
+        self.assertIsNone(
+            player_admin._parse_ip_bans("There are 2 total banned IPs:203.0.113.99 was banned by Server: x"),
+            "旧式 IP 前缀中的条数错误须判认不出")
 
 
 if __name__ == "__main__":
