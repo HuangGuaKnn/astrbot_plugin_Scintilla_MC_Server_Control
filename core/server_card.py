@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from .command_result import (
     classify_command_output,
@@ -64,6 +66,9 @@ from .command_result import (
     is_unknown_command_output,
     parse_daytime_reply,
 )
+from .mod_fingerprint import extract_mod_ids, extract_plugin_ids
+from .rcon import RconError, RconPartialResponseError
+from .tps_parse import normalize_reply, parse_tps_output, strip_color_codes
 from .version_caps import (
     ITEM_SYNTAX_COMPONENTS,
     ITEM_SYNTAX_LEGACY,
@@ -80,6 +85,8 @@ STATE_UNSUPPORTED = "unsupported"
 STATE_UNRECOGNIZED = "unrecognized"
 STATE_UNREACHABLE = "unreachable"
 STATE_NO_SOURCE = "no_source"
+STATE_SPARK_UNAVAILABLE = "spark_unavailable"
+TPS_EMPTY_LABEL = "答案未返回"
 
 #: 状态 → 中文短标签。**前端只渲染这个字符串**，不许在前端另写一份措辞 ——
 #: 否则同一种状态在页面和接口里叫两个名字，验收时就没人说得清哪边是对的。
@@ -90,23 +97,25 @@ STATE_LABEL = {
     STATE_UNRECOGNIZED: "回执认不出",
     STATE_UNREACHABLE: "连不上",
     STATE_NO_SOURCE: "无来源",
+    STATE_SPARK_UNAVAILABLE: "spark 的 TPS 无 RCON 回包",
 }
 
 #: 状态图例（给 UI 与文档共用；顺序即阅读顺序）
 STATE_LEGEND = (
     (STATE_OK, "正常"),
-    (STATE_EMPTY, "空服（0 人，正常）"),
+    (STATE_EMPTY, f"空服（0 人，正常） / {TPS_EMPTY_LABEL}（TPS 探针）"),
     (STATE_UNSUPPORTED, "该世代不支持"),
     (STATE_UNRECOGNIZED, "回执认不出（附原文）"),
     (STATE_UNREACHABLE, "连不上"),
     (STATE_NO_SOURCE, "无来源"),
+    (STATE_SPARK_UNAVAILABLE, STATE_LABEL[STATE_SPARK_UNAVAILABLE]),
 )
 
 #: 四个字段的固定顺序与采样来源（顺序即 UI 顺序，别在别处再排一次）
 FIELD_SPECS = (
     ("online", "在线人数", "/list"),
     ("daytime", "游戏内时间", "time query daytime"),
-    ("tps", "TPS", "/tps（探针）"),
+    ("tps", "TPS", "RCON 探针"),
     ("version", "版本与世代", "服务端文件探测 / 手动声明"),
 )
 
@@ -118,18 +127,6 @@ GENERATION_LABEL = {
     ITEM_SYNTAX_COMPONENTS: "物品组件世代（1.20.5+）",
     ITEM_SYNTAX_UNKNOWN: "世代未知",
 }
-
-# ===================== 回包清洗 =====================
-
-#: MC 的颜色 / 格式码（``§a`` / ``§r`` …）。Paper 的 ``/tps`` 回包整段都带它，
-#: 不清掉就解析不出数字 —— 这不是「认不出」，是我们自己的脏活。
-_COLOR_CODE_RE = re.compile("\u00a7.", re.UNICODE)
-
-
-def strip_color_codes(text: str) -> str:
-    """去掉 ``§x`` 颜色 / 格式码（不做其它任何改写）。"""
-    return _COLOR_CODE_RE.sub("", str(text or ""))
-
 
 # ===================== `/list` =====================
 
@@ -182,45 +179,6 @@ def parse_list_reply(raw: str) -> dict | None:
     return {"online": online, "max": maxp, "players": players}
 
 
-# ===================== `/tps` =====================
-
-#: Paper / Spigot 系：``TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0``
-_TPS_PAPER_RE = re.compile(r"tps\s+from\s+last\s+1m\s*,\s*5m\s*,\s*15m\s*[:：]\s*(.+)", re.I)
-_FLOAT_RE = re.compile(r"\d+(?:\.\d+)?")
-
-
-def parse_tps_reply(raw: str) -> dict | None:
-    """解析 ``/tps`` 回包 → ``{"1m", "5m", "15m"}``（缺的位为 None）；认不出返回 None。
-
-    认两种形态：
-
-    * Paper / Spigot：``TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0``
-      （带 ``§`` 颜色码，先清掉再解析）；
-    * 其它探针：**含 ``tps`` 字样的那一行**里的浮点数，取前三个。
-
-    第二种是刻意放宽的：模组探针的措辞五花八门（``Server TPS: 20.0`` /
-    ``TPS: 20.0 20.0 20.0``），只认 Paper 一种会把「装了探针」误报成「不支持」。
-    但**只扫含 ``tps`` 的那一行**，不扫整段 —— 否则任何回包里的数字都能被当成 TPS。
-
-    一个数字都取不到（``Unknown command`` / ``Unknown commandtps<--[HERE]`` /
-    空回包）→ None，由 :func:`judge_reply` 按证据判「不支持」还是「认不出」。
-    """
-    text = strip_color_codes(raw).strip()
-    if not text:
-        return None
-    m = _TPS_PAPER_RE.search(text)
-    if m:
-        nums = [float(x) for x in _FLOAT_RE.findall(m.group(1))]
-    else:
-        line = next((l for l in text.splitlines() if "tps" in l.lower()), "")
-        nums = [float(x) for x in _FLOAT_RE.findall(line)] if line else []
-    nums = [n for n in nums if 0.0 <= n <= 1000.0][:3]
-    if not nums:
-        return None
-    vals = (nums + [None, None, None])[:3]
-    return {"1m": vals[0], "5m": vals[1], "15m": vals[2]}
-
-
 # ===================== 用法文本（「该世代不支持」的确定性证据之一） =====================
 
 _USAGE_PREFIXES = ("usage:", "用法:", "语法:", "用法：", "语法：")
@@ -256,7 +214,7 @@ def judge_reply(command: str, raw: str, *, parsed: bool, error: str = "") -> tup
     3. 回包是用法文本 → ``unsupported``（子命令不存在，服务端只回用法）；
     4. ``Unknown command``（命令不存在）→ ``unsupported``；
     5. ``syntax_error``（命令存在、写法被拒）→ ``unsupported``；
-    6. 空回包 → ``unrecognized``（服务端一个字都没回，这既不是「不支持」也不是「没数据」）；
+    6. 空回包 → ``unrecognized``（TPS 探针单独判为空回答，不沿用这里的默认行为）；
     7. 其它明确失败（权限 / 被拒）→ ``unrecognized``：这不是「世代不支持」，
        而是「回了话但拿不到数据」，原文里才有真原因；
     8. 兜底 → ``unrecognized``。
@@ -290,6 +248,12 @@ def judge_reply(command: str, raw: str, *, parsed: bool, error: str = "") -> tup
 # ===================== 字段构造 =====================
 
 
+def _state_label(key: str, state: str) -> str:
+    if key == "tps" and state == STATE_EMPTY:
+        return TPS_EMPTY_LABEL
+    return STATE_LABEL.get(state, state)
+
+
 def _field(
     key: str,
     state: str,
@@ -306,7 +270,7 @@ def _field(
         "key": key,
         "label": label,
         "state": state,
-        "state_label": STATE_LABEL.get(state, state),
+        "state_label": _state_label(key, state),
         "value": value,
         "source": source,
         "note": note,
@@ -365,19 +329,169 @@ async def _probe_daytime(rcon) -> dict:
     return _field("daytime", state, "—", note=note, raw=raw)
 
 
-async def _probe_tps(rcon) -> dict:
-    raw, err = await _probe(rcon, "tps")
-    parsed = parse_tps_reply(raw) if not err else None
-    if parsed is not None:
-        nums = [parsed["1m"], parsed["5m"], parsed["15m"]]
-        shown = [f"{n:.1f}" for n in nums if n is not None]
-        note = "1 分钟 / 5 分钟 / 15 分钟均值"
-        low = any(n is not None and n < 18.0 for n in nums)
-        if low:
-            note += " · 低于 18，服务端可能吃力"
-        return _field("tps", STATE_OK, " / ".join(shown), note=note, extra={"tps": parsed, "low": low})
-    state, note = judge_reply("tps", raw, parsed=False, error=err)
-    return _field("tps", state, "—", note=note, raw=raw)
+_TPS_COMMANDS = ("tps", "forge tps", "mspt", "tick query")
+_TPS_UNKNOWN_LINE = re.compile(
+    r"^unknown (?:or incomplete )?command(?:[.!]?$|[,.] see below for error)",
+    re.I | re.M,
+)
+_SPARK_HELP = "请在游戏内或 spark 的 Web 页面查看"
+_SPARK_NOTE = f"服务端目录发现 spark，已核验的 spark TPS 命令经 RCON 回包为空。{_SPARK_HELP}"
+_SPARK_JAR = re.compile(r"spark(?:[-_].+)?\.jar", re.I)
+
+
+@dataclass(frozen=True)
+class TpsAttempt:
+    source: str
+    raw: str
+    state: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class TpsProbe:
+    state: str
+    source: str = ""
+    raw: str = ""
+    note: str = ""
+    attempts: tuple[TpsAttempt, ...] = ()
+    tps_1m: float | None = None
+    tps_5m: float | None = None
+    tps_15m: float | None = None
+    mspt: float | None = None
+    behind_ticks: int | None = None
+    percentiles: str = ""
+
+    @property
+    def state_label(self) -> str:
+        return _state_label("tps", self.state)
+
+    @property
+    def running_note(self) -> str:
+        if self.behind_ticks is None:
+            return ""
+        if self.behind_ticks == 0:
+            return "游戏循环运行正常"
+        return f"游戏循环落后 {self.behind_ticks} tick"
+
+    @property
+    def diagnostics(self) -> str:
+        """把回读异常的原文带到界面，完整的尝试清单另随 API 返回。"""
+        issues = [a for a in self.attempts if a.state in (STATE_UNRECOGNIZED, STATE_UNREACHABLE)]
+        if len(issues) == 1 and self.state == STATE_UNRECOGNIZED:
+            return issues[0].raw
+        if issues:
+            return "\n".join(
+                f"/{a.source} · {_state_label('tps', a.state)} · {a.note}" + (f"\n{a.raw}" if a.raw else "")
+                for a in issues
+            )
+        return self.raw if self.state != STATE_OK else ""
+
+
+def _has_local_spark(plugin) -> bool:
+    """仅用本机实际 JAR 的清单确认 spark，独立于知识库开关。"""
+    if not hasattr(plugin, "_cfg") or plugin.is_remote_mode():
+        return False
+    server_dir = str(plugin._cfg("server_dir", "") or "").strip()
+    if not server_dir:
+        return False
+    for folder, read_ids in (("mods", extract_mod_ids), ("plugins", extract_plugin_ids)):
+        try:
+            for jar in (Path(server_dir) / folder).glob("*.jar"):
+                if _SPARK_JAR.fullmatch(jar.name) and "spark" in read_ids(str(jar)):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+async def probe_tps(plugin, rcon=None) -> TpsProbe:
+    """按顺序采样 TPS/MSPT，返回第一条有效读数和已发生的全部尝试。"""
+    if rcon is None:
+        try:
+            rcon = await plugin._get_rcon()
+        except Exception as e:  # noqa: BLE001
+            return TpsProbe(STATE_UNREACHABLE, note=f"RCON 连接失败：{e}")
+        if rcon is None:
+            return TpsProbe(STATE_UNREACHABLE, note="RCON 未连接")
+
+    attempts = []
+    for source in _TPS_COMMANDS:
+        try:
+            raw = str(await rcon.command(source) or "")
+        except Exception as e:  # noqa: BLE001
+            raw = e.partial if isinstance(e, RconPartialResponseError) else ""
+            attempts.append(TpsAttempt(source, raw, STATE_UNREACHABLE, f"{type(e).__name__}: {e}"))
+            if isinstance(e, ConnectionError) or getattr(e, "phase", None) == RconError.PHASE_CONNECT:
+                break
+            continue
+        clean = normalize_reply(raw)
+        values = parse_tps_output(source, raw)
+        if _TPS_UNKNOWN_LINE.search(clean) or is_unknown_command_output(clean):
+            state = STATE_UNRECOGNIZED if values else STATE_UNSUPPORTED
+            note = "同一回包同时出现数值和命令拒绝提示" if values else "服务端回了「命令不存在」"
+        elif not clean:
+            state = STATE_EMPTY
+            note = "命令已回应，但答案为空。请在服务端控制台核对该命令"
+        else:
+            state, note = judge_reply(source, clean, parsed=bool(values))
+        attempts.append(TpsAttempt(source, raw, state, note))
+        if state == STATE_OK:
+            if "tps_1m" not in values and _has_local_spark(plugin):
+                note = _SPARK_NOTE
+            return TpsProbe(STATE_OK, source, raw, note, tuple(attempts), **values)
+
+    priority = (STATE_UNRECOGNIZED, STATE_UNREACHABLE, STATE_EMPTY, STATE_UNSUPPORTED)
+    selected = min(attempts, key=lambda attempt: priority.index(attempt.state))
+    tried = "、".join(f"/{attempt.source}" for attempt in attempts)
+    state, note = selected.state, selected.note
+    if state == STATE_EMPTY:
+        note += f"。如使用 spark，{_SPARK_HELP}"
+    elif state == STATE_UNSUPPORTED:
+        if _has_local_spark(plugin):
+            state, note = STATE_SPARK_UNAVAILABLE, _SPARK_NOTE
+        else:
+            note = f"该世代不支持 TPS 查询。若仅安装了 spark，{_SPARK_HELP}"
+    note += f"。已试：{tried}"
+    return TpsProbe(state, selected.source, selected.raw, note, tuple(attempts))
+
+
+def _tps_field(result: TpsProbe) -> dict:
+    extra = {"attempts": [asdict(attempt) for attempt in result.attempts]}
+    if result.source:
+        extra["source"] = f"/{result.source}"
+    value = "—"
+    notes = []
+    if result.tps_1m is not None:
+        nums = (result.tps_1m, result.tps_5m, result.tps_15m)
+        value = " / ".join(f"{n:.1f}" for n in nums if n is not None)
+        extra["tps"] = dict(zip(("1m", "5m", "15m"), nums))
+        extra["low"] = any(n is not None and n < 18.0 for n in nums)
+        if result.source == "forge tps":
+            notes.append("全服汇总 TPS（Overall）")
+        elif result.tps_5m is not None:
+            notes.append(" / ".join(window for window, n in zip(("1 分钟", "5 分钟", "15 分钟"), nums)
+                                    if n is not None) + "均值")
+        if extra["low"]:
+            notes.append("低于 18，服务端可能吃力")
+    elif result.mspt is not None:
+        value = f"MSPT {result.mspt} ms"
+        notes.append("TPS 暂无读数")
+        if result.source == "mspt":
+            notes.append("1 分钟 MSPT 均值")
+    if result.mspt is not None:
+        extra["mspt"] = result.mspt
+        if result.tps_1m is not None:
+            notes.append(f"MSPT {result.mspt} ms")
+    if result.behind_ticks is not None:
+        extra["behind_ticks"] = result.behind_ticks
+        notes.append(result.running_note)
+    if result.percentiles:
+        extra["percentiles"] = result.percentiles
+    if result.note:
+        notes.append(result.note)
+    if diagnostics := result.diagnostics:
+        extra["raw"] = diagnostics
+    return _field("tps", result.state, value, note=" · ".join(notes), extra=extra)
 
 
 def _version_field(plugin) -> dict:
@@ -439,13 +553,17 @@ def overall_state(fields: list[dict]) -> str:
 def summary_line(fields: list[dict]) -> str:
     """一句话概括（UI 头条 / 回执 / 验收单共用）。"""
     counts: dict[str, int] = {}
+    ok = 0
     for f in fields:
-        counts[str(f.get("state"))] = counts.get(str(f.get("state")), 0) + 1
-    total = len(fields)
-    if counts.get(STATE_OK, 0) == total:
-        return f"{total} 项全部正常"
-    parts = [f"{STATE_LABEL.get(st, st)} {n} 项" for st, n in counts.items() if st != STATE_OK]
-    ok = counts.get(STATE_OK, 0)
+        state = str(f.get("state"))
+        if state == STATE_OK:
+            ok += 1
+        else:
+            label = _state_label(f.get("key"), state)
+            counts[label] = counts.get(label, 0) + 1
+    if ok == len(fields):
+        return f"{ok} 项全部正常"
+    parts = [f"{label} {n} 项" for label, n in counts.items()]
     head = f"{ok} 项正常 · " if ok else ""
     return head + " · ".join(parts)
 
@@ -489,7 +607,7 @@ async def sample_with(rcon, plugin) -> dict:
     version = _version_field(plugin)
     if rcon is None:
         return build_payload(_unreachable_fields("RCON 未连接") + [version], rcon_connected=False)
-    fields = [await _probe_online(rcon), await _probe_daytime(rcon), await _probe_tps(rcon)]
+    fields = [await _probe_online(rcon), await _probe_daytime(rcon), _tps_field(await probe_tps(plugin, rcon))]
     return build_payload(fields + [version], rcon_connected=True)
 
 

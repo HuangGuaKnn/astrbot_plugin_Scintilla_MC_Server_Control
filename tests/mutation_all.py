@@ -25,13 +25,13 @@ from _no_window import no_window_kw  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310")
+SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310", "v0400")
 SPECIAL_CHECKS = {"v0330-checks": "v0.33.0", "v0340-checks": "v0.34.0", "v0390-runner": "v0.39.0 流水线"}
 VERDICTS = ("KILLED", "SURVIVED", "INVALID")
 LOCK_PATH = "tests/.mutation.lock"
 SHARED_PATHS = frozenset({
     "core/command_result.py", "core/version_caps.py", "core/rcon.py",
-    "core/server_card.py", "core/tool_guard.py", "core/strict_bool.py", "core/java_commands.py",
+    "core/server_card.py", "core/tps_parse.py", "core/tool_guard.py", "core/strict_bool.py", "core/java_commands.py",
     "main.py", "core/web_api.py", "core/log_watcher.py", "_conf_schema.json",
     "core/player_admin.py", "core/knowledge_base.py",
     ".gitignore", "run_release_verify.py", "tests/_paths.py",

@@ -80,6 +80,7 @@ from .core.log_watcher import (
     run_blocking_or_raise,
 )
 from .core.rcon import AsyncRcon, RconError, RconTimeoutError
+from .core.server_card import STATE_OK, probe_tps
 from .core.server_dir_check import format_check, inspect_server_dir
 from .core.version_caps import (
     ITEM_PREFLATTEN_CUTOVER,
@@ -3322,18 +3323,9 @@ class McControlPlugin(Star):
             lines.append(self._parse_list_output(out))
         except RconError as e:
             lines.append(f"⚠ RCON 连接失败：{e}")
-        # 2) TPS / MSPT（依赖 Spark 等 TPS 类模组，纯原版不可用）
+        # 2) TPS / MSPT 与实时卡共用同一条探针链
         if rcon is not None:
-            try:
-                tps_info = await self._query_tps_mspt(rcon)
-                if tps_info and tps_info.get("tps") is not None:
-                    lines.append(f"🐢 TPS：{tps_info['tps']}（{tps_info['source']}）")
-                    if tps_info.get("mspt") is not None:
-                        lines.append(f"⚡ MSPT：{tps_info['mspt']}ms")
-                else:
-                    lines.append("🐢 TPS/MSPT：不可用（需 Spark 等模组提供 /tps，纯原版无此命令）")
-            except RconError as e:
-                lines.append(f"🐢 TPS 查询失败：{e}")
+            lines.extend(await self._query_tps_mspt(rcon))
         # 3) 本机进程指标（同机部署：内存/CPU/运行时长）
         metrics = await self._server_process_metrics()
         if metrics:
@@ -4262,67 +4254,27 @@ class McControlPlugin(Star):
             return f"{hours}小时{mins}分{secs}秒"
         return f"{mins}分{secs}秒"
 
-    @staticmethod
-    def _parse_tps_output(text: str) -> tuple[float | None, float | None]:
-        """从 spark/tps 类模组输出解析 (TPS, MSPT)。返回 (None, None) 表示解析失败。"""
-        text = re.sub(r"§.", "", text)
-        star_lines = [
-            ln.strip() for ln in text.splitlines() if ln.strip().startswith("*:")
-        ]
-        if star_lines:
-            # spark 格式：*: TPS, ...  / *: avg/min/max mspt, ...
-            first = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", star_lines[0])]
-            tps = first[0] if first else None
-            mspt = None
-            if len(star_lines) > 1:
-                second = [
-                    float(x) for x in re.findall(r"\d+(?:\.\d+)?", star_lines[1])
-                ]
-                if second:
-                    mspt = second[0]
-            return tps, mspt
-        # forge tps 格式：Mean tick time: X ms. Mean TPS: Y（多维度 + Overall）
-        tps_vals = [float(x) for x in re.findall(r"Mean TPS:\s*([\d.]+)", text)]
-        tick_vals = [
-            float(x) for x in re.findall(r"Mean tick time:\s*([\d.]+)", text)
-        ]
-        if tps_vals or tick_vals:
-            # 取最后一个（Overall 汇总行）
-            return (
-                tps_vals[-1] if tps_vals else None,
-                tick_vals[-1] if tick_vals else None,
-            )
-        # 非 spark 格式：只取最后一个冒号之后的数值（过滤 0~20 的 TPS 候选）
-        tail = text.rsplit(":", 1)[-1] if ":" in text else text
-        nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", tail)]
-        cands = [n for n in nums if 0 <= n <= 20]
-        return (cands[0] if cands else None), None
-
-    async def _query_tps_mspt(self, rcon: AsyncRcon) -> dict | None:
-        """尝试用服务器已装的 TPS 类模组命令获取 TPS/MSPT，全部不可用返回 None。"""
-        for cmd in ("tps", "spark tps", "forge tps"):
-            try:
-                out = str(await rcon.command(cmd, timeout=3.0)).strip()
-            except Exception:
-                continue
-            if not out:
-                continue
-            low = out.lower()
-            if any(
-                k in low
-                for k in (
-                    "unknown command",
-                    "unknown or incomplete",
-                    "unknown/incorrect",
-                    "未知的命令",
-                    "not found",
-                )
-            ):
-                continue
-            tps, mspt = self._parse_tps_output(out)
-            if tps is not None:
-                return {"tps": tps, "mspt": mspt, "source": cmd}
-        return None
+    async def _query_tps_mspt(self, rcon: AsyncRcon) -> list[str]:
+        """把共用探针的结果转成聊天消息。"""
+        result = await probe_tps(self, rcon)
+        lines = []
+        source = f"（/{result.source}）" if result.source else ""
+        if result.state == STATE_OK:
+            if result.tps_1m is not None:
+                lines.append(f"🐢 TPS：{result.tps_1m}{source}")
+            else:
+                lines.append("🐢 TPS：暂无读数")
+            if result.mspt is not None:
+                lines.append(f"⚡ MSPT：{result.mspt} ms{source}")
+            if result.running_note:
+                lines.append(result.running_note)
+            if result.note:
+                lines.append(result.note)
+        else:
+            lines.append(f"🐢 TPS/MSPT：{result.state_label}{source} · {result.note}")
+        if diagnostics := result.diagnostics:
+            lines.append(f"服务器原文：\n{diagnostics}")
+        return lines
 
     def _find_server_process(self):
         """通过命令行/工作目录定位本机 Minecraft 服务端进程（同机部署场景）。"""

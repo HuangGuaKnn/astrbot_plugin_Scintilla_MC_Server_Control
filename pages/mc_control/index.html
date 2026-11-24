@@ -2403,7 +2403,8 @@ function testRconInto(elId){
 // 四种必须分开说的状态（对应验收单）：
 //   ok 绿 / empty 灰（空服，正常）/ unsupported 黄（世代能力缺失）
 //   unrecognized 橙（回包认不出，必须带原文）/ unreachable 红（连不上）
-const CARD_BADGE = {ok:"ok", empty:"dim", unsupported:"amb", unrecognized:"warn", unreachable:"bad", no_source:"dim"};
+const CARD_BADGE = {ok:"ok", empty:"dim", unsupported:"amb", unrecognized:"warn", unreachable:"bad",
+                    no_source:"dim", spark_unavailable:"dim"};
 const CARD_DOT = {ok:"var(--ok)", empty:"var(--faint)", unsupported:"var(--amber)",
                   unrecognized:"var(--warn)", unreachable:"var(--bad)", no_source:"var(--faint)"};
 

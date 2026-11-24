@@ -364,6 +364,27 @@ def main() -> None:
         expect(page.locator("#sv_players")).not_to_contain_text("当前没有玩家在线")
         monitor_tab.click()
 
+        # 同一卡上，0 人在线与 TPS 回包为空使用各自的措辞。
+        empty_tps = f("tps", "TPS", "empty", "答案未返回", "—", "/tps",
+                      "命令已回应，但答案为空。请在服务端控制台核对该命令")
+        show(payload_for(card("empty", "空服", "空服 1 项 · 答案未返回 1 项",
+                              [CARD_EMPTY["fields"][0], DAY_OK, empty_tps, VER_OK])),
+             '#sv_status .sc-row[data-key="tps"][data-state="empty"]')
+        assert badge("online") == "空服"
+        assert badge("tps") == "答案未返回"
+        expect(row("tps").locator(".sc-note")).to_contain_text("请在服务端控制台")
+
+        forge_tps = f("tps", "TPS", "ok", "正常", "20.0", "/forge tps",
+                      "全服汇总 TPS（Overall） · MSPT 7.032 ms",
+                      "上一条回执 <span>样本</span>")
+        show(payload_for(card("ok", "正常", "4 项全部正常", [ONLINE_OK, DAY_OK, forge_tps, VER_OK])),
+             '#sv_status .sc-row[data-key="tps"][data-state="ok"]')
+        expect(row("tps").locator(".sc-src")).to_have_text("/forge tps")
+        expect(row("tps").locator(".sc-val")).to_have_text("20.0")
+        expect(row("tps").locator(".sc-note")).to_contain_text("7.032 ms")
+        expect(row("tps").locator(".sc-raw")).to_contain_text("<span>样本</span>")
+        assert row("tps").locator(".sc-raw span").count() == 0
+
         # ---- 4) 连不上：卡片照样画，版本字段仍可用 ----
         show(payload_for(CARD_UNREACHABLE, ok=False, error="RCON 连接失败：拒绝连接"),
              '#sv_status .sc-row[data-key="online"][data-state="unreachable"]')

@@ -1,0 +1,31 @@
+{
+  "1.21.1-fabric-spark": {
+    "tps": "Unknown or incomplete command, see below for errortps<--[HERE]",
+    "forge tps": "Unknown or incomplete command, see below for errorforge tps<--[HERE]",
+    "mspt": "Unknown or incomplete command, see below for errormspt<--[HERE]",
+    "tick query": "The game is running normallyTarget tick rate: 20.0 per second.\nAverage time per tick: 1.7ms (Target: 50.0ms)Percentiles: P50: 0.1ms P95: 14.2ms P99: 30.2ms, sample: 100",
+    "spark tps": ""
+  },
+  "1.21.11-paper-spark": {
+    "tps": "§6TPS from last 1m, 5m, 15m: §a19.7§r, §a19.7§r, §a19.7",
+    "forge tps": "Unknown or incomplete command. See below for error\nforge tps<--[HERE]",
+    "mspt": "§6Server tick times §e(§7avg§e/§7min§e/§7max§e)§6 from last 5s§7,§6 10s§7,§6 1m§e:\n§6◴ §a0.6§7/§a0.3§7/§a6.7§e, §a1.8§7/§a0.3§7/§c99.2§e, §a1.8§7/§a0.3§7/§c99.2",
+    "tick query": "The game is running normallyTarget tick rate: 20.0 per second.\nAverage time per tick: 0.4ms (Target: 50.0ms)Percentiles: P50: 0.3ms P95: 0.6ms P99: 0.9ms. Sample: 100",
+    "spark tps": ""
+  },
+  "1.16.5-forge-spark": {
+    "tps": "Unknown or incomplete command, see below for error\ntps<--[HERE]",
+    "forge tps": "Dim minecraft:overworld (minecraft:overworld): Mean tick time: 6.894 ms. Mean TPS: 20.000\nDim minecraft:the_nether (minecraft:the_nether): Mean tick time: 0.053 ms. Mean TPS: 20.000\nDim minecraft:the_end (minecraft:the_end): Mean tick time: 0.024 ms. Mean TPS: 20.000\nOverall: Mean tick time: 7.032 ms. Mean TPS: 20.000",
+    "mspt": "Unknown or incomplete command, see below for error\nmspt<--[HERE]",
+    "tick query": "Unknown or incomplete command, see below for error\ntick query<--[HERE]",
+    "spark tps": ""
+  },
+  "1.13.2-vanilla": {
+    "tps": "Unknown commandtps<--[HERE]",
+    "forge tps": "Unknown commandforge tps<--[HERE]",
+    "mspt": "Unknown commandmspt<--[HERE]",
+    "tick query": "Unknown commandtick query<--[HERE]",
+    "spark tps": "Unknown commandspark tps<--[HERE]"
+  },
+  "fabric-spark-log": "[⚡] TPS from last 5s, 10s, 1m, 5m, 15m:\n[⚡]  *20.0, *20.0, 20.0, *20.0, *20.0"
+}

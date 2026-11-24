@@ -49,6 +49,7 @@ from _paths import PLUGIN_DIR, add_sys_paths  # noqa: E402
 
 add_sys_paths()
 from astrbot_plugin_Scintilla_MC_Server_Control.core import server_card as SC  # noqa: E402
+from astrbot_plugin_Scintilla_MC_Server_Control.core.tps_parse import parse_tps_output  # noqa: E402
 
 PASSED = [0]
 FAILED: list[str] = []
@@ -107,11 +108,11 @@ def part_one() -> None:
 
 TPS_CASES = [
     # (回包, 期望 dict, 出处)
-    ("§6TPS from last 1m, 5m, 15m: §a20.0§r, §a20.0§r, §a20.0", {"1m": 20.0, "5m": 20.0, "15m": 20.0},
+    ("§6TPS from last 1m, 5m, 15m: §a20.0§r, §a20.0§r, §a20.0", {"tps_1m": 20.0, "tps_5m": 20.0, "tps_15m": 20.0},
      "paper-1.21.11 真机原样（带颜色码）"),
-    ("TPS from last 1m, 5m, 15m: 19.98, 20.0, 20.0", {"1m": 19.98, "5m": 20.0, "15m": 20.0}, "Paper 纯文本"),
-    ("Server TPS: 18.5", {"1m": 18.5, "5m": None, "15m": None}, "模组探针（单值）"),
-    ("TPS: 20.0 20.0 20.0", {"1m": 20.0, "5m": 20.0, "15m": 20.0}, "模组探针（空格分隔）"),
+    ("TPS from last 1m, 5m, 15m: 19.98, 20.0, 20.0", {"tps_1m": 19.98, "tps_5m": 20.0, "tps_15m": 20.0}, "Paper 纯文本"),
+    ("Server TPS: 18.5", {"tps_1m": 18.5}, "模组探针（单值）"),
+    ("TPS: 20.0 20.0 20.0", {"tps_1m": 20.0, "tps_5m": 20.0, "tps_15m": 20.0}, "模组探针（空格分隔）"),
 ]
 
 TPS_UNPARSABLE = [
@@ -125,15 +126,14 @@ TPS_UNPARSABLE = [
 def part_two() -> None:
     print("\n---- 二、`/tps`：有探针才有，没有就不许编 ----")
     for raw, want, where in TPS_CASES:
-        got = SC.parse_tps_reply(raw)
+        got = parse_tps_output("tps", raw)
         check(f"{where}：{raw[:44]!r}", got == want, repr(got))
     for raw in TPS_UNPARSABLE:
-        check(f"解析不出（交状态机判）：{raw[:40]!r}", SC.parse_tps_reply(raw) is None,
-              repr(SC.parse_tps_reply(raw)))
+        got = parse_tps_output("tps", raw)
+        check(f"解析不出（交状态机判）：{raw[:40]!r}", got == {}, repr(got))
     # 只扫含 tps 的那一行：别的行里的数字不许被当成 TPS
     check("不扫无关行里的数字",
-          SC.parse_tps_reply("Saved the game\nTPS: 17.5") == {"1m": 17.5, "5m": None, "15m": None},
-          repr(SC.parse_tps_reply("Saved the game\nTPS: 17.5")))
+          parse_tps_output("tps", "Saved the game\nTPS: 17.5") == {"tps_1m": 17.5})
 
 
 # ===================== 三、状态判定（五态分界） =====================
@@ -301,6 +301,9 @@ def part_five() -> None:
         "list": "There are 0/20 players online:",
         "time query daytime": "/time <set|add> <value>",
         "tps": "Unknown command. Try /help for a list of commands",
+        "forge tps": "Unknown command. Try /help for a list of commands",
+        "mspt": "Unknown command. Try /help for a list of commands",
+        "tick query": "Unknown command. Try /help for a list of commands",
     }), caps={**CAPS_KNOWN, "version": "1.7.10", "item_syntax": "legacy_preflatten",
               "raw": "MC 1.7.10 · Forge 10.13.4.1614"}))
     fb = _by_key(b)
