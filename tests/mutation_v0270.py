@@ -164,8 +164,8 @@ MUTATIONS = (
     ),
     Mutation(
         "T14", "浏览器禁止提交有提示的命令", HTML,
-        '  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim()) return;',
-        '  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim() || '
+        '  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim() || signal.aborted) return;',
+        '  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim() || signal.aborted || '
         'input.classList.contains("is-warning")) return;',
         "T14", "T14 有提示的命令也要逐条显示回执", UI_TEST,
     ),

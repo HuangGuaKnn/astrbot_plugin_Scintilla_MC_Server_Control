@@ -523,13 +523,13 @@ def part_d() -> None:
 
             t1 = asyncio.create_task(boom())
             await asyncio.sleep(0.01)
-            w4._orphaned.add(t1)
-            w4._reap_orphan(t1)                 # 不许抛
+            w4._track_orphan(t1)
+            await asyncio.sleep(0)              # 完成回调不许抛
             t2 = asyncio.create_task(asyncio.sleep(5))
             t2.cancel()
             await asyncio.sleep(0.01)
-            w4._orphaned.add(t2)
-            w4._reap_orphan(t2)                 # 已取消的同样不许抛
+            w4._track_orphan(t2)
+            await asyncio.sleep(0)              # 已取消的同样不许抛
             return t1, t2
 
         t1, t2 = asyncio.run(_orphans())

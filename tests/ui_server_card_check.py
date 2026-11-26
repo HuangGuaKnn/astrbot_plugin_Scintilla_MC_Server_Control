@@ -18,12 +18,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 import ui_theme_check as F
 from _paths import UI_LAUNCH_KWARGS
 from _ui_page import VIEWPORT, fulfill, split_url
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Error, expect, sync_playwright
 
 CAPS = {"known": True, "version": "1.20.6", "raw": "MC 1.20.6 · Forge 50.1.0",
         "source": "detected", "source_label": "服务端文件探测",
@@ -167,6 +168,8 @@ def check_monitor_polling(page):
     interval = "10"
     hold_status = False
     held_status = []
+    hold_events = False
+    held_events = []
     events = [{"type": "join", "player": "Alex", "ts": "08:30:00", "detail": "加入游戏"}]
     payload = payload_for(CARD_OK)
 
@@ -179,6 +182,9 @@ def check_monitor_polling(page):
                 return
             return fulfill(request, payload)
         if endpoint == "events":
+            if hold_events:
+                held_events.append(request)
+                return
             return fulfill(request, {"ok": True, "events": events})
         if endpoint == "settings":
             settings = F.settings()
@@ -198,13 +204,23 @@ def check_monitor_polling(page):
     page.clock.pause_at(start + timedelta(seconds=1))
     page.add_init_script("""(() => {
         window.monitorRequests = [];
+        window.monitorReplies = [];
         const original = window.fetch.bind(window);
         window.fetch = (url, options) => {
             const endpoint = String(url).split("/page/")[1]?.split("?")[0];
             if (["server/status", "events", "player/bans", "player/audit"].includes(endpoint)) {
                 window.monitorRequests.push([endpoint, Date.now()]);
             }
-            return original(url, options);
+            return original(url, options).then(response => {
+                if (["server/status", "events"].includes(endpoint)) {
+                    const json = response.json.bind(response);
+                    response.json = () => json().then(value => {
+                        window.monitorReplies.push(endpoint);
+                        return value;
+                    });
+                }
+                return response;
+            });
         };
     })()""")
     page.goto(F.PAGE_URL)
@@ -251,6 +267,7 @@ def check_monitor_polling(page):
     expect(page.locator("#sv_refresh")).to_be_enabled()
     page.evaluate("window.monitorRequests = []")
     hold_status = True
+    hold_events = True
     page.clock.run_for(4999)
     assert requests() == [], "应按新保存的间隔刷新"
     page.clock.run_for(1)
@@ -260,25 +277,142 @@ def check_monitor_polling(page):
     page.locator("#sv_refresh").click()
     assert requests().count("server/status") == 1, "手动刷新应复用进行中的状态请求"
 
+    page.locator("#server_tab_players").click()
+    page.evaluate("""() => {
+        window.monitorReplies = [];
+        window.monitorRenders = 0;
+        for (const id of ["sv_status", "sv_events"]) {
+            new MutationObserver(() => ++window.monitorRenders).observe(document.getElementById(id),
+                {childList:true, subtree:true, characterData:true});
+        }
+    }""")
+    assert len(held_status) == len(held_events) == 1
+    fulfill(held_status.pop(), payload_for(CARD_UNREACHABLE))
+    fulfill(held_events.pop(), {"ok": True, "events": [{**events[0], "detail": "已经离开的旧请求"}]})
+    expect(page.locator("#sv_refresh")).to_be_enabled()
+    page.wait_for_function("window.monitorReplies.includes('server/status') && window.monitorReplies.includes('events')")
+    assert page.evaluate("window.monitorRenders") == 0, "H1 切页后的在飞响应不得重绘隐藏监控"
+
+    hold_status = hold_events = False
+    events[0]["detail"] = "切回后立即刷新"
+    page.evaluate("window.monitorRequests = []")
+    page.locator("#server_tab_monitor").click()
+    expect(page.locator("#sv_status .sc-head")).to_contain_text("空服")
+    expect(page.locator("#sv_events")).to_contain_text("切回后立即刷新")
+    assert sorted(requests()) == ["events", "server/status"], "切回监控时应立即采样一次"
+
     page.evaluate("""() => {
         Object.defineProperty(document, "hidden", {configurable:true, value:true});
         document.dispatchEvent(new Event("visibilitychange"));
     }""")
-    assert len(held_status) == 1
-    fulfill(held_status[0], payload)
-    expect(page.locator("#sv_refresh")).to_be_enabled()
     page.evaluate("window.monitorRequests = []")
     page.clock.run_for(30000)
     assert requests() == [], "浏览器页签进入后台后应停止轮询"
-    hold_status = False
+    events[0]["detail"] = "恢复前台后刷新"
     page.evaluate("""() => {
         Object.defineProperty(document, "hidden", {configurable:true, value:false});
         document.dispatchEvent(new Event("visibilitychange"));
     }""")
-    page.clock.run_for(5000)
+    expect(page.locator("#sv_events")).to_contain_text("恢复前台后刷新")
     assert sorted(requests()) == ["events", "server/status"], "回到前台后应恢复监控刷新"
     assert not errors, errors
     print("[PASS] 监控按保存间隔刷新状态与事件，切页与后台暂停，慢请求不堆叠")
+
+
+def check_page_lifecycle(page):
+    started = []
+    warnings = []
+    errors = []
+    held_actions = []
+    page.on("console", lambda message: warnings.append(message.text) if message.type == "warning" else None)
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def route(request):
+        endpoint = split_url(request)
+        started.append(endpoint)
+        if endpoint == "console/execute":
+            # 保持请求在飞，直到 pagehide 用 AbortController 取消。
+            held_actions.append(request)
+            return
+        if endpoint == "server/status":
+            return fulfill(request, payload_for(CARD_OK))
+        if endpoint == "settings/console-log":
+            return fulfill(request, {"ok": True, "interval": 5000})
+        if endpoint == "console/log":
+            return fulfill(request, {"ok": True, "state": "ok", "lines": ["正常日志"]})
+        if endpoint == "events/chat":
+            return fulfill(request, {"ok": True, "events": []})
+        return F.route(request)
+
+    page.add_init_script("""(() => {
+        window.lifecycleAborts = [];
+        window.pollTimers = new Map();
+        const callbacks = new Set(["refreshServerMonitor", "pollServerChat", "pollConsoleLog"]);
+        const timeout = window.setTimeout.bind(window), clear = window.clearTimeout.bind(window);
+        window.setTimeout = (fn, delay, ...args) => {
+            if (!callbacks.has(fn?.name)) return timeout(fn, delay, ...args);
+            const id = timeout(() => { window.pollTimers.delete(id); fn(...args); }, delay);
+            window.pollTimers.set(id, fn.name);
+            return id;
+        };
+        window.clearTimeout = id => { window.pollTimers.delete(id); clear(id); };
+        const fetch = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            if (String(url).endsWith("/console/execute")) {
+                options.signal?.addEventListener("abort", () => window.lifecycleAborts.push("console/execute"));
+            }
+            return fetch(url, options);
+        };
+    })()""")
+    page.route(F.API_GLOB, route)
+    page.goto(F.PAGE_URL)
+    page.locator('button.tab[data-page="server"]').click()
+
+    def wait_timer(name):
+        page.wait_for_function("name => Array.from(window.pollTimers.values()).includes(name)", arg=name)
+
+    def leave():
+        before = warnings[:]
+        page.evaluate("""() => {
+            window.dispatchEvent(new PageTransitionEvent("pagehide", {persisted:true}));
+            document.dispatchEvent(new Event("visibilitychange"));
+            window.dispatchEvent(new PageTransitionEvent("pagehide", {persisted:true}));
+        }""")
+        assert page.evaluate("window.pollTimers.size") == 0, "H2 pagehide 须清空轮询定时器"
+        assert warnings == before and not errors, (warnings, errors)
+
+    def restore(timer):
+        page.evaluate("""() => {
+            window.dispatchEvent(new PageTransitionEvent("pageshow", {persisted:true}));
+            window.dispatchEvent(new PageTransitionEvent("pageshow", {persisted:true}));
+        }""")
+        wait_timer(timer)
+        assert page.evaluate("window.pollTimers.size") == 1
+
+    for tab, timer in ((None, "refreshServerMonitor"), ("#server_tab_tools", "pollServerChat")):
+        if tab:
+            page.locator(tab).click()
+        wait_timer(timer)
+        leave()
+        restore(timer)
+
+    page.locator('button.tab[data-page="console"]').click()
+    wait_timer("pollConsoleLog")
+    page.locator("#console_command").fill("list")
+    with page.expect_request(lambda request: request.url.endswith("/console/execute")):
+        page.locator("#console_execute").click()
+    try:
+        leave()
+        assert page.evaluate("window.lifecycleAborts") == ["console/execute"], "H2 在飞 fetch 须取消且只取消一次"
+        expect(page.locator("#console_feedback")).to_contain_text("页面已离开，操作是否已执行尚未确认")
+        restore("pollConsoleLog")
+    finally:
+        for request in held_actions:
+            with suppress(Error):
+                request.abort()
+    assert started.count("console/execute") == 1, "离开和恢复均不得重发操作"
+    assert not errors, errors
+    print("[PASS] pagehide 取消在飞请求、停止轮询，pageshow 恢复当前面板")
 
 
 def main() -> None:
@@ -403,6 +537,7 @@ def main() -> None:
 
         assert not errors, f"页面抛错：{errors}"
         check_monitor_polling(browser.new_page(viewport=VIEWPORT, reduced_motion="reduce"))
+        check_page_lifecycle(browser.new_page(viewport=VIEWPORT, reduced_motion="reduce"))
         browser.close()
 
     print("[PASS] 实时服务器卡：四字段齐全、五态分开说、认不出带原文、连不上仍出卡、旧形状可兜底")

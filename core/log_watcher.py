@@ -574,6 +574,8 @@ def _scan_login_ips(directory: Path, wanted: set[str]) -> dict[str, LoginIpResul
 #: v0.23.5：`stop()` 等待监听任务退出的超时（秒）。超时只记警告 ——
 #: 「关不掉一个读日志的协程」不该把插件 terminate() 卡住。
 STOP_TIMEOUT = 5.0
+MAX_ORPHANED_TASKS = 4
+ORPHAN_TIMEOUT = 30.0
 
 # v0.23.5 第五轮：单次文件 IO 的等待上限。IO 都在线程里跑（事件循环不会再被占住），
 # 但**这一次 await** 仍可能永远不返回 —— 慢盘 / 网络盘 / 被独占的文件上，`_poll`
@@ -645,7 +647,7 @@ class LogWatcher:
         self.last_read_at: float = 0.0
         # 放弃等待的监听任务（stop() 超时时留下）。丢引用会让半途的任务被 GC 掉，
         # 留着还能在 health() / 诊断里看见「有个没退出的」。
-        self._orphaned: set[asyncio.Task] = set()
+        self._orphaned: dict[asyncio.Task, tuple[float, asyncio.TimerHandle]] = {}
         # ---- v0.23.5 第八轮（GPT 第七轮 P2）：监听**任务代** ----
         # 第七轮把 IO 计数按代隔离了（卡死的旧代 IO 不再挡新代），但 `_loop` 任务
         # 本身没有代际判据：`on_event` 回调若吞掉 `CancelledError`，`stop()` 超时
@@ -1042,7 +1044,9 @@ class LogWatcher:
         解释器 GC 时会骂一句「Task exception was never retrieved」，而它到底为什么
         没退出反而没人看（GPT 第四轮 P2）。
         """
-        self._orphaned.discard(task)
+        entry = self._orphaned.pop(task, None)
+        if entry is not None:
+            entry[1].cancel()
         if task.cancelled():
             return
         try:
@@ -1052,6 +1056,36 @@ class LogWatcher:
         if exc is not None:
             logger.warning("日志监听孤儿任务异常收尾：%s: %s",
                            type(exc).__name__, exc)
+
+    def _track_orphan(self, task: asyncio.Task) -> None:
+        """登记旧代任务，并在容量或存活时间超限时再次请求取消。"""
+        loop = task.get_loop()
+        timer = loop.call_later(ORPHAN_TIMEOUT, self._cancel_orphan, task, "超时")
+        self._orphaned[task] = (loop.time(), timer)
+        task.add_done_callback(self._reap_orphan)
+        if len(self._orphaned) > MAX_ORPHANED_TASKS:
+            self._cancel_orphan(next(iter(self._orphaned)), "超过上限")
+
+    def _cancel_orphan(self, task: asyncio.Task, reason: str) -> None:
+        count = len(self._orphaned)
+        entry = self._orphaned.pop(task, None)
+        if entry is None:
+            return
+        started, timer = entry
+        loop = task.get_loop()
+        if loop is asyncio.get_running_loop():
+            timer.cancel()
+            if not task.done():
+                task.cancel()
+        else:
+            # 热重载可能换事件循环。存活的旧循环负责取消自己的任务。
+            try:
+                loop.call_soon_threadsafe(timer.cancel)
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                logger.warning("日志监听孤儿任务所在的事件循环已关闭")
+        logger.warning("日志监听孤儿任务%s，登记 %d 个，移除的任务已等待 %.1fs",
+                       reason, count, loop.time() - started)
 
     async def stop(self) -> None:
         """停止监听（公开入口：拿生命周期锁后走 `_stop_locked`）。
@@ -1115,16 +1149,14 @@ class LogWatcher:
         try:
             _done, pending = await asyncio.wait({task}, timeout=STOP_TIMEOUT)
         except asyncio.CancelledError:
+            if not task.done():
+                self._track_orphan(task)
             raise
         except Exception as e:                           # noqa: BLE001
             logger.warning("日志监听任务停止时异常（已忽略）：%s", e)
             return
         if pending:
-            # 保住引用：让它继续跑完（_running 已置 False 且旧代已失效，它到下一个
-            # 检查点会自己退出），但**别丢引用** —— 半途被 GC 掉的任务连痕迹都不剩，
-            # 诊断时查无此人。
-            self._orphaned.add(task)
-            task.add_done_callback(self._reap_orphan)
+            self._track_orphan(task)
             logger.warning(
                 "日志监听任务在 %.1fs 内未退出，已放弃等待（多半卡在文件 IO 上）；"
                 "任务本身会在回到下一个代际检查点时自行退出（进程退出时会一并回收）",
