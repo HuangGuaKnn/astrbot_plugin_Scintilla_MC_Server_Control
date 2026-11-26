@@ -477,6 +477,11 @@ summary:hover{text-decoration:underline}
 .player-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 0;border-bottom:1px solid var(--border)}
 .player-row:last-child{border-bottom:0}
 .player-row .ply{margin:0}
+#sv_players .ply::before{content:none}
+#sv_players .avatar{display:inline-grid;place-items:center;flex:0 0 24px;width:24px;height:24px;
+  border-radius:4px;overflow:hidden;vertical-align:middle}
+#sv_players .avatar img{display:block;width:24px;height:24px;image-rendering:pixelated}
+#sv_players .avatar-letter{background:hsl(var(--avatar-hue) 45% 34%);color:#fff;font-weight:700}
 .player-actions{display:flex;gap:5px;flex-wrap:wrap}
 /* v0.29.0：手动封禁 IP 的输入行（与名单行视觉上分开，避免被当成搜索框） */
 .player-ip{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin:0 6px}
@@ -2013,16 +2018,40 @@ window.addEventListener("resize", syncScrollProgress);
 syncScrollProgress();
 
 // ============ API 层（bridge 优先，直连降级） ============
-async function directApi(path, method, body){
-  const opt = { method, credentials: "include", headers: {} };
+let pageRequests = new AbortController();
+const PAGE_ACTION_UNCONFIRMED = "页面已离开，操作是否已执行尚未确认。";
+
+async function directApi(path, method, body, signal = pageRequests.signal){
+  signal.throwIfAborted();
+  const opt = { method, signal, credentials: "include", headers: {} };
   if(method === "POST" && body){ opt.headers["Content-Type"]="application/json"; opt.body = JSON.stringify(body); }
   const r = await fetch(DIRECT_PREFIX + path.replace(/^\/+/, ""), opt);
   if(!r.ok){
     let msg = "HTTP " + r.status;
-    try{ const j = await r.json(); if(j && (j.detail || j.error)) msg += ": " + (j.detail || j.error); }catch(_){}
+    try{ const j = await r.json(); if(j && (j.detail || j.error)) msg += ": " + (j.detail || j.error); }catch(_){ signal.throwIfAborted(); }
     return {ok:false, status:r.status, error:msg};
   }
-  return await r.json().catch(()=>({ok:false,error:"响应解析失败"}));
+  return await r.json().catch(() => {
+    signal.throwIfAborted();
+    return {ok:false,error:"响应解析失败"};
+  });
+}
+async function bridgeRequest(method, path, data, timeout, signal = pageRequests.signal){
+  signal.throwIfAborted();
+  let timer, onAbort;
+  try{
+    return await new Promise((resolve, reject) => {
+      // SDK 没有取消参数。离开页面时结束这边的等待，服务端可能已收到请求。
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, {once:true});
+      if(timeout) timer = setTimeout(() => reject(new Error("等待桥接回执超时")), timeout);
+      const request = method === "GET" ? bridge.apiGet(P + path, data) : bridge.apiPost(P + path, data || {});
+      Promise.resolve(request).then(resolve, reject);
+    });
+  }finally{
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 function selectApi(){
   // 独立窗口：cookie 可用，直接直连秒开（不依赖 bridge，避免 404/等待）
@@ -2035,18 +2064,20 @@ function selectApi(){
   ]).catch(()=>({mode:"direct"}));
 }
 async function callGet(p, params){
+  const signal = pageRequests.signal;
   if(mode==="bridge"){
-    try{ return await Promise.race([bridge.apiGet(P+p, params), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiGet 超时")),6000))]); }
-    catch(e){ console.warn("[mc_control] bridge 失败，降级直连:",e); }
+    try{ return await bridgeRequest("GET", p, params, 6000, signal); }
+    catch(e){ signal.throwIfAborted(); console.warn("[mc_control] bridge 失败，降级直连:",e); }
   }
-  return directApi(params ? p + "?" + new URLSearchParams(params) : p,"GET");
+  return directApi(params ? p + "?" + new URLSearchParams(params) : p, "GET", undefined, signal);
 }
 async function callPost(p,b){
+  const signal = pageRequests.signal;
   if(mode==="bridge"){
-    try{ return await Promise.race([bridge.apiPost(P+p,b||{}), new Promise((_,rej)=>setTimeout(()=>rej(new Error("bridge apiPost 超时")),6000))]); }
-    catch(e){ console.warn("[mc_control] bridge 失败，降级直连:",e); }
+    try{ return await bridgeRequest("POST", p, b, 6000, signal); }
+    catch(e){ signal.throwIfAborted(); console.warn("[mc_control] bridge 失败，降级直连:",e); }
   }
-  return directApi(p,"POST",b||{});
+  return directApi(p, "POST", b || {}, signal);
 }
 function inIframe(){ try{ return window.self !== window.top; }catch(e){ return true; } }
 function openStandalone(){ window.open(location.pathname, "_blank"); }
@@ -2193,6 +2224,7 @@ function switchTab(name, serverSection){
   if(name==="server"){
     const tab = serverTabs.find(button => button.dataset.serverTab === serverSection);
     if(tab) switchServerTab(tab);
+    else syncServerMonitor();
     loadServer();
   }
   if(name==="knowledge") loadKnowledge();
@@ -2201,7 +2233,7 @@ function switchTab(name, serverSection){
   if(name==="settings") loadSettings();
   if(name==="console" || name==="settings") loadConsolePollSetting();
   if(name!=="console") syncConsolePolling();
-  syncServerMonitor();
+  if(name!=="server") syncServerMonitor();
   syncServerChat();
   // v0.21.8：指纹不匹配检测随页签切换跑一次 —— 同一轮只弹一次，不会反复骚扰
   if(name==="overview" || name==="knowledge" || name==="settings") checkFingerprintNotice();
@@ -2487,22 +2519,15 @@ async function consoleRequest(endpoint, method, data){
       ? directApi(data ? endpoint + "?" + new URLSearchParams(data) : endpoint, "GET")
       : directApi(endpoint, "POST", data);
   }
-  let timer;
   try{
-    const request = method === "GET" ? bridge.apiGet(P + endpoint, data) : bridge.apiPost(P + endpoint, data);
     // 写入只发送一次，等待服务端完成整个批次；连接中断时可能已经执行。
-    if(endpoint === "console/execute") return await request;
-    return await Promise.race([request, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("读取请求超时")), 6000);
-    })]);
+    return await bridgeRequest(method, endpoint, data, endpoint === "console/execute" ? 0 : 6000);
   }catch(error){
     // SDK 只保留 HTTP 错误消息，直接请求则使用状态码。
     if(error.message === CONSOLE_FORBIDDEN || /^Request failed with status code (401|403)$/.test(error.message)){
       return {authorized:false};
     }
     throw error;
-  }finally{
-    clearTimeout(timer);
   }
 }
 
@@ -2608,7 +2633,7 @@ function queueConsolePreview(){
   clearTimeout(consolePreviewTimer);
   renderConsoleWarnings({});
   const command = $("console_command").value;
-  if(!command.trim() || mode === "unknown" || consoleDenied) return;
+  if(!command.trim() || mode === "unknown" || consoleDenied || pageRequests.signal.aborted) return;
   consolePreviewTimer = setTimeout(() => previewConsole(command, revision), CONSOLE_PREVIEW_MS);
 }
 
@@ -2638,7 +2663,8 @@ async function submitConsole(event){
   event.preventDefault();
   const input = $("console_command");
   const command = input.value;
-  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim()) return;
+  const signal = pageRequests.signal;
+  if(mode === "unknown" || consoleBusy || consoleDenied || !command.trim() || signal.aborted) return;
   consoleBusy = true;
   syncConsoleComposer();
   consoleFeedback("正在等待命令回执…");
@@ -2646,7 +2672,7 @@ async function submitConsole(event){
   previewConsole(command, ++consolePreviewEpoch);
   try{
     const response = await consoleRequest("console/execute", "POST", {command});
-    if(consolePermissionDenied(response) || consoleDenied) return;
+    if(signal.aborted || consolePermissionDenied(response) || consoleDenied) return;
     renderConsoleMode(response);
     if(Array.isArray(response.results) && response.results.length){
       appendConsoleResults(response.results);
@@ -2661,7 +2687,7 @@ async function submitConsole(event){
       consoleFeedback(message, true);
     }
   }catch{
-    if(!consoleDenied) consoleFeedback("请求中断，执行结果待确认。请查看日志或审计。", true);
+    if(!signal.aborted && !consoleDenied) consoleFeedback("请求中断，执行结果待确认。请查看日志或审计。", true);
   }finally{
     consoleBusy = false;
     syncConsoleComposer();
@@ -2669,7 +2695,7 @@ async function submitConsole(event){
 }
 
 function consolePollingActive(){
-  return mode !== "unknown" && consolePollReady && !consoleDenied && !consoleLogPaused && !document.hidden
+  return !pageRequests.signal.aborted && mode !== "unknown" && consolePollReady && !consoleDenied && !consoleLogPaused && !document.hidden
     && $("page_console").classList.contains("active");
 }
 
@@ -2724,10 +2750,11 @@ function applyConsolePollSetting(response){
 }
 
 async function loadConsolePollSetting(){
-  if(mode === "unknown" || $("cfg_console_poll_save").disabled) return;
+  const signal = pageRequests.signal;
+  if(mode === "unknown" || signal.aborted || $("cfg_console_poll_save").disabled) return;
   const revision = ++consolePollConfigRevision;
   const response = await consoleRequest("settings/console-log", "GET").catch(() => null);
-  if(revision !== consolePollConfigRevision) return;
+  if(signal.aborted || revision !== consolePollConfigRevision) return;
   applyConsolePollSetting(response);
   syncConsolePolling();
 }
@@ -2865,6 +2892,124 @@ function renderPlayerIp(name, ip, details){
   </div>`;
 }
 
+// 经典默认模型使用 MCHeads 的 MHF_Steve / MHF_Alex 32px PNG。
+const DEFAULT_AVATAR = {
+  steve:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAA7EAAAOxAGVKw4bAAABHElEQVRYhWM0VhH8z4AH8LCx4JMmCL78+oPC/4HGZ6LIdCqAUQewfPzyHUWAn4cThY8eh4TSBKnqBzwERh3Aws7GiiKQYW+BwpcQE0XVwMWLwv/z7TMK//vP3yj8jx8/oPBnHjqJwh/wEBh1AOPsZE+UuoCfXwBFASc7ahpBB+hxTgigp4kBD4FRB7Cgx3lo7zIUfrBdFwo/wvQCCh89TrffckDhrz1UhsJfXRyFwh/wEBh1AMFyAB0cOHcdr7yDkSZe+dFyYNA5gOXrt28oAl9+f0Xh7zp+CYWvJ6uK18AZqzei8H0dTVD4n76i1h0DHgKjDmBhYUftGr79jBpHP3/8QuFfenwbrzw7BxsKHz3O+bhR2xcDHgKjDgAAmYhW7ARMCXsAAAAASUVORK5CYII=",
+  alex:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAA7EAAAOxAGVKw4bAAABBElEQVRYhe1WsQ4BQRDdtcOdRKJUaulEpaO73idoVGqF35CIxmf4BCUdKp1CQwjh5ITWe5K9iMg2O93bmdt9eS8zN3o7jp7qPc43gKoQKmueI62e8hn7bf8PT0C+9pzy1/sFcJ5fSLnPuQKegPzqebHVtz5wnw2teecKeALCnqocVaR4HgQB4NPxgN/XOwD1fALYuQKegISNHhyUam3AlW4V8CJCz5XBOdEcDQCvxyvAOyLgXAFPQO+XU9gJtclCgdG4MrLn6kH/Dm0AJkkCWIwG7FwBT0BEBE8M9Tl5/NjQrKcwZdwK2fM4jgE7V8ATkI8T7mvqe1NOuZHnBAWtD+4V8AReDpc/9rLpczcAAAAASUVORK5CYII=",
+};
+const MINOTAR_PLACEHOLDER = Uint8Array.from(
+  atob("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAABUUlEQVR4nGLRVeBngIG//+BMBmZGJjj7198/cPafP3/hbCYmhBpWFmY4+/9/hDkIFTQCQ98CFuRwRwZ//yMkuDjY4Gw+doSb/iG57+3nnwjx/0jxRE3XYgND3wIWZE57bgKczcaKCHdODj44+/vXTwgNzAj3vX/5HM7uWbMNzh76QURzCxiX1mfCOZzs7HD295+IdM3MjBB//+k9nC0nLgZnP3x4G6sFQz+IaJ8PkMM9sLIfzvb16ICzk8wfw9nI4T59jxCcvXnHejh7WUMWnD30g4j2+WBamjecIyYhDWezsiPq6i379mHVHOxhC2c/eXQHzr7/4g2cPfSDiPb54MtvRJvn15P7cPbDJ5/hbB5mVqyad+4+AWdLSHHB2YwMCPVDP4hoHwcPnr2Ec/79Q7SFRAT4sWr4+fsXnM3JzgFnf/3+F6uaoR9ENLcAEAAA//8gQVcTg7yShAAAAABJRU5ErkJggg=="),
+  char => char.charCodeAt(0),
+);
+const AVATAR_CACHE_PREFIX = "mcavatar2:";
+const AVATAR_HIT_TTL = 6 * 60 * 60 * 1000;
+const AVATAR_MISS_TTL = 30 * 60 * 1000;
+const playerAvatarCache = new Map();
+const AVATAR_SLOT = '<span class="avatar" aria-hidden="true"></span>';
+
+function readAvatarCache(key, now){
+  try{
+    const saved = JSON.parse(localStorage.getItem(AVATAR_CACHE_PREFIX + key));
+    if(saved?.expiresAt > now && (saved.state === "hit" || saved.state === "miss")) return saved;
+  }catch{} // 受限 iframe 的 localStorage 可能不可用。
+  return null;
+}
+
+function displayRemoteAvatar(slot, image){
+  // 通常同一个名字只出现一次，直接复用已解码的节点。重复显示使用同一张图的 URL。
+  slot.replaceChildren(image.isConnected ? image.cloneNode() : image);
+}
+
+function isMinotarPlaceholder(bytes){
+  return bytes.length === MINOTAR_PLACEHOLDER.length &&
+    bytes.every((byte, index) => byte === MINOTAR_PLACEHOLDER[index]);
+}
+
+async function fetchPlayerAvatar(key, cachedHit, signal){
+  const url = "https://minotar.net/helm/" + encodeURIComponent(key) + "/32.png";
+  const response = await fetch(url, {
+    signal, credentials:"omit", referrerPolicy:"no-referrer",
+    // 缺图过期后复查，避免浏览器继续使用上一轮的 200 占位图。
+    cache:cachedHit ? "default" : "no-cache",
+  });
+  if(!response.ok || !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") || "")) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if(isMinotarPlaceholder(bytes)) return null;
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(new Blob([bytes], {type:"image/png"}));
+  });
+}
+
+function loadPlayerAvatar(slot, key, now){
+  const existing = playerAvatarCache.get(key);
+  if(existing){
+    if(existing.state === "hit") displayRemoteAvatar(slot, existing.image);
+    return;
+  }
+  const cached = readAvatarCache(key, now);
+  if(cached?.state === "miss"){
+    playerAvatarCache.set(key, cached);
+    return;
+  }
+
+  const signal = pageRequests.signal;
+  if(signal.aborted) return;
+  const image = new Image(24, 24);
+  image.alt = "";
+  const entry = {state:"pending", expiresAt:now + AVATAR_MISS_TTL, image, signal};
+  playerAvatarCache.set(key, entry);
+  function settle(state){
+    if(playerAvatarCache.get(key) !== entry) return;
+    if(signal.aborted){
+      playerAvatarCache.delete(key);
+      return;
+    }
+    const expiresAt = Date.now() + (state === "hit" ? AVATAR_HIT_TTL : AVATAR_MISS_TTL);
+    entry.state = state;
+    entry.expiresAt = expiresAt;
+    image.onload = image.onerror = null;
+    try{ localStorage.setItem(AVATAR_CACHE_PREFIX + key, JSON.stringify({state, expiresAt})); }catch{}
+    if(state === "miss"){
+      entry.image = null;
+      return;
+    }
+    for(const current of $("sv_players").querySelectorAll(".avatar")){
+      if(current.dataset.avatarKey === key) displayRemoteAvatar(current, image);
+    }
+  }
+  image.onload = () => settle("hit");
+  image.onerror = () => settle("miss");
+  fetchPlayerAvatar(key, cached?.state === "hit", signal).then(source => {
+    if(playerAvatarCache.get(key) !== entry) return;
+    if(source && !signal.aborted) image.src = source;
+    else settle("miss");
+  }).catch(() => settle("miss"));
+}
+
+function renderPlayerAvatar(slot, name, metadata, now){
+  if(typeof name !== "string" || !PLAYER_NAME.test(name) || name.trim() !== name){
+    const text = String(name ?? "").trim();
+    let hue = 0;
+    for(const char of text) hue = (hue * 31 + char.codePointAt(0)) % 360;
+    slot.classList.add("avatar-letter");
+    slot.style.setProperty("--avatar-hue", String(hue));
+    slot.textContent = Array.from(text)[0]?.toUpperCase() || "?";
+    return;
+  }
+  const model = metadata?.default_model;
+  const key = name.toLowerCase();
+  const image = document.createElement("img");
+  image.alt = "";
+  image.src = model === "alex" ? DEFAULT_AVATAR.alex : DEFAULT_AVATAR.steve;
+  slot.append(image);
+  if(model !== "alex" && model !== "steve") return; // 旧响应仍可显示内置头像。
+  slot.dataset.avatarKey = key;
+  loadPlayerAvatar(slot, key, now);
+}
+
 function renderOnlinePlayers(status, guardedOnline, admin){
   const field = status.card?.fields?.find(f => f.key === "online");
   const legacy = status.list || {};
@@ -2876,6 +3021,7 @@ function renderOnlinePlayers(status, guardedOnline, admin){
     note: field?.note || status.list_error,
     raw: field?.raw,
     players: legacy.players,
+    avatars: legacy.avatars,
     online: legacy.online,
   };
   const names = Array.isArray(online.players) ? online.players : [];
@@ -2886,12 +3032,21 @@ function renderOnlinePlayers(status, guardedOnline, admin){
   if(online.state === "ok" && (admin ? complete : names.length > 0)){
     tag.innerHTML = playerBadge("ok", `${Number(online.online) || names.length} 人在线`);
     host.innerHTML = names.map(name => {
-      if(!admin) return `<span class="ply">${escServer(name)}</span>`;
+      const label = `<span class="ply">${AVATAR_SLOT}${escServer(name)}</span>`;
+      if(!admin) return label;
       const details = online.ip_details?.[name];
       const ipCell = renderPlayerIp(name, details?.ip ?? online.ips?.[name] ?? "", details);
-      return `<div class="player-row"><span class="ply">${escServer(name)}</span>${ipCell}
+      return `<div class="player-row">${label}${ipCell}
         ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
     }).join("");
+    const now = Date.now();
+    for(const [key, entry] of playerAvatarCache){
+      if(entry.expiresAt <= now || (entry.state === "pending" && entry.signal.aborted)) playerAvatarCache.delete(key);
+    }
+    host.querySelectorAll(".avatar").forEach((slot, index) => {
+      const name = names[index];
+      renderPlayerAvatar(slot, name, online.avatars?.[name], now);
+    });
     return;
   }
   const state = ["empty", "unsupported", "unrecognized", "unreachable"].includes(online.state)
@@ -3060,14 +3215,14 @@ async function previewPlayerCommand(selection){
 
 async function postPlayerAction(body){
   // 桥接写入超时后不能降级再发一次，因为第一次可能已经执行。
-  const request = mode === "bridge"
-    ? bridge.apiPost(P + "player/action", body) : directApi("player/action", "POST", body);
+  if(mode === "bridge") return bridgeRequest("POST", "player/action", body, 30000);
+  const signal = pageRequests.signal;
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error("等待玩家操作回执超时")), 30000);
   });
   try{
-    return await Promise.race([request, timeout]);
+    return await Promise.race([directApi("player/action", "POST", body, signal), timeout]);
   }finally{
     clearTimeout(timer);
   }
@@ -3075,7 +3230,8 @@ async function postPlayerAction(body){
 
 async function confirmPlayerAction(){
   const selection = playerSelection;
-  if(!selection?.command || playerActionBusy) return;
+  const signal = pageRequests.signal;
+  if(!selection?.command || playerActionBusy || signal.aborted) return;
   playerActionBusy = true;
   const confirm = $("player_confirm");
   confirm.disabled = true;
@@ -3086,16 +3242,18 @@ async function confirmPlayerAction(){
     const result = await postPlayerAction({
       action: selection.action, player: selection.player, reason: selection.reason, expected_command: selection.command,
     });
-    renderPlayerActionResult(selection.result, result);
+    if(!signal.aborted) renderPlayerActionResult(selection.result, result);
   }catch(e){
-    renderPlayerActionResult(selection.result, {state:"unreachable", note:"请求中断，服务端是否已执行尚未确认", raw:String(e)});
+    if(!signal.aborted){
+      renderPlayerActionResult(selection.result, {state:"unreachable", note:"请求中断，服务端是否已执行尚未确认", raw:String(e)});
+    }
   }finally{
     playerActionBusy = false;
     $("player_reason").disabled = false;
     $("player_cancel").disabled = false;
     playerSelection = null;
     $("player_dialog").close();
-    await loadServer();
+    if(!signal.aborted) await loadServer();
   }
 }
 
@@ -3215,7 +3373,9 @@ function bindPlayerAdmin(){
 const MONITOR_POLL_DEFAULT_SECONDS = 10;
 let monitorPollSeconds = MONITOR_POLL_DEFAULT_SECONDS;
 let monitorTimer;
-let monitorPolling = false;
+let monitorActive = false;
+let monitorEpoch = 0;
+let monitorPollingEpoch;
 let serverStatusRequest;
 let serverEventsRequest;
 let serverEventsMarkup;
@@ -3234,44 +3394,56 @@ function applyMonitorInterval(value){
 
 function monitorIsVisible(){
   return mode !== "unknown" && !document.hidden
-    && $("page_server").classList.contains("active") && !$("server_panel_monitor").hidden;
+    && !pageRequests.signal.aborted && $("page_server").classList.contains("active") && !$("server_panel_monitor").hidden;
 }
 
 function syncServerMonitor(){
   clearTimeout(monitorTimer);
-  if(monitorIsVisible() && !monitorPolling){
+  const active = monitorIsVisible();
+  if(active !== monitorActive){
+    monitorActive = active;
+    ++monitorEpoch;
+    if(active) refreshServerMonitor();
+  }else if(active && monitorPollingEpoch !== monitorEpoch){
     monitorTimer = setTimeout(refreshServerMonitor, monitorPollSeconds * 1000);
   }
 }
 
 async function refreshServerMonitor(){
-  if(!monitorIsVisible()) return;
-  monitorPolling = true;
+  const revision = monitorEpoch;
+  if(!monitorIsVisible() || monitorPollingEpoch === revision) return;
+  monitorPollingEpoch = revision;
   try{
     await Promise.all([loadServerStatus(), loadServerEvents()]);
   }finally{
-    monitorPolling = false;
-    syncServerMonitor();
+    if(revision === monitorEpoch){
+      monitorPollingEpoch = undefined;
+      syncServerMonitor();
+    }
   }
 }
 
 function loadServerStatus(){
-  if(!serverStatusRequest){
-    serverStatusRequest = callGet("server/status")
+  const revision = monitorEpoch;
+  if(serverStatusRequest?.revision !== revision){
+    const active = monitorActive;
+    const request = callGet("server/status")
       .catch(() => ({ok:false,error:"请求失败"}))
       .then(response => {
         const result = response || {ok:false,error:"响应缺失"};
-        renderServerStatus(result);
+        if(active && revision === monitorEpoch) renderServerStatus(result);
         return result;
       })
-      .finally(() => { serverStatusRequest = null; });
+      .finally(() => { if(serverStatusRequest?.request === request) serverStatusRequest = null; });
+    serverStatusRequest = {revision, request};
   }
-  return serverStatusRequest;
+  return serverStatusRequest.request;
 }
 
 const serverRefreshButtons = ["sv_refresh", "sv_players_refresh", "sv_audit_refresh"].map($);
 async function loadServer(){
-  if(loadServer._pending || playerActionBusy) return;
+  const signal = pageRequests.signal;
+  if(loadServer._pending || playerActionBusy || signal.aborted) return;
   const status = $("sv_status"), players = $("sv_players");
   loadServer._pending = true;
   disablePlayerButtons();
@@ -3287,8 +3459,10 @@ async function loadServer(){
       loadServerStatus(),
       callGet("player/bans").catch(() => null),
     ]);
+    if(signal.aborted) return;
     const admin = bans?.authorized === true;
     const audit = admin ? await callGet("player/audit", {limit:20}).catch(() => null) : null;
+    if(signal.aborted) return;
     renderOnlinePlayers(r, bans?.online, admin);
     renderPlayerBans(bans, admin);
     renderPlayerAudit(audit, admin, bans);
@@ -3336,19 +3510,26 @@ function renderServerStatus(r){
 }
 
 function loadServerEvents(){
-  if(!serverEventsRequest){
-    serverEventsRequest = callGet("events").catch(() => null).then(response => {
-      const events = response?.ok && Array.isArray(response.events) ? response.events : [];
-      const markup = events.length ? events.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
-      if(markup !== serverEventsMarkup){
-        const host = $("sv_events"), scrollTop = host.scrollTop;
-        host.innerHTML = markup;
-        host.scrollTop = scrollTop;
-        serverEventsMarkup = markup;
-      }
-    }).finally(() => { serverEventsRequest = null; });
+  if(!monitorActive) return;
+  const revision = monitorEpoch;
+  if(serverEventsRequest?.revision !== revision){
+    const request = callGet("events").catch(() => null).then(response => {
+      if(revision === monitorEpoch) renderServerEvents(response);
+    }).finally(() => { if(serverEventsRequest?.request === request) serverEventsRequest = null; });
+    serverEventsRequest = {revision, request};
   }
-  return serverEventsRequest;
+  return serverEventsRequest.request;
+}
+
+function renderServerEvents(response){
+  const events = response?.ok && Array.isArray(response.events) ? response.events : [];
+  const markup = events.length ? events.map(evHTML).join("") : `<span class="muted">暂无事件记录</span>`;
+  if(markup !== serverEventsMarkup){
+    const host = $("sv_events"), scrollTop = host.scrollTop;
+    host.innerHTML = markup;
+    host.scrollTop = scrollTop;
+    serverEventsMarkup = markup;
+  }
 }
 
 const CHAT_TYPES = new Set(["chat", "whisper", "me", "broadcast"]);
@@ -3418,7 +3599,7 @@ async function pollServerChat(revision){
     if(!chatSnapshot) renderServerChat([]);
     notice.textContent = "无法读取对话与广播，稍后重试";
   }
-  chatTimer = setTimeout(() => pollServerChat(revision), CHAT_POLL_MS);
+  chatTimer = setTimeout(pollServerChat, CHAT_POLL_MS, revision);
 }
 
 function refreshServerChat(){
@@ -3428,7 +3609,7 @@ function refreshServerChat(){
 }
 
 function syncServerChat(){
-  const active = mode !== "unknown" && !document.hidden
+  const active = mode !== "unknown" && !document.hidden && !pageRequests.signal.aborted
     && $("page_server").classList.contains("active") && !$("server_panel_tools").hidden;
   if(active === chatActive) return;
   chatActive = active;
@@ -3442,6 +3623,33 @@ function bindServerChat(){
   document.addEventListener("visibilitychange", syncServerChat);
   syncServerChat();
 }
+
+let broadcastPending = 0;
+function handlePageHide(){
+  if(pageRequests.signal.aborted) return;
+  pageRequests.abort();
+  syncConsolePolling();
+  syncServerChat();
+  syncServerMonitor();
+  ++consolePreviewEpoch;
+  clearTimeout(consolePreviewTimer);
+  if(consoleBusy) consoleFeedback(PAGE_ACTION_UNCONFIRMED, true);
+  if(playerActionBusy && playerSelection){
+    renderPlayerActionResult(playerSelection.result, {state:"unrecognized", note:PAGE_ACTION_UNCONFIRMED});
+  }
+  if(broadcastPending) $("bc_out").textContent = PAGE_ACTION_UNCONFIRMED;
+}
+
+function handlePageShow(){
+  if(!pageRequests.signal.aborted) return;
+  pageRequests = new AbortController();
+  syncServerMonitor();
+  syncServerChat();
+  if(!consolePollReady && $("page_console").classList.contains("active")) loadConsolePollSetting();
+  else syncConsolePolling();
+}
+window.addEventListener("pagehide", handlePageHide);
+window.addEventListener("pageshow", handlePageShow);
 
 // ============ 知识库 ============
 function entryHTML(e, isPending){
@@ -6414,10 +6622,16 @@ function bind(){
     document.querySelectorAll(".bc-mode").forEach(x=>x.classList.toggle("active", x===b));
   }));
   $("bc_send").onclick = async ()=>{
+    const signal = pageRequests.signal;
+    if(signal.aborted) return;
     const msg = $("bc_msg").value.trim();
     if(!msg){ $("bc_out").textContent = "请输入广播内容"; return; }
     $("bc_out").textContent = "发送中…";
-    const r = await callPost("server/broadcast", { message: msg, mode: bcMode }).catch(()=>({ok:false,error:"请求失败"}));
+    ++broadcastPending;
+    const r = await callPost("server/broadcast", { message: msg, mode: bcMode })
+      .catch(()=>({ok:false,error:"请求失败"}))
+      .finally(() => { --broadcastPending; });
+    if(signal.aborted) return;
     if(r.ok){
       const lbl = BROADCAST_LABELS[r.mode] || "广播";
       if(r.confirmed === false){
@@ -6596,14 +6810,16 @@ function readLocalTheme_(){
 (function earlyThemeSync(){
   if(!bridge || !inIframe()) return;         // 独立窗口靠本地存储即可
   if(readLocalTheme_()) return;              // 本地有权威值，不打扰后端
+  const signal = pageRequests.signal;
   const soft = fn => Promise.resolve().then(fn).catch(() => null);
-  soft(() => bridge.apiGet(P + "ui/theme"))
-    .then(r => (r && (r.theme === "light" || r.theme === "dark"))
-      ? r.theme
-      : soft(() => bridge.ready()).then(() => soft(() => bridge.apiGet(P + "ui/theme")))
+  const readTheme = () => bridgeRequest("GET", "ui/theme", undefined, 6000, signal);
+  soft(readTheme)
+    .then(r => (signal.aborted || (r && (r.theme === "light" || r.theme === "dark")))
+      ? r?.theme
+      : soft(() => bridge.ready()).then(() => soft(readTheme))
           .then(r2 => r2 && r2.theme))
     .then(t => {
-      if((t === "light" || t === "dark") && t !== document.documentElement.dataset.theme){
+      if(!signal.aborted && (t === "light" || t === "dark") && t !== document.documentElement.dataset.theme){
         applyTheme(t);
         saveThemeLocal(t);
       }
@@ -6680,6 +6896,7 @@ function boot(){
     bind();
     bindConsole();
     loadOverview();
+    syncServerMonitor();
     loadServer();
     loadKnowledge();
     checkFingerprintNotice();

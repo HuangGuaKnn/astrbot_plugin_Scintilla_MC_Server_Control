@@ -25,7 +25,7 @@ from _no_window import no_window_kw  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310", "v0400")
+SUITES = ("v0247_round2", "v0248", "v0249", "v0260", "v0270", "v0300", "v0310", "v0400", "v0410", "v0420")
 SPECIAL_CHECKS = {"v0330-checks": "v0.33.0", "v0340-checks": "v0.34.0", "v0390-runner": "v0.39.0 流水线"}
 VERDICTS = ("KILLED", "SURVIVED", "INVALID")
 LOCK_PATH = "tests/.mutation.lock"

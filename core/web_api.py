@@ -17,6 +17,7 @@ from .agent_prompts import AGENT_ORDER, AGENT_SPECS, describe_agents
 from .command_result import classify_command_output, parse_daytime_reply
 from . import player_admin, server_card, web_console
 from .knowledge_base import knowledge_length_error, normalize_status
+from .log_watcher import run_blocking
 from .strict_bool import parse_bool, strict_bool
 from .rcon import IDLE_PROBE
 from .server_dir_check import format_check, inspect_server_dir
@@ -1460,9 +1461,8 @@ class McControlWebApi:
             limit = int(request.query.get("limit", "20"))
         except (TypeError, ValueError):
             return json_response({"ok": False, "authorized": True, "error": "limit 需要整数"}, status_code=400)
-        try:
-            items = player_admin.get_audit(limit)
-        except (OSError, UnicodeError):
+        ok, items = await run_blocking(player_admin.get_audit, limit, what="读取玩家操作审计")
+        if not ok:
             return json_response({"ok": False, "authorized": True, "error": "无法读取玩家操作审计"}, status_code=500)
         return json_response({"ok": True, "authorized": True, "items": items})
 
@@ -1613,11 +1613,14 @@ class McControlWebApi:
 
             online = fields.get("online", {})
             if online.get("state") in (server_card.STATE_OK, server_card.STATE_EMPTY):
+                players = online.get("players", [])
                 info["list"] = {
                     "online": online.get("online"),
                     "max": online.get("max"),
-                    "players": online.get("players", []),
+                    "players": players,
                 }
+                if players:
+                    info["list"]["avatars"] = player_admin.online_avatars(players)
             else:
                 # 不再伪装成「0 人在线」：认不出就把原话交出去（卡片里已有原文）。
                 info["list_error"] = online.get("note") or "list 回包认不出"

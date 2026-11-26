@@ -7,7 +7,6 @@ import ipaddress
 import json
 import re
 import unicodedata
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ from . import server_card
 from .command_result import CommandResult, classify_command_output
 from .log_watcher import LoginIpResult, LogWatcher
 from .rcon import RconError
+from .skins import avatar_metadata
 from .strict_bool import strict_bool
 from .version_caps import ITEM_PREFLATTEN_CUTOVER, VersionInfo
 
@@ -112,6 +112,7 @@ _UNKNOWN = "未知"
 _DETAIL_FIELDS = ("reason", "created", "expires", "source")
 _AUDIT_FIELDS = ("ts", "actor", "action", "player", "command", "state", "confirmed", "raw_excerpt")
 _AUDIT_LIMIT = 100
+_AUDIT_READ_BYTES = 64 * 1024
 
 
 def _redact(text: str) -> str:
@@ -348,12 +349,18 @@ async def search_player_ip(plugin, player: str) -> dict:
     return (await _lookup_player_ips(plugin, [player], force=True))[player]
 
 
+def online_avatars(names: list[str]) -> dict[str, dict[str, str]]:
+    """按原名单的名字提供头像属性，供管理与只读入口共用。"""
+    return {name: avatar_metadata(name) for name in names if _PLAYER_NAME.fullmatch(name)}
+
+
 async def get_online(plugin) -> dict:
     """在线名单及最近进服 IP。监听索引未命中时批量查询本地日志。"""
     result = await _read_roster(plugin, "list")
     players = result.get("players") or []
     if not players:
         return result
+    result["avatars"] = online_avatars(players)
     details = await _lookup_player_ips(plugin, players)
     result["ip_details"] = details
     watcher = getattr(plugin, "_watcher", None)
@@ -675,13 +682,37 @@ def _write_audit(stream, actor: str, result: dict) -> None:
     stream.flush()
 
 
+def _audit_lines_from_end(stream):
+    """按块逆序读取完整行，跨块拼接后才解码 UTF-8。"""
+    position = stream.seek(0, io.SEEK_END)
+    fragments = []
+    followed_by_lf = False
+    while position:
+        size = min(position, _AUDIT_READ_BYTES)
+        position -= size
+        stream.seek(position)
+        block = stream.read(size)
+        if followed_by_lf and block.endswith(b"\r"):
+            block = block[:-1]
+        followed_by_lf = block.startswith(b"\n")
+        lines = block.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+        fragments.append(lines[-1])
+        if len(lines) > 1:
+            yield b"".join(reversed(fragments))
+            yield from reversed(lines[1:-1])
+            fragments = [lines[0]]
+    yield b"".join(reversed(fragments))
+
+
 def get_audit(limit: int = 20) -> list[dict]:
-    rows = deque(maxlen=min(max(limit, 1), _AUDIT_LIMIT))
+    count = min(max(limit, 1), _AUDIT_LIMIT)
+    rows = []
     try:
-        with io.open(_audit_path(), encoding="utf-8") as stream:
-            for line in stream:
+        with io.open(_audit_path(), "rb") as stream:
+            for line in _audit_lines_from_end(stream):
+                text = line.decode("utf-8")
                 try:
-                    row = json.loads(line)
+                    row = json.loads(text)
                 except ValueError:
                     continue
                 if not isinstance(row, dict) or not isinstance(row.get("confirmed"), bool):
@@ -700,9 +731,11 @@ def get_audit(limit: int = 20) -> list[dict]:
                             and _valid_names(names, len(names))):
                         record["ip_matches"] = {"state": state, "players": names}
                 rows.append(record)
+                if len(rows) >= count:
+                    break
     except FileNotFoundError:
         pass
-    return list(reversed(rows))
+    return rows
 
 
 async def _apply_action(plugin, result: dict) -> None:

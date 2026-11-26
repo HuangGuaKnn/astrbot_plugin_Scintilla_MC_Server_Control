@@ -1,15 +1,18 @@
 """玩家管理浏览器硬门禁。可传判据号单独跑，供变异脚本核对失败位置。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
+from base64 import b64decode
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import ui_theme_check as F
-from _paths import UI_LAUNCH_KWARGS
+from _paths import PLUGIN_DIR, UI_LAUNCH_KWARGS
 from _ui_page import API_GLOB, PAGE_URL, VIEWPORT, fulfill, split_url
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import TimeoutError, expect, sync_playwright
 
 ONLINE_OK = {"state": "ok", "players": ["Alex"], "online": 1, "max": 20}
 BAN = {
@@ -38,6 +41,7 @@ class Scenario:
         self.reject_write = None
         self.event_detail = "加入游戏"
         self.status_note = "在线人数暂不可用"
+        self.status_override = None
         self.color_config = None
         self.color_load_ok = True
         self.color_saves = []
@@ -90,6 +94,8 @@ class Scenario:
             self.color_config.update(body)
             fulfill(route_obj, {"ok": True, "applied": body, "ignored": []})
         elif endpoint == "server/status":
+            if self.status_override is not None:
+                return fulfill(route_obj, self.status_override)
             # 伪造一份旧快照。管理按钮必须以来自已授权路由的名单为准。
             fulfill(route_obj, {
                 "ok": True,
@@ -864,6 +870,183 @@ def check_workflow_history(scenario):
     print("[PASS] P24 历史摘要回显，历史运行条目不计入当前执行数")
 
 
+def check_player_avatars(scenario):
+    page = scenario.page
+    fixture = json.loads((PLUGIN_DIR / "tests/fixtures/minotar_avatars.json").read_text(encoding="utf-8"))
+    account, placeholder, equal_length = (fixture[key] for key in ("account", "placeholder", "equal_length"))
+    names = [account["name"], placeholder["name"], "Alex_Craft", equal_length["name"]]
+    account_key, missing_key, corrupt_key, equal_key = [name.lower() for name in names]
+    models = dict(zip(names, ("steve", "alex", "steve", "steve")))
+    avatar_fields = {name: {"default_model": model} for name, model in models.items()}
+    scenario.online = {"state": "ok", "players": names, "online": len(names), "avatars": avatar_fields}
+    pngs = {
+        account_key: b64decode(account["png"]),
+        missing_key: b64decode(placeholder["png"]),
+        corrupt_key: b"invalid image bytes",
+        equal_key: b64decode(equal_length["png"]),
+    }
+    assert hashlib.sha256(pngs[account_key]).hexdigest() == account["sha256"]
+    assert hashlib.sha256(pngs[missing_key]).hexdigest() == placeholder["sha256"]
+    assert len(pngs[equal_key]) == len(pngs[missing_key]) == 394 and pngs[equal_key] != pngs[missing_key]
+    account_source = "data:image/png;base64," + account["png"]
+    equal_source = "data:image/png;base64," + equal_length["png"]
+    steve = "f8fc0fe70194bb347dfdeb434975356810115c6cdc0da2acc0cdb14605966537"
+    alex = "e3987fba58d1cd5ae5f0ca73a4802e3baeb25b87a285a5187c1177bc939096be"
+    requests = []
+    held = []
+    delay = True
+
+    def finish(route, key):
+        cors = {"Access-Control-Allow-Origin": "*"}
+        if urlsplit(route.request.url).hostname == "minotar.net":
+            route.fulfill(status=200, content_type="image/png", headers=cors, body=pngs[key])
+        else:
+            # 真账号走旧源时收到的 nginx 403。
+            route.fulfill(status=403, content_type="text/html", headers=cors, body="<h1>Forbidden</h1>")
+
+    def route_avatar(route):
+        key = urlsplit(route.request.url).path.split("/")[-2]
+        requests.append(key)
+        if delay:
+            held.append((route, key))
+        else:
+            finish(route, key)
+
+    page.route("https://minotar.net/helm/**", route_avatar)
+    page.route("https://mc-heads.net/avatar/**", route_avatar)
+    page.clock.install(time=datetime(2026, 11, 26, tzinfo=timezone.utc))
+    page.add_init_script(f"""(() => {{
+        try {{
+            if (!sessionStorage.avatarSeeded) {{
+                localStorage.setItem("mcavatar:" + {json.dumps(account_key)},
+                    JSON.stringify({{state:"miss", expiresAt:Date.now() + 6 * 3600000}}));
+                sessionStorage.avatarSeeded = "1";
+            }}
+        }} catch {{}}
+    }})()""")
+    page.add_init_script("""(() => {
+        const NativeImage = window.Image;
+        window.avatarReplies = [];
+        window.avatarStarts = 0;
+        window.avatarLookups = [];
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            if (/^https:\\/\\/(minotar\\.net|mc-heads\\.net)\\//.test(String(url))) {
+                window.avatarLookups.push(String(url));
+            }
+            return nativeFetch(url, options);
+        };
+        window.Image = function(...args) {
+            ++window.avatarStarts;
+            const image = new NativeImage(...args);
+            for (const event of ["load", "error"]) {
+                image.addEventListener(event, () => window.avatarReplies.push([image.src, event]));
+            }
+            return image;
+        };
+    })()""")
+    scenario.open()
+    host = page.locator("#sv_players")
+
+    def image_for(name):
+        return host.locator(".ply").filter(has_text=name).locator(".avatar img")
+
+    def default_digest(source):
+        assert source.startswith("data:image/png;base64,")
+        return hashlib.sha256(b64decode(source.split(",", 1)[1])).hexdigest()
+
+    correct = image_for(account["name"])
+    missing = image_for(placeholder["name"])
+    corrupt = image_for("Alex_Craft")
+    same_size = image_for(equal_length["name"])
+    expect(host.locator(".player-row .avatar img")).to_have_count(len(names))
+    expect(page.locator("#sv_bans .avatar, #sv_audit .avatar")).to_have_count(0)
+    defaults = [image.get_attribute("src") for image in (correct, missing, corrupt, same_size)]
+    assert list(map(default_digest, defaults)) == [steve, alex, steve, steve], "AV8 先按后端模型显示内置头像"
+    assert correct.evaluate("img => [img.width, img.height, getComputedStyle(img).imageRendering]") == [24, 24, "pixelated"]
+    assert host.locator(".player-row").first.locator("button[data-action='kick']").is_visible()
+    assert page.evaluate("key => window.avatarLookups.some(url => url.includes('/' + key + '/'))", account_key), \
+        "AV17 旧源的 miss 不得拦截 Minotar 查询"
+    while len(held) < len(names):
+        page.wait_for_event("request", predicate=lambda request: urlsplit(request.url).hostname in (
+            "minotar.net", "mc-heads.net",
+        ), timeout=5000)
+    delay = False
+    for pending, key in held:
+        finish(pending, key)
+    try:
+        page.wait_for_function(
+            "source => window.avatarReplies.some(([url, state]) => url === source && state === 'load')",
+            arg=account_source, timeout=5000,
+        )
+    except TimeoutError:
+        raise AssertionError("AV15 有皮肤的正版名须经 Minotar 返回真皮肤") from None
+    assert correct.get_attribute("src") == account_source, "AV6 头图成功后须替换默认头像"
+    assert correct.evaluate("img => img.naturalWidth") == 32
+    page.wait_for_function("window.avatarReplies.some(([, state]) => state === 'error')")
+
+    def cached(key):
+        return page.evaluate("key => JSON.parse(localStorage.getItem('mcavatar2:' + key))", key)
+
+    page.wait_for_function("keys => keys.every(key => !!localStorage.getItem('mcavatar2:' + key))",
+                           arg=[missing_key, equal_key], timeout=5000)
+    missing_cache = cached(missing_key)
+    corrupt_cache = cached(corrupt_key)
+    assert corrupt.get_attribute("src") == defaults[2] and corrupt_cache and corrupt_cache["state"] == "miss", \
+        "AV7 缺图须保留正确默认头像并记录 miss"
+    assert missing.get_attribute("src") == defaults[1] and missing_cache["state"] == "miss", \
+        "AV16 Minotar 的 200 占位图须保留内置默认头像"
+    assert same_size.get_attribute("src") == equal_source and cached(equal_key)["state"] == "hit", \
+        "AV19 同长异图不得判为占位图"
+    hit = cached(account_key)
+    assert hit["state"] == "hit"
+    now = page.evaluate("Date.now()")
+    half_hour = 30 * 60 * 1000
+    assert half_hour - 60000 < missing_cache["expiresAt"] - now <= half_hour and (
+        12 * half_hour - 60000 < hit["expiresAt"] - now <= 12 * half_hour
+    ), "AV18 命中保留六小时，缺图半小时后复查"
+    expiry = max(missing_cache["expiresAt"], corrupt_cache["expiresAt"])
+    correct.evaluate("image => window.originalHead = image")
+    scenario.event_detail = "进入监控后继续轮询"
+    scenario.select("monitor")
+    expect(page.locator("#sv_events")).to_contain_text(scenario.event_detail)
+    with page.expect_request("**/page/server/status"):
+        page.clock.fast_forward(11000)
+    scenario.select("players")
+    scenario.refresh()
+    assert correct.evaluate("image => image === window.originalHead") and len(requests) == len(names), \
+        "AV9 监控轮询和重绘须复用头图，不得重复请求"
+    assert missing.get_attribute("src") == defaults[1]
+
+    scenario.open()  # 新文档只剩 localStorage，浏览器测试路由会关闭 HTTP 缓存。
+    assert page.evaluate("window.avatarStarts") == 2 and requests.count(missing_key) == requests.count(corrupt_key) == 1, \
+        "AV10 有效的缓存 miss 跨文档不得再请求"
+    page.clock.set_system_time(datetime.fromtimestamp((expiry + 5000) / 1000, timezone.utc))
+    try:
+        with page.expect_request(f"https://minotar.net/helm/{missing_key}/32.png", timeout=5000):
+            scenario.open()
+    except TimeoutError:
+        raise AssertionError("AV11 缓存过期后须重新尝试") from None
+    assert requests.count(missing_key) == 2, "AV11 缓存过期后须重新尝试"
+
+    scenario.authorized = False
+    invalid = '<b data-avatar-test="literal">玩家</b>'
+    scenario.status_override = {
+        "ok": True, "list": {"players": [*names, invalid, ""], "online": len(names) + 2, "avatars": avatar_fields},
+    }
+    scenario.refresh()
+    assert missing.get_attribute("src") == defaults[1], "AV12 只读列表须使用后端模型"
+    expect(host.locator("button[data-action]")).to_have_count(0)
+    assert host.locator(".avatar-letter").count() == 2, "AV14 非法或空名字须显示字母瓦片"
+    expect(host.locator(".avatar-letter").last).to_have_text("?")
+    assert host.locator("[data-avatar-test]").count() == 0, "AV13 玩家名须按文本显示"
+    expect(host.locator(".ply").filter(has_text=invalid)).to_have_count(1)
+    color = host.locator(".avatar-letter").first.evaluate("tile => getComputedStyle(tile).backgroundColor")
+    scenario.refresh()
+    assert host.locator(".avatar-letter").first.evaluate("tile => getComputedStyle(tile).backgroundColor") == color
+    print("[PASS] AV6–AV19 Minotar 真皮肤与占位图、升版缓存、只读名单和非法名字")
+
+
 CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
          "G1": check_verified_banlist,
@@ -871,7 +1054,8 @@ CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P18": check_console_notice, "P20": check_single_color_card,
          "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,
          "P25": check_ip_ban_audit,
-         "R5": check_long_ban_list, "J5": check_remote_ip_search, "J7": check_ip_search_details}
+         "R5": check_long_ban_list, "J5": check_remote_ip_search, "J7": check_ip_search_details,
+         "AV6": check_player_avatars}
 
 
 def main(args):
