@@ -648,6 +648,32 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         code, payload = await call(plugin, "POST", "action", body=body)
         self.assertEqual((code, payload["ok"]), (200, True))
 
+    async def test_whitelist_snapshot_preserves_complete_empty_and_failed_reads(self):
+        cases = (
+            ("There are 2 whitelisted player(s): Steve, Alex", True, "ok", ["Steve", "Alex"]),
+            (WL_EMPTY, True, "empty", []),
+            ("There are 2 whitelisted player(s): Alex", True, "unrecognized", []),
+            (WL_ADD, False, "unrecognized", []),
+            (UNKNOWN, True, "unsupported", []),
+        )
+        for raw, boundary, state, players in cases:
+            with self.subTest(raw=raw, boundary=boundary):
+                plugin = FakePlugin({
+                    "banlist players": NO_BANS, "banlist ips": NO_BANS,
+                    "list": ONLINE, "whitelist list": raw,
+                })
+                plugin.last_boundary_confirmed = boundary
+                code, payload = await call(plugin, "GET", "bans")
+                self.assertEqual((code, payload["authorized"]), (200, True))
+                self.assertIn("whitelist", payload, "WL 管理员快照缺少白名单")
+                roster = payload["whitelist"]
+                self.assertEqual((roster["state"], roster["players"], roster["raw"]),
+                                 (state, players, raw))
+                if boundary:
+                    self.assertEqual(payload["online"]["players"], ["Steve", "Alex"])
+                    self.assertEqual(payload["items"], [])
+                self.assertGuarded(plugin, "banlist players", "banlist ips", "list", "whitelist list")
+
     async def test_p07_all_dispatched_writes_are_audited(self):
         raw = "Kicked Steve: " + "长" * 250
         plugin = FakePlugin({"kick Steve": raw, "list": EMPTY})
@@ -789,6 +815,14 @@ class PlayerAdminCheck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "unrecognized")
         self.assertEqual(result["items"], [])
         self.assertEqual(result["raw"], glued)
+        # v0.25.4（2026-11-26 现场）：异地 RCON 模式读不到本机文件时必须点明原因 ——
+        # 只报「回执认不出」会让用户以为插件坏了（主人当时就是这么以为的）。
+        self.assertIn("异地 RCON 模式", result["note"], "P22 异地模式认不出必须点明原因")
+        self.assertIn("banned-players.json", result["note"])
+        self.assertIn("2 条", result["note"], "几条黏连也要说清")
+        # 这条提示必须是「警示」色调（前端据此用设置页 server_version_override 那套琥珀色样式），
+        # 灰字会被当成普通说明、用户仍会误以为插件坏了（2026-11-26 第二次反馈）。
+        self.assertEqual(result.get("note_tone"), "warn", "P23 异地提示必须走警示色调")
 
     async def test_preview_does_not_send_and_stale_confirmation_is_rejected(self):
         plugin = FakePlugin({"kick Steve test reason": "Kicked Steve", "list": EMPTY})

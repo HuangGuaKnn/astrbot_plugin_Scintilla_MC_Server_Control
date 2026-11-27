@@ -405,6 +405,10 @@ textarea{min-height:76px;resize:vertical;font-family:var(--mono);font-size:11.5p
 #pr_text{min-height:430px;font-size:12px;line-height:1.62}
 .pr-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}
 .pr-foot .count{font-size:11px;color:var(--faint);font-family:var(--mono);margin-left:auto}
+.rmt-warnbox{display:flex;gap:8px;align-items:flex-start;margin:8px 0 6px;padding:9px 11px;border-radius:8px;
+  background:rgba(233,170,69,.08);border:1px solid rgba(233,170,69,.45);color:var(--warn);font-weight:600;line-height:1.6}
+.rmt-warnmark{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+  margin-top:2px;border-radius:50%;background:var(--warn);color:#fff;font-size:11px;font-weight:700}
 .pr-warn{font-size:10.5px;color:var(--warn);background:rgba(232,162,58,.07);border:1px solid rgba(232,162,58,.28);border-radius:8px;padding:8px 11px;margin-top:12px;line-height:1.6}
 
 /* ===== 占位/空态 ===== */
@@ -488,10 +492,10 @@ summary:hover{text-decoration:underline}
 .player-ip-details{display:flex;align-items:center;flex:1 1 270px;min-width:0;flex-wrap:wrap;gap:5px 9px}
 .player-ip-details .player-ip{margin:0;overflow-wrap:anywhere}
 .player-ip-details .player-ip-note{flex-basis:100%;overflow-wrap:anywhere}
-.ban-target-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 10px}
-.ban-target-row input{flex:0 0 240px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;
+.player-target-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 10px}
+.player-target-row input{flex:0 0 240px;max-width:100%;padding:5px 9px;border:1px solid var(--border);border-radius:6px;
   background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:12.5px}
-.ban-target-row input:focus{outline:1px solid var(--border2);border-color:var(--border2)}
+.player-target-row input:focus{outline:1px solid var(--border2);border-color:var(--border2)}
 .player-row .player-actions{margin-left:auto}
 .player-ban-info{display:flex;flex:1 0 210px;flex-wrap:wrap;gap:4px 14px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
 .player-ban-info .muted{margin-right:5px}
@@ -1167,9 +1171,22 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
       <div id="sv_players"><span class="muted">加载中…</span></div>
       <div class="player-result" id="sv_player_result" role="status" aria-live="polite"></div>
     </div>
+    <section class="card" id="sv_whitelist_card" hidden aria-labelledby="sv_whitelist_title">
+      <h3 id="sv_whitelist_title"><span class="dot" style="background:var(--cyan)"></span>玩家白名单
+        <span class="right"><span id="sv_whitelist_count" role="status"></span> <button id="sv_whitelist_refresh" type="button" aria-label="刷新白名单">刷新</button></span>
+      </h3>
+      <form class="player-target-row" id="sv_whitelist_form">
+        <input id="sv_whitelist_target" type="text" spellcheck="false"
+               placeholder="玩家 ID" aria-label="要加入白名单的玩家 ID" disabled>
+        <button class="btn sm" id="sv_whitelist_add" type="submit" disabled>加入白名单</button>
+        <span class="muted" id="sv_whitelist_hint" role="status"></span>
+      </form>
+      <div id="sv_whitelist"></div>
+      <div class="player-result" id="sv_whitelist_result" role="status"></div>
+    </section>
     <section class="card" id="sv_ban_card" hidden aria-labelledby="sv_ban_title">
       <h3 id="sv_ban_title"><span class="dot" style="background:var(--bad)"></span>封禁名单</h3>
-      <div class="ban-target-row">
+      <div class="player-target-row">
         <input id="sv_ban_ip" type="text" spellcheck="false"
                placeholder="玩家 ID 或 IPv4 / IPv6 地址" aria-label="要封禁的玩家 ID 或 IP 地址">
         <button class="btn sm" id="sv_ban_ip_btn" type="button">封禁</button>
@@ -1481,8 +1498,8 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;op
             <label class="f" style="margin-top:0">物品语法世代 item_syntax_override</label>
             <select id="cfg_item_syntax">
               <option value="auto">auto —— 按版本自动判定</option>
-              <option value="legacy_nbt">legacy_nbt —— NBT {…}</option>
-              <option value="components">components —— 物品组件 […]</option>
+              <option value="legacy_nbt">legacy_nbt —— NBT {…}（1.13–1.20.4）</option>
+              <option value="components">components —— 物品组件 […]（1.20.5+）</option>
             </select>
           </div>
         </div>
@@ -2815,11 +2832,10 @@ const PLAYER_ACTIONS = {
   kick:"踢出", ban:"封禁", unban:"解封", ban_ip:"封禁 IP", unban_ip:"解封 IP",
   whitelist_add:"加入白名单", whitelist_remove:"移出白名单",
 };
-// 在线行只提供玩家名操作；解封和 IP 封禁留在封禁名单区。
-const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS)
-  .filter(action => action !== "unban" && action !== "unban_ip" && action !== "ban_ip");
+const ONLINE_ACTIONS = ["kick", "ban"];
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
 const BAN_PAGE_SIZE = 5;
+let whitelistMembers = null;
 let banItems = [];
 let banPage = 1;
 // v0.28.0：WebUI 是管理员专属页面，**不再脱敏** —— 服主要靠真实 IP 判断封哪个地址。
@@ -3036,8 +3052,11 @@ function renderOnlinePlayers(status, guardedOnline, admin){
       if(!admin) return label;
       const details = online.ip_details?.[name];
       const ipCell = renderPlayerIp(name, details?.ip ?? online.ips?.[name] ?? "", details);
+      const actions = whitelistMembers === null ? ONLINE_ACTIONS : [
+        ...ONLINE_ACTIONS, whitelistMembers.has(name.toLowerCase()) ? "whitelist_remove" : "whitelist_add",
+      ];
       return `<div class="player-row">${label}${ipCell}
-        ${playerButtons(name, ONLINE_ACTIONS, true)}</div>`;
+        ${playerButtons(name, actions, true)}</div>`;
     }).join("");
     const now = Date.now();
     for(const [key, entry] of playerAvatarCache){
@@ -3110,6 +3129,43 @@ function renderPlayerBanPage(){
   }).join("");
 }
 
+function renderPlayerWhitelist(whitelist, admin){
+  const count = $("sv_whitelist_count"), host = $("sv_whitelist"), target = $("sv_whitelist_target");
+  const names = whitelist?.players;
+  // 只有完整名单才能用来判断某个在线玩家是否在白名单中。
+  whitelistMembers = null;
+  if(admin && ["ok", "empty"].includes(whitelist?.state) &&
+    Array.isArray(names) && (whitelist.state !== "empty" || !names.length) &&
+    names.every(name => typeof name === "string" && PLAYER_NAME.test(name))){
+    const members = new Set(names.map(name => name.toLowerCase()));
+    if(members.size === names.length) whitelistMembers = members;
+  }
+  $("sv_whitelist_card").hidden = !admin;
+  const known = whitelistMembers !== null;
+  $("sv_whitelist_add").disabled = !known;
+  target.disabled = !known;
+  if(!admin){
+    count.replaceChildren();
+    host.replaceChildren();
+    $("sv_whitelist_result").replaceChildren();
+    $("sv_whitelist_hint").replaceChildren();
+    target.value = "";
+    return;
+  }
+  if(!known){
+    const state = whitelist?.state;
+    const failed = ["unsupported", "unrecognized", "unreachable"].includes(state);
+    count.innerHTML = playerBadge(failed ? state : "unrecognized", whitelist?.state_label || "名单不可用");
+    host.innerHTML = `<div class="player-state"><span class="muted">${escServer(whitelist?.note || "无法读取完整的白名单")}</span>
+      ${playerRaw("服务器原文", whitelist?.raw)}</div>`;
+    return;
+  }
+  count.innerHTML = playerBadge(names.length ? "ok" : "empty", `${names.length} 人`);
+  host.innerHTML = names.length ? names.map(name =>
+    `<div class="player-row"><span>${escServer(name)}</span>${playerButtons(name, ["whitelist_remove"], true)}</div>`
+  ).join("") : `<span class="muted">白名单暂无玩家</span>`;
+}
+
 function renderPlayerBans(bans, admin){
   $("sv_ban_card").hidden = !admin;
   banItems = admin && Array.isArray(bans.items) ? bans.items : [];
@@ -3124,9 +3180,14 @@ function renderPlayerBans(bans, admin){
   const stateOk = ["ok", "empty"].includes(bans.state);
   const ipHead = banReadbackStatus(bans.ip_readback, "IP 封禁回包原文", "IP 封禁名单未按预期解析");
   if(!stateOk && banItems.length === 0){
+    // 异地 RCON 模式读不到本机名单时要「显眼」：沿用设置页 server_version_override 的警示样式
+    //（琥珀色边框 + 圆形「!」），不再只是灰字 —— 否则用户会以为插件坏了。
+    const warnNote = bans.note_tone === "warn" && bans.note;
+    const noteHtml = warnNote
+      ? `<div class="rmt-warnbox"><span class="rmt-warnmark">!</span><span>${escServer(bans.note)}</span></div>`
+      : `<span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>`;
     notice.innerHTML = `<div class="player-state">${playerBadge(bans.state, bans.state_label)}
-      <span class="muted">${escServer(bans.note || "封禁名单拿不到")}</span>
-      ${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>${ipHead}`;
+      ${noteHtml}${playerRaw("服务器原文", bans.raw)}${playerButtons("", ["unban"], false)}</div>${ipHead}`;
     return;
   }
   const notes = [
@@ -3186,7 +3247,7 @@ function renderPlayerActionResult(host, result){
 }
 
 function disablePlayerButtons(){
-  document.querySelectorAll("#sv_players [data-action], #sv_bans [data-action], #sv_ban_pagination button").forEach(button => {
+  document.querySelectorAll("#sv_players [data-action], #sv_whitelist [data-action], #sv_whitelist_add, #sv_bans [data-action], #sv_ban_pagination button").forEach(button => {
     button.disabled = true;
   });
 }
@@ -3242,7 +3303,13 @@ async function confirmPlayerAction(){
     const result = await postPlayerAction({
       action: selection.action, player: selection.player, reason: selection.reason, expected_command: selection.command,
     });
-    if(!signal.aborted) renderPlayerActionResult(selection.result, result);
+    if(!signal.aborted){
+      renderPlayerActionResult(selection.result, result);
+      if(result?.ok === true && result?.confirmed === true &&
+        selection.action === "whitelist_add" && selection.result.id === "sv_whitelist_result"){
+        $("sv_whitelist_form").reset();
+      }
+    }
   }catch(e){
     if(!signal.aborted){
       renderPlayerActionResult(selection.result, {state:"unreachable", note:"请求中断，服务端是否已执行尚未确认", raw:String(e)});
@@ -3271,14 +3338,30 @@ function bindPlayerAdmin(){
   }
 
   $("page_server").addEventListener("click", event => {
-    const button = event.target.closest("#sv_players button[data-action], #sv_bans button[data-action]");
+    const button = event.target.closest("#sv_players button[data-action], #sv_whitelist button[data-action], #sv_bans button[data-action]");
     if(!button || button.disabled) return;
     const {action, player} = button.dataset;
     // IP 封禁的目标是地址，不是玩家名 —— 用玩家名规则去卡它会把合法 IP 挡掉
     if(action !== "unban_ip" && action !== "ban_ip" && !PLAYER_NAME.test(player)) return;
-    openPlayerDialog(action, player,
-      button.closest("#sv_bans") ? $("sv_ban_result") : $("sv_player_result"));
+    openPlayerDialog(action, player, button.closest(".card").querySelector(".player-result"));
   });
+  const whitelistTarget = $("sv_whitelist_target"), whitelistHint = $("sv_whitelist_hint");
+  $("sv_whitelist_form").addEventListener("submit", event => {
+    event.preventDefault();
+    if($("sv_whitelist_add").disabled || whitelistMembers === null) return;
+    const target = whitelistTarget.value.trim();
+    if(!PLAYER_NAME.test(target)){
+      whitelistHint.textContent = "请输入有效的玩家 ID（1–16 位字母、数字或下划线）";
+      return;
+    }
+    if(whitelistMembers.has(target.toLowerCase())){
+      whitelistHint.textContent = "该玩家已在白名单中";
+      return;
+    }
+    whitelistHint.textContent = "";
+    openPlayerDialog("whitelist_add", target, $("sv_whitelist_result"));
+  });
+  whitelistTarget.addEventListener("input", () => { whitelistHint.textContent = ""; });
   const banTarget = $("sv_ban_ip"), banHint = $("sv_ban_ip_hint"), banButton = $("sv_ban_ip_btn");
   // 严格校验和规范化地址由预览接口完成。
   function looksLikeIp(text){
@@ -3440,7 +3523,7 @@ function loadServerStatus(){
   return serverStatusRequest.request;
 }
 
-const serverRefreshButtons = ["sv_refresh", "sv_players_refresh", "sv_audit_refresh"].map($);
+const serverRefreshButtons = ["sv_refresh", "sv_players_refresh", "sv_whitelist_refresh", "sv_audit_refresh"].map($);
 async function loadServer(){
   const signal = pageRequests.signal;
   if(loadServer._pending || playerActionBusy || signal.aborted) return;
@@ -3463,6 +3546,7 @@ async function loadServer(){
     const admin = bans?.authorized === true;
     const audit = admin ? await callGet("player/audit", {limit:20}).catch(() => null) : null;
     if(signal.aborted) return;
+    renderPlayerWhitelist(bans?.whitelist, admin);
     renderOnlinePlayers(r, bans?.online, admin);
     renderPlayerBans(bans, admin);
     renderPlayerAudit(audit, admin, bans);

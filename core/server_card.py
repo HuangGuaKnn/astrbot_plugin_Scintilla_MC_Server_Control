@@ -450,7 +450,7 @@ async def probe_tps(plugin, rcon=None) -> TpsProbe:
         if _has_local_spark(plugin):
             state, note = STATE_SPARK_UNAVAILABLE, _SPARK_NOTE
         else:
-            note = f"该世代不支持 TPS 查询。若仅安装了 spark，{_SPARK_HELP}"
+            note = "该世代不支持 TPS 查询"
     note += f"。已试：{tried}"
     return TpsProbe(state, selected.source, selected.raw, note, tuple(attempts))
 

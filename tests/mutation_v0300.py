@@ -34,10 +34,9 @@ class Mutation:
 MUTATIONS = (
     Mutation(
         "P16", "删除在线行动作过滤", HTML,
-        'const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS)\n'
-        '  .filter(action => action !== "unban" && action !== "unban_ip" && action !== "ban_ip");',
+        'const ONLINE_ACTIONS = ["kick", "ban"];',
         'const ONLINE_ACTIONS = Object.keys(PLAYER_ACTIONS);',
-        "P16 在线玩家名动作应恰为四项", UI_TEST, "P16",
+        "P16 在线玩家应恰有踢出、封禁和对应的白名单操作", UI_TEST, "P16",
     ),
     Mutation(
         "P17", "禁用首轮回填", LOG,

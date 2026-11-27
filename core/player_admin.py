@@ -372,6 +372,14 @@ async def get_online(plugin) -> dict:
     return result
 
 
+async def get_whitelist(plugin) -> dict:
+    """读取完整的服务器白名单，保留失败状态及 RCON 原文。"""
+    result = await _read_roster(plugin, "whitelist list")
+    if result["state"] == server_card.STATE_OK and not result["players"]:
+        result.update(_status(server_card.STATE_EMPTY, "白名单暂无玩家", result["raw"]))
+    return result
+
+
 async def _snapshot_ip_matches(plugin, target: str) -> dict:
     """在写入前核对在线名单和这些玩家最近一次进服的地址。"""
     roster = await _read_roster(plugin, "list")
@@ -519,6 +527,10 @@ async def _append_ip_bans(plugin, result: dict) -> None:
         records = [{"ip": ip} for ip in from_reply]
         source = "banlist ips"
         if not records:
+            hint = _remote_unverified_hint(plugin, listed, "banned-ips.json")
+            if hint:
+                result["note"] = f"{result['note']}；{hint}" if result.get("note") else hint
+                result["note_tone"] = "warn"
             return
     valid_ips = set()
     malformed = 0
@@ -571,6 +583,25 @@ async def get_bans(plugin) -> dict:
     return result
 
 
+def _remote_unverified_hint(plugin, listed: dict, filename: str) -> str:
+    """异地 RCON 模式下读不到本机名单文件 —— 认不出时把原因摆到明面上。
+
+    只在「确实是异地模式 + 回包确实认不出」时给这句话：普通解析失败仍按原口径报「认不出」。
+    2026-11-26 现场：主人打开异地 RCON 后封禁页只剩「回执认不出」，关掉后还以为没生效，
+    实际上就是模式开着头、读不到本机 ``banned-players.json`` —— 不给说明用户只会当插件坏了。
+    """
+    if not strict_bool(plugin._cfg("remote_rcon_mode", False), False, key="remote_rcon_mode"):
+        return ""
+    if listed.get("state") != server_card.STATE_UNRECOGNIZED:
+        return ""
+    match = _MODERN_BANS.fullmatch(server_card.strip_color_codes(listed.get("raw") or "").strip())
+    count = int(match.group(1)) if match else 0
+    if count >= 2:
+        return (f"当前为异地 RCON 模式：读不到本机 {filename}，{count} 条记录黏连在同一行，"
+                "无法逐条核对，故不列出名单（原文见下）")
+    return f"当前为异地 RCON 模式：读不到本机 {filename}，回包无法核对（原文见下）"
+
+
 async def _player_bans(plugin) -> dict:
     """封禁名单：RCON 的 ``banlist`` 为准，``banned-players.json`` 只补详情。
 
@@ -605,7 +636,12 @@ async def _player_bans(plugin) -> dict:
             reason = f"{listed['note'] or '回执认不出'}；RCON 回包无法可靠切分"
         result["note"] = f"{reason} —— 名单改用 banned-players.json（文件里的记录是确定的，逐条可解封）"
     else:
-        # 回包认不出、文件也读不到：这时只能如实认输，别猜
+        # 回包认不出、文件也读不到：这时只能如实认输，别猜。
+        # 但得给个看得懂的由头（异地 RCON 模式下读不到本机文件），否则用户只当插件坏了。
+        hint = _remote_unverified_hint(plugin, listed, "banned-players.json")
+        if hint:
+            result["note"] = hint
+            result["note_tone"] = "warn"          # 前端据此用设置页那套琥珀色警示样式
         return result
 
     for name in names:

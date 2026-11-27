@@ -100,6 +100,26 @@ MUTATIONS = (
         'const disabled = enabled ? "" : "disabled";', 'const disabled = "";',
         "P8 名单不可用时在线玩家操作没有全部 disabled", UI_TEST, "P8",
     ),
+    # v0.25.4（2026-11-26 现场）：异地模式读不到本机文件时必须点明原因，否则用户只看到
+    # 「回执认不出」，以为是 bug。删掉这段说明，对应断言必须红。
+    Mutation(
+        "P22", "异地模式认不出却不解释", CORE,
+        '        hint = _remote_unverified_hint(plugin, listed, "banned-players.json")\n'
+        '        if hint:\n'
+        '            result["note"] = hint\n'
+        '            result["note_tone"] = "warn"          # 前端据此用设置页那套琥珀色警示样式',
+        '        hint = ""',
+        "P22 异地模式认不出必须点明原因", BACKEND_TEST,
+        "test_bans_without_readable_file_still_refuse_to_guess",
+    ),
+    # v0.25.4（2026-11-26 第二次反馈）：提示必须是「警示」色调，否则灰字仍会被当成普通说明。
+    Mutation(
+        "P23", "异地提示丢了警示色调", CORE,
+        '            result["note_tone"] = "warn"          # 前端据此用设置页那套琥珀色警示样式\n',
+        '',
+        "P23 异地提示必须走警示色调", BACKEND_TEST,
+        "test_bans_without_readable_file_still_refuse_to_guess",
+    ),
     # v0.29.0：玩家 IP 索引。守「进服行真的被记下来了」——
     # 不记的话在线名单永远显示「IP 未知」，一键封禁也就没了对象。
     Mutation(
@@ -189,6 +209,25 @@ MUTATIONS = (
         "        names = []",
         "demoplayer", BACKEND_TEST,
         "test_bans_fall_back_to_file_when_rcon_reply_is_glued",
+    ),
+    Mutation(
+        "WL", "玩家管理快照漏掉白名单", API,
+        '        result["whitelist"] = await player_admin.get_whitelist(self.plugin)\n',
+        "",
+        "WL 管理员快照缺少白名单", BACKEND_TEST,
+        "test_whitelist_snapshot_preserves_complete_empty_and_failed_reads",
+    ),
+    Mutation(
+        "WL", "在线行对白名单成员仍提供加入操作", HTML,
+        '...ONLINE_ACTIONS, whitelistMembers.has(name.toLowerCase()) ? "whitelist_remove" : "whitelist_add",',
+        '...ONLINE_ACTIONS, "whitelist_add",',
+        "P16 在线玩家应恰有踢出、封禁和对应的白名单操作", UI_TEST, "P16",
+    ),
+    Mutation(
+        "WL", "白名单回读失败被当成未入名单", HTML,
+        'const actions = whitelistMembers === null ? ONLINE_ACTIONS : [',
+        'const actions = whitelistMembers === null ? [...ONLINE_ACTIONS, "whitelist_add"] : [',
+        "WL 回读失败时不能猜测在线玩家白名单状态", UI_TEST, "WL",
     ),
     Mutation(
         "v0.26.1", "兜底时把 removable 一律关掉（解封按钮全灰）", CORE,

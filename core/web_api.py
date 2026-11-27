@@ -1471,6 +1471,7 @@ class McControlWebApi:
             return self._player_admin_forbidden()
         result = await player_admin.get_bans(self.plugin)
         result["online"] = await player_admin.get_online(self.plugin)
+        result["whitelist"] = await player_admin.get_whitelist(self.plugin)
         return json_response({"ok": True, "authorized": True, **result})
 
     async def player_ip_search(self):

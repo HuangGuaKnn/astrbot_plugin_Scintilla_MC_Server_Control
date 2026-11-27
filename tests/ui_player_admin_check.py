@@ -32,6 +32,7 @@ class Scenario:
         self.authorized = True
         self.online = dict(ONLINE_OK)
         self.bans = {"state": "ok", "items": [dict(BAN)]}
+        self.whitelist = {"state": "empty", "players": []}
         self.posts = []
         self.ip_searches = []
         self.ip_search_result = {}
@@ -115,7 +116,8 @@ class Scenario:
             route_obj.fulfill(status=403, content_type="application/json",
                               body=json.dumps({"ok": False, "error": "仅管理员可操作"}))
         elif endpoint == "player/bans":
-            fulfill(route_obj, {"ok": True, "authorized": True, "online": self.online, **self.bans})
+            fulfill(route_obj, {"ok": True, "authorized": True, "online": self.online,
+                                "whitelist": self.whitelist, **self.bans})
         elif endpoint == "player/ip/search":
             self.ip_searches.append(route_obj.request.post_data_json)
             fulfill(route_obj, {"ok": True, "details": self.ip_search_result})
@@ -126,7 +128,8 @@ class Scenario:
             body = route_obj.request.post_data_json
             self.posts.append(body)
             action, player = body["action"], body["player"]
-            prefix = {"unban": "pardon", "ban_ip": "ban-ip"}.get(action, action)
+            prefix = {"unban": "pardon", "ban_ip": "ban-ip",
+                      "whitelist_add": "whitelist add", "whitelist_remove": "whitelist remove"}.get(action, action)
             command = f"{prefix} {player}"
             if action in ("ban", "ban_ip") and body.get("reason"):
                 command += f" {body['reason']}"
@@ -136,20 +139,31 @@ class Scenario:
             if self.reject_write:
                 fulfill(route_obj, self.reject_write)
                 return
-            if self.apply_unban:
-                self.bans = {"state": "empty", "items": []}
-            present = any(item["name"] == player for item in self.bans["items"])
-            result = {
-                # 即使传输层 ok，仍须读 confirmed，名单还在不能涂绿。
-                "ok": True, "action": action, "player": player, "command": command,
-                "state": "unrecognized" if present else "ok", "confirmed": not present,
-                "note": "已发出但未确认" if present else "回读已确认",
-                "raw": f"Unbanned {player}",
-                "readback": {
-                    "command": "banlist players", "state": "ok",
-                    "raw": f"There are 1 ban(s): {player}" if present else "There are no bans",
-                },
-            }
+            if action in ("whitelist_add", "whitelist_remove"):
+                names = [name for name in self.whitelist["players"] if name.lower() != player.lower()]
+                if action == "whitelist_add":
+                    names.append(player)
+                self.whitelist = {"state": "ok" if names else "empty", "players": names}
+                raw = f"There are {len(names)} whitelisted player(s): {', '.join(names)}" if names else (
+                    "There are no whitelisted players"
+                )
+                result = {"confirmed": True, "state": "ok", "note": "回读已确认",
+                          "readback": {"command": "whitelist list", "state": "ok", "raw": raw}}
+            else:
+                if self.apply_unban:
+                    self.bans = {"state": "empty", "items": []}
+                present = any(item["name"] == player for item in self.bans["items"])
+                result = {
+                    # 即使传输层 ok，仍须读 confirmed，名单还在不能涂绿。
+                    "state": "unrecognized" if present else "ok", "confirmed": not present,
+                    "note": "已发出但未确认" if present else "回读已确认",
+                    "raw": f"Unbanned {player}",
+                    "readback": {
+                        "command": "banlist players", "state": "ok",
+                        "raw": f"There are 1 ban(s): {player}" if present else "There are no bans",
+                    },
+                }
+            result.update(ok=True, action=action, player=player, command=command)
             self.audits = [{
                 "ts": "2026-11-17T08:30:15+08:00", "actor": "dashboard-owner", **result,
             }]
@@ -211,20 +225,23 @@ def check_four_states(scenario):
 
 
 def check_permission(scenario):
+    scenario.whitelist = {"state": "ok", "players": ["Alex"]}
     scenario.open()
     page = scenario.page
-    assert page.locator("#sv_players button[data-action]").count() == 4, "权限用例前置条件：管理员可用四项操作"
+    expect(page.locator("#sv_players button[data-action]")).to_have_count(3)
+    expect(page.locator("#sv_whitelist .player-row")).to_have_count(1)
     scenario.authorized = False
     scenario.refresh()
-    assert page.locator("#sv_players button[data-action], #sv_bans button[data-action]").count() == 0, \
+    assert page.locator("#sv_players button[data-action], #sv_whitelist button[data-action], #sv_bans button[data-action]").count() == 0, \
         "P6 非管理员仍有玩家管理按钮"
+    expect(page.locator("#sv_whitelist_card")).to_be_hidden()
     expect(page.locator("#sv_ban_card")).to_be_hidden()
     scenario.select("audit")
     expect(page.locator("#sv_audit_card")).to_be_hidden()
     audit_unavailable = page.locator("#sv_audit_unavailable")
     expect(audit_unavailable).to_be_visible()
     expect(audit_unavailable).to_have_text("当前会话无权查看操作记录")
-    assert page.locator("#sv_bans .player-row, #sv_audit .player-row").count() == 0, \
+    assert page.locator("#sv_whitelist .player-row, #sv_bans .player-row, #sv_audit .player-row").count() == 0, \
         "P6 降权后管理数据仍留在 DOM"
     print("[PASS] P6 管理员可操作，接口拒绝后移除管理入口和数据")
 
@@ -241,7 +258,7 @@ def check_disabled(scenario):
         scenario.online = {"state": state, **extra}
         scenario.refresh()
         buttons = page.locator("#sv_players button[data-action]").all()
-        assert len(buttons) == 4 and all(button.is_disabled() for button in buttons), \
+        assert len(buttons) == 2 and all(button.is_disabled() for button in buttons), \
             f"P8 名单不可用时在线玩家操作没有全部 disabled：{state}"
     for state in ("unrecognized", "unreachable"):
         scenario.bans = {"state": state, "note": "封禁名单拿不到", "raw": "unfamiliar ban reply", "items": []}
@@ -481,27 +498,80 @@ def check_online_actions(scenario):
     """P16：所有在线行的动作集合准确，解封和 IP 封禁留在封禁名单区。"""
     scenario.online = {"state": "ok", "players": ["Alex", "Steve"], "online": 2, "max": 20,
                        "ips": {"Steve": IPV4}}
+    scenario.whitelist = {"state": "ok", "players": ["aLeX"]}
     scenario.open()
     page = scenario.page
-    wanted = {"kick", "ban", "whitelist_add", "whitelist_remove"}
     rows = page.locator("#sv_players .player-row")
     assert rows.count() == 2, "P16 前置条件：应有两个在线玩家"
-    for row, name in zip(rows.all(), ("Alex", "Steve")):
+    for row, name, whitelist_action in zip(rows.all(), ("Alex", "Steve"), ("whitelist_remove", "whitelist_add")):
         buttons = row.locator('button[data-action]')
         actions = buttons.evaluate_all("els => els.map(el => el.dataset.action)")
+        wanted = {"kick", "ban", whitelist_action}
         assert len(actions) == len(wanted) and set(actions) == wanted, \
-            f"P16 在线玩家名动作应恰为四项：{name} 实际 {actions}"
+            f"P16 在线玩家应恰有踢出、封禁和对应的白名单操作：{name} 实际 {actions}"
         assert all(button.is_enabled() for button in buttons.all()), "P16 有效在线名单操作应可用"
         assert all(button.get_attribute("data-player") == name for button in buttons.all()), \
             "P16 在线行操作必须指向该行玩家"
-    assert rows.first.locator("button[data-action]").count() == 4, \
-        "P16 未知 IP 在线行的 data-action 集合应恰为四项"
     assert rows.locator('button[data-action="unban"], button[data-action="unban_ip"]').count() == 0, \
         "P16 在线行不应出现解封操作"
     expect(rows.nth(1).locator(".player-ip")).to_have_text(IPV4)
     expect(page.locator("#sv_ban_ip_btn")).to_be_enabled()
     expect(page.locator('#sv_bans button[data-action="unban"][data-player="Steve"]')).to_be_enabled()
-    print("[PASS] P16 已知与未知 IP 在线行动作均恰为四项，解封与 IP 封禁入口独立")
+    print("[PASS] P16 在线行按白名单成员关系显示一个操作，解封和 IP 封禁入口独立")
+
+
+def check_whitelist_management(scenario):
+    scenario.open()
+    page = scenario.page
+    expect(page.locator(".card:has(#sv_players) + #sv_whitelist_card + #sv_ban_card")).to_be_visible()
+    online = page.locator("#sv_players")
+    host = page.locator("#sv_whitelist")
+    target = page.locator("#sv_whitelist_target")
+    add = page.locator("#sv_whitelist_add")
+    count = page.locator("#sv_whitelist_count")
+    result = page.locator("#sv_whitelist_result")
+    expect(count).to_have_text("0 人")
+    expect(host).to_have_text("白名单暂无玩家")
+
+    target.fill("Alex Steve")
+    add.click()
+    expect(page.locator("#sv_whitelist_hint")).to_contain_text("请输入有效的玩家 ID")
+    assert not scenario.posts, "WL 无效的玩家名不得请求预览"
+
+    target.fill(" Offline_One ")
+    submit(scenario, add, "Offline_One", "whitelist add Offline_One")
+    expect(host.locator(".player-row")).to_contain_text("Offline_One")
+    expect(count).to_have_text("1 人")
+    expect(result).to_contain_text("已确认")
+    expect(result).to_contain_text("There are 1 whitelisted player(s): Offline_One")
+    expect(target).to_have_value("")
+    target.fill("offline_one")
+    add.click()
+    expect(page.locator("#sv_whitelist_hint")).to_have_text("该玩家已在白名单中")
+    assert len(scenario.posts) == 2, "WL 已有成员不得再次请求预览"
+
+    submit(scenario, online.locator('[data-action="whitelist_add"]'), "Alex", "whitelist add Alex")
+    expect(count).to_have_text("2 人")
+    expect(online.locator('[data-action="whitelist_remove"]')).to_be_enabled()
+    expect(online.locator('[data-action="whitelist_add"]')).to_have_count(0)
+    submit(scenario, host.locator('[data-player="Offline_One"]'), "Offline_One", "whitelist remove Offline_One")
+    expect(count).to_have_text("1 人")
+    expect(host.locator(".player-row")).to_contain_text("Alex")
+    submit(scenario, online.locator('[data-action="whitelist_remove"]'), "Alex", "whitelist remove Alex")
+    expect(host).to_have_text("白名单暂无玩家")
+    expect(online.locator('[data-action="whitelist_add"]')).to_be_enabled()
+
+    raw = "There are 2 whitelisted player(s): <b>Alex</b>"
+    scenario.whitelist = {"state": "unrecognized", "players": [], "raw": raw}
+    refresh = page.locator("#sv_whitelist_refresh")
+    refresh.click()
+    expect(refresh).to_be_enabled()
+    assert online.locator('[data-action^="whitelist_"]').count() == 0, "WL 回读失败时不能猜测在线玩家白名单状态"
+    expect(online.locator('[data-action="kick"]')).to_be_enabled()
+    expect(add).to_be_disabled()
+    expect(host).to_contain_text(raw)
+    expect(host.locator(".bc-out b")).to_have_count(1)
+    print("[PASS] WL 卡片顺序、离线玩家增删、在线按钮切换及回读失败")
 
 
 def check_remote_ip_search(scenario):
@@ -1051,6 +1121,7 @@ CASES = {"P1": check_four_states, "P6": check_permission, "P8": check_disabled,
          "P9": check_no_ip, "P10": check_rejection, "P11": check_ban_rendering, "P12": check_unban,
          "G1": check_verified_banlist,
          "P14": check_manual_ban, "P15": check_player_ip, "P16": check_online_actions,
+         "WL": check_whitelist_management,
          "P18": check_console_notice, "P20": check_single_color_card,
          "P21": check_invalid_ip_bans, "P23": check_workflow_single_writer, "P24": check_workflow_history,
          "P25": check_ip_ban_audit,

@@ -174,6 +174,9 @@ class TpsChecks(unittest.IsolatedAsyncioTestCase):
         result = await sc.probe_tps(plugin)
         self.assertEqual(result.state, "unsupported")
         self.assertTrue(all(f"/{cmd}" in result.note for cmd in COMMANDS))
+        field = (await sc.sample(plugin))["fields"][2]
+        self.assertEqual(field["note"], "该世代不支持 TPS 查询。已试：/tps、/forge tps、/mspt、/tick query",
+                         "TPS8 不支持时只说明能力和已试命令")
         # Paper 的换行 Brigadier 回包与旧版 Unknown command 都能认出。
         paper_unknown = {**VANILLA, "forge tps": PAPER["forge tps"]}
         self.assertEqual((await sc.probe_tps(FakePlugin(paper_unknown))).state, "unsupported")

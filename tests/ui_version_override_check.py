@@ -141,6 +141,15 @@ def main() -> int:
         page.wait_for_timeout(300)
         check("展开后版本输入框可见（可改）", page.is_visible("#cfg_server_version"))
         page.screenshot(path=str(shots / "ver_override_1b_expanded.png"))
+        syntax_trigger = page.locator('[aria-controls="cfg_item_syntax_menu"]')
+        syntax_trigger.click()
+        labels = page.locator("#cfg_item_syntax_menu [role=option]").all_text_contents()
+        check("物品语法下拉显示完整版本范围", labels == [
+            "auto —— 按版本自动判定",
+            "legacy_nbt —— NBT {…}（1.13–1.20.4）",
+            "components —— 物品组件 […]（1.20.5+）",
+        ], repr(labels))
+        syntax_trigger.click()
 
         print("[2] 只改草稿、不保存 → 后端状态与能力行都不该动")
         calls_before = STATE["status_calls"]

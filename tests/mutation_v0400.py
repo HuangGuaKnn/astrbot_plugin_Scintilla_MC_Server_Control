@@ -1,4 +1,4 @@
-"""TPS 探针的定向变异。"""
+"""TPS 探针、卡片和物品语法设置文案的定向变异。"""
 import sys
 
 from mutation_all import Case
@@ -40,8 +40,19 @@ def mutation_cases():
          "elif not clean:\n            state = STATE_EMPTY",
          "elif not clean:\n            state = STATE_UNSUPPORTED",
          "test_different_failures", "TPS7 空回答独立于不支持和认不出"),
+        ("TPS8", "不支持时加回推测性的 spark 提示", card,
+         'note = "该世代不支持 TPS 查询"',
+         'note = f"该世代不支持 TPS 查询。若仅安装了 spark，{_SPARK_HELP}"',
+         "test_different_failures", "TPS8 不支持时只说明能力和已试命令"),
     ]
-    return [
+    cases = [
         Case(criterion, description, path, before, after, (*baseline, f"TpsChecks.{test}"), failure, baseline)
         for criterion, description, path, before, after, test, failure in variants
     ]
+    browser = (sys.executable, "-B", "-X", "utf8", "tests/ui_version_override_check.py")
+    cases.append(Case(
+        "SYNTAX_RANGE", "物品语法选项丢失版本范围", "pages/mc_control/index.html",
+        "NBT {…}（1.13–1.20.4）</option>", "NBT {…}</option>",
+        browser, "物品语法下拉显示完整版本范围", browser,
+    ))
+    return cases
